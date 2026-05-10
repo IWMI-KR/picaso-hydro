@@ -644,11 +644,14 @@ _SWAT_SOIL_GLOBAL_FILES = [
     "SWAT2009-Global-V1.0.mdb",
 ]
 
-# IWMI 사내 HTTP 저장소 — mdb / lookup txt 는 URL 에서 다운로드
-# (tif / aux / rrd 는 여전히 local_dir 에서 복사)
+# IWMI 사내 HTTP 저장소 — 핵심 3종 (tif / mdb / lookup txt) 모두 URL 다운로드
+# sidecar (aux / rrd / aux.xml) 만 local_dir 에서 선택 복사 (없어도 동작에 영향 X,
+# GDAL 이 자동 재생성).
 # 서버 측 mdb 파일명은 'SWAT2009-Global-FAO Soil.mdb' 이지만
 # 로컬 저장 파일명은 기존 컨벤션 유지.
 _SWAT_SOIL_URLS: Dict[str, str] = {
+    "soil_global.tif":
+        "http://shared.iwmi.kr:48080/permanent/swat_py/soil_global.tif",
     "SWAT2009-Global-V1.0.mdb":
         "http://shared.iwmi.kr:48080/permanent/swat_py/SWAT2009-Global-FAO%20Soil.mdb",
     "Soil_global_lookup.txt":
@@ -774,9 +777,11 @@ def download_swat_soil(
     파일 배치
     ----------
     download/ (글로벌 원본, 항상 준비)
-        gis/soil/download/soil_global.tif        local_dir 에서 복사
-        gis/soil/download/Soil_global_lookup.txt IWMI URL 다운로드
+        gis/soil/download/soil_global.tif          IWMI URL 다운로드
+        gis/soil/download/Soil_global_lookup.txt   IWMI URL 다운로드
         gis/soil/download/SWAT2009-Global-V1.0.mdb IWMI URL 다운로드
+        (sidecar aux/rrd/aux.xml — local_dir 있을 때만 선택 복사,
+         없어도 GDAL 이 자동 재생성)
 
     canonical (boundary 안 유효 픽셀이 있을 때만)
         gis/soil/soil.tif                       boundary 클립된 raster
@@ -785,14 +790,14 @@ def download_swat_soil(
 
     원본 출처
     ---------
-    mdb / lookup txt → ``http://shared.iwmi.kr:48080/permanent/swat_py/`` (IWMI 사내)
-    soil_global.tif  → local_dir (기본 ``S:/Database-INT/GISDB/Soils``)
+    핵심 3종 → ``http://shared.iwmi.kr:48080/permanent/swat_py/`` (IWMI 사내)
+    sidecar  → local_dir (선택)
 
     Parameters
     ----------
     gis_root      : GIS 루트
-    source        : "local" — tif 는 local_dir, mdb/txt 는 IWMI URL 자동 분기
-    local_dir     : SWAT GISDB 위치 (tif/aux/rrd 만 사용)
+    source        : "local" (예약 — 현재 핵심 파일은 항상 IWMI URL)
+    local_dir     : sidecar (aux/rrd/aux.xml) 위치. 없어도 동작
     boundary_path : 폴리곤 shapefile (None 이면 클립 생략, 글로벌 그대로 canonical)
     bbox          : (xmin, ymin, xmax, ymax) — boundary_path 없을 때 fallback
     buffer_deg    : boundary 외측 버퍼 (도). SWAT 변두리 안전 여유.
@@ -830,8 +835,10 @@ def download_swat_soil(
     saved: Dict[str, Path] = {}
 
     # ── 1. 글로벌 원본을 download/ 에 준비 ───────────────────────────────
-    #      mdb/txt → IWMI URL, tif/aux/rrd → local_dir 복사
+    #      tif / mdb / txt → IWMI URL (필수)
+    #      aux / rrd / aux.xml → local_dir 에서 선택 복사 (없으면 GDAL 이 자동 생성)
     print("  [글로벌 원본 → download/]")
+    sidecar_skip_announced = False
     for fname in _SWAT_SOIL_GLOBAL_FILES:
         dst_path = download_dir / fname
 
@@ -848,15 +855,16 @@ def download_swat_soil(
             saved[f"download:{fname}"] = dst_path
             continue
 
-        # local_dir 에서 복사 (tif / aux / rrd)
+        # 선택 sidecar (aux / rrd / aux.xml) — local_dir 에서만 복사
+        if not src_dir.is_dir():
+            if not sidecar_skip_announced:
+                print(f"    [skip] sidecar (aux/rrd/aux.xml) — local_dir 미존재, "
+                      f"GDAL 이 필요 시 자동 재생성")
+                sidecar_skip_announced = True
+            continue
         src_path = src_dir / fname
         if not src_path.is_file():
-            if fname == "soil_global.tif":
-                raise FileNotFoundError(
-                    f"필수 파일 없음: {src_path}\n"
-                    f"  soil_global.tif 는 현재 URL 미제공 — local_dir 필요."
-                )
-            print(f"    [MISS] {fname}")
+            print(f"    [MISS] {fname}  (선택 sidecar — 무시 가능)")
             continue
         shutil.copy2(src_path, dst_path)
         size_mb = dst_path.stat().st_size / 1e6
