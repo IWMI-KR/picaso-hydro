@@ -158,23 +158,28 @@ def temper_simulation(
     error_cov = pc_model_s0["error_cov"]
     length_burnin = 100
 
-    P = np.zeros((length_burnin + n, 4))
+    # EOF 차원에서 PC 개수 자동 추출 (n_comp = min(2, d))
+    # 기존엔 n_pc=4 (d>=2 가정) 하드코딩 → d=1 사이트에서 차원 mismatch 였음
+    n_comp = z_score_anomaly_tmax_eof[s0].shape[1]
+    n_pc   = 2 * n_comp                 # tmax PC + tmin PC
+
+    P = np.zeros((length_burnin + n, n_pc))
     for i in range(p_order, length_burnin):
         pred = np.concatenate([P[i - h] for h in range(1, p_order + 1)])
         try:
-            error = np.random.multivariate_normal(np.zeros(4), error_cov)
+            error = np.random.multivariate_normal(np.zeros(n_pc), error_cov)
         except Exception:
-            error = np.random.randn(4)
+            error = np.random.randn(n_pc)
         P[i] = ar_coef @ pred + error
 
     def gen_error(s: int) -> np.ndarray:
         resids = z_score_anomaly_primaryPC_model[s]["resid"]
         if not resids:
-            return np.random.randn(4)
+            return np.random.randn(n_pc)
         ri = np.random.randint(len(resids))
         rr = resids[ri]
         if len(rr) == 0:
-            return np.random.randn(4)
+            return np.random.randn(n_pc)
         ti = np.random.randint(len(rr))
         return rr[ti]
 
@@ -241,10 +246,10 @@ def temper_simulation(
             pc = mv_P + gen_error(s)
 
             z1 = np.zeros(2 * d)
-            eof_t = z_score_anomaly_tmax_eof[s]  # (d, 2)
+            eof_t = z_score_anomaly_tmax_eof[s]  # (d, n_comp)
             eof_n = z_score_anomaly_tmin_eof[s]
-            z1[:d] = eof_t @ pc[:2]
-            z1[d:] = eof_n @ pc[2:4]
+            z1[:d] = eof_t @ pc[:n_comp]
+            z1[d:] = eof_n @ pc[n_comp:2 * n_comp]
 
             resid_t = z_score_anomaly_tmax_residual[s]
             resid_n = z_score_anomaly_tmin_residual[s]

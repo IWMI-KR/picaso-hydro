@@ -249,13 +249,13 @@ def load_config(config_file: str) -> Dict[str, Any]:
     validate_after   = bool(adv.get("validate_after", False))
 
     # operational 의 단일 forecast_csv / output_dir 자동 산출
+    # output_dir 은 year 까지만 — acid_run 이 내부에서 season 폴더 자동 추가
     forecast_csv_op = (
         Path(paths["picaso_dir"])
         / f"{forecast_year}_{_season_label(sim_period)}_picaso.csv"
     )
     output_dir_op = (
-        Path(paths["output_root"])
-        / "operational" / str(forecast_year) / _season_label(sim_period)
+        Path(paths["output_root"]) / "operational" / str(forecast_year)
     )
 
     return {

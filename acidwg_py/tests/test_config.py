@@ -70,8 +70,9 @@ def test_load_minimal_yaml(tmp_path) -> None:
     assert cfg["sim_period"]   == [6, 7, 8]   # JJA
     assert cfg["forecast_year"] == 2024
     # operational 자동 산출 (Path 비교 — Windows 백슬래시 무관)
+    # output_dir 은 year 까지만 — acid_run 이 내부에서 season 폴더 추가하므로
     assert Path(cfg["forecast_csv"]) == Path("/p/picaso/2024_JJA_picaso.csv")
-    assert Path(cfg["output_dir"])   == Path("/p/root/operational/2024/JJA")
+    assert Path(cfg["output_dir"])   == Path("/p/root/operational/2024")
     assert cfg["n_ensemble"]   == 1000
     assert cfg["hindcast"] is None    # 블록 없음 → None
 
