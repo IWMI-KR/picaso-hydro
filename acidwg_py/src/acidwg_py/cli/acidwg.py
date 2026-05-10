@@ -3,12 +3,16 @@ acidwg_py 실행 CLI — APCC 계절예측 통계적 상세화
 
 사용법
 ------
-    # acidwg_py.yaml 자동 탐색 (cwd → 상위)
-    acidwg-run
-
-    # 명시적 설정 파일
+    # operational (기본) — 단일 (year, season)
+    acidwg-run                                       # acidwg_py.yaml 자동 탐색
     acidwg-run /path/to/my.yaml
     acidwg-run --config /path/to/my.yaml
+
+    # hindcast — yaml 의 hindcast 블록 일괄 실행
+    acidwg-run --hindcast
+    acidwg-run --hindcast --years 2010 2015          # 연도 일부만
+    acidwg-run --hindcast --seasons JFM FMA          # 계절 일부만
+    acidwg-run --hindcast --dry-run                  # 처리 대상 목록만 출력
 
 환경변수
 ---------
@@ -26,7 +30,7 @@ from pathlib import Path
 import numpy as np
 
 from acidwg_py.config import SEASON_MONTHS, find_config, load_config
-from acidwg_py.run import acid_run
+from acidwg_py.run import acid_run, acid_run_hindcast
 
 
 def main() -> int:
@@ -39,6 +43,16 @@ def main() -> int:
                         help="설정 YAML 경로 (생략 시 --config 또는 자동 탐색)")
     parser.add_argument("--config", default=None, dest="config_opt",
                         help="설정 YAML 경로 (위치 인자와 동일)")
+    parser.add_argument("--hindcast", action="store_true",
+                        help="hindcast 모드 — yaml 의 hindcast 블록 일괄 실행")
+    parser.add_argument("--years", nargs="+", type=int, default=None,
+                        metavar="YEAR",
+                        help="hindcast: 처리할 연도 일부 (yaml 범위 안에서)")
+    parser.add_argument("--seasons", nargs="+", default=None,
+                        choices=list(SEASON_MONTHS.keys()), metavar="SEASON",
+                        help="hindcast: 처리할 계절 일부 (yaml 범위 안에서)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="hindcast: 실행 없이 처리 대상 목록만 출력")
     args = parser.parse_args()
 
     config_path: Path | str | None = args.config_file or args.config_opt
@@ -57,13 +71,20 @@ def main() -> int:
     if cfg["random_seed"] is not None:
         np.random.seed(cfg["random_seed"])
 
+    if args.hindcast:
+        return _run_hindcast(cfg, config_path, args)
+    else:
+        return _run_operational(cfg, config_path)
+
+
+def _run_operational(cfg, config_path) -> int:
     season_label = next(
         (k for k, v in SEASON_MONTHS.items() if v == cfg["sim_period"]),
         str(cfg["sim_period"]),
     )
 
     print("=" * 62)
-    print("  acidwg_py — APCC 계절예측 통계적 상세화")
+    print("  acidwg_py — operational (단일 year × season)")
     print("=" * 62)
     print(f"  설정 파일    : {config_path}")
     print(f"  관측 기간    : {cfg['syear_obs']} ~ {cfg['eyear_obs']}")
@@ -94,7 +115,62 @@ def main() -> int:
     print(f"파일 수: {len(files)}개  (처음 6개)")
     for f in files[:6]:
         print(f"  {f}")
+    return 0
 
+
+def _run_hindcast(cfg, config_path, args) -> int:
+    hc = cfg.get("hindcast")
+    if not hc:
+        print("오류: --hindcast 사용했으나 yaml 에 hindcast 블록이 없습니다.",
+              file=sys.stderr)
+        return 1
+
+    years   = args.years   or hc["years"]
+    seasons = args.seasons or hc["seasons"]
+    if args.years:
+        invalid = set(args.years) - set(hc["years"])
+        if invalid:
+            print(f"경고: yaml hindcast.years 범위 밖 연도 무시: {sorted(invalid)}",
+                  file=sys.stderr)
+            years = [y for y in args.years if y in hc["years"]]
+    if args.seasons:
+        invalid = set(args.seasons) - set(hc["seasons"])
+        if invalid:
+            print(f"경고: yaml hindcast.seasons 범위 밖 계절 무시: {sorted(invalid)}",
+                  file=sys.stderr)
+            seasons = [s for s in args.seasons if s in hc["seasons"]]
+
+    print("=" * 62)
+    print("  acidwg_py — hindcast (일괄)")
+    print("=" * 62)
+    print(f"  설정 파일    : {config_path}")
+    print(f"  관측 기간    : {cfg['syear_obs']} ~ {cfg['eyear_obs']} "
+          f"(eyear_cap={hc['observation_eyear_cap']})")
+    print(f"  hindcast 연도: {years[0]}~{years[-1]} (총 {len(years)})")
+    print(f"  hindcast 계절: {seasons}")
+    print(f"  앙상블 수    : {cfg['n_ensemble']}")
+    print(f"  picaso_dir   : {cfg['picaso_dir']}")
+    print(f"  출력 root    : {cfg['output_root']}/hindcast/")
+    print("=" * 62)
+
+    out_paths = acid_run_hindcast(
+        station_csv = cfg["station_csv"],
+        obs_dir     = cfg["obs_dir"],
+        picaso_dir  = cfg["picaso_dir"],
+        output_root = cfg["output_root"],
+        syear_obs   = cfg["syear_obs"],
+        eyear_obs   = cfg["eyear_obs"],
+        years       = years,
+        seasons     = seasons,
+        n_ensemble  = cfg["n_ensemble"],
+        model_file  = cfg["model_file"],
+        retrieve    = cfg["retrieve"],
+        observation_eyear_cap = hc["observation_eyear_cap"],
+        dry_run     = args.dry_run,
+    )
+
+    if not args.dry_run:
+        print(f"\n완료! {len(out_paths)} (year × season) 작업 처리됨.")
     return 0
 
 

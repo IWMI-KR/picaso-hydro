@@ -10,45 +10,56 @@
 #
 #  [ 자동 탐색 ]
 #    환경변수 ACIDWG_PY_CONFIG 또는 cwd 위로 acidwg_py.yaml 검색.
+#
+#  [ 실행 모드 ]
+#    operational : 단일 (year × season) — acidwg-run         (기본)
+#    hindcast    : 다년 × 다계절 일괄  — acidwg-run --hindcast
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-# ── 1. 경로 ──────────────────────────────────────────────────────────────────
+# ── 1. 경로 (operational/hindcast 공용) ──────────────────────────────────────
 paths:
-  base_dir:     "${env:PICASO_ROOT:I:/2025-APCC_Cook/PICASO-Hydro}"
-  station_csv:  "$(paths.base_dir)/1_acidwg/config/stations.csv"
-  forecast_csv: "$(paths.base_dir)/1_acidwg/picaso/2024_JFM_picaso.csv"  # 예보 입력 CSV
-  obs_dir:      "$(paths.base_dir)/0_database/obs/weather"               # 관측소별 일자료 폴더
-  output_dir:   "$(paths.base_dir)/1_acidwg/operational/2024/JFM"        # 시나리오 출력
-  model_file:   "$(paths.base_dir)/1_acidwg/cache/acidwg_model.pkl"      # 적합 모델 캐시 (생략 가능)
+  base_dir:    "${env:PICASO_ROOT:I:/2025-APCC_Cook/PICASO-Hydro}"
+  station_csv: "$(paths.base_dir)/1_acidwg/config/stations.csv"
+  obs_dir:     "$(paths.base_dir)/0_database/obs/weather/daily_std"  # util_py 표준 daily 포맷
+  picaso_dir:  "$(paths.base_dir)/1_acidwg/picaso"                    # forecast CSV 폴더
+  output_root: "$(paths.base_dir)/1_acidwg"                           # operational/, hindcast/ 부모
+  model_file:  "$(paths.base_dir)/1_acidwg/cache/acidwg_model.pkl"    # 모델 캐시 (operational only)
 
 
-# ── 2. 관측 기간 ─────────────────────────────────────────────────────────────
+# ── 2. 관측 기간 (모델 적합용 기본 범위) ─────────────────────────────────────
 observation:
   syear: 1981
   eyear: 2010
 
 
-# ── 3. 예보 대상 ─────────────────────────────────────────────────────────────
-forecast:
+# ── 3. operational 모드 — 단일 연도 × 계절 (acidwg-run) ─────────────────────
+operational:
   year:   2024
-  season: "JFM"      # 12개 계절 코드 중 하나 (JFM, FMA, ..., DJF)
-  # 또는 직접 월 목록을 지정하면 season 무시:
+  season: "JFM"      # 12개 계절 코드 (JFM, FMA, ..., DJF)
+  # 또는 직접 월 목록:
   # months: [1, 2, 3]
 
 
-# ── 4. 앙상블 ────────────────────────────────────────────────────────────────
+# ── 4. hindcast 모드 — 다년 × 다계절 일괄 (acidwg-run --hindcast) ───────────
+hindcast:
+  years:   [1991, 2020]   # [start, end] 연속 범위 — 또는 명시 리스트 [1991, 1995, 2010]
+  seasons: "all"           # "all" 또는 ["JFM", "FMA", ...]
+  observation_eyear_cap: true   # 각 hindcast 연도 직전까지로 관측 자동 제한 (leakage 방지)
+
+
+# ── 5. 앙상블 (공용) ─────────────────────────────────────────────────────────
 ensemble:
   n_members:   1000
   random_seed: 1     # null이면 매번 다른 시나리오
 
 
-# ── 5. 모델 ──────────────────────────────────────────────────────────────────
+# ── 6. 모델 (공용) ───────────────────────────────────────────────────────────
 model:
-  retrieve: true     # true이면 model_file 캐시 사용 (있으면 로드, 없으면 적합 후 저장)
+  retrieve: true     # operational: model_file 캐시 / hindcast cap=true: 자동 false
 
 
-# ── 6. 출력 ──────────────────────────────────────────────────────────────────
+# ── 7. 출력 (공용) ───────────────────────────────────────────────────────────
 output:
   overwrite: false
   variables:
@@ -57,7 +68,7 @@ output:
     - tmin
 
 
-# ── 7. 고급 (optional) ───────────────────────────────────────────────────────
+# ── 8. 고급 (optional) ───────────────────────────────────────────────────────
 advanced:
   max_retry_factor: 5
   n_cores:          1

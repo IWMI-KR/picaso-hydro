@@ -93,26 +93,61 @@ def _resolve_tree(node: Any, root: Dict[str, Any]) -> Any:
 
 # ── 메인 로더 ────────────────────────────────────────────────────────────────
 
+def _expand_years(spec: Any) -> List[int]:
+    """``hindcast.years`` 를 정수 리스트로 전개.
+
+    - [start, end] (정확히 2 항목, start <= end) → 연속 범위
+    - [a, b, c, ...] (3 이상) → 명시 리스트 그대로
+    """
+    if not isinstance(spec, list) or len(spec) < 2:
+        raise ValueError(
+            f"hindcast.years 는 [start, end] 또는 [y1, y2, ...] 형식: {spec!r}"
+        )
+    items = [int(x) for x in spec]
+    if len(items) == 2 and items[0] <= items[1]:
+        return list(range(items[0], items[1] + 1))
+    return items
+
+
+def _expand_seasons(spec: Any) -> List[str]:
+    """``hindcast.seasons`` 를 계절 코드 리스트로 전개."""
+    if isinstance(spec, str) and spec.lower() == "all":
+        return list(SEASON_MONTHS.keys())
+    if not isinstance(spec, list):
+        raise ValueError(
+            f"hindcast.seasons 는 'all' 또는 ['JFM', ...] 리스트: {spec!r}"
+        )
+    out = []
+    for s in spec:
+        s = str(s).upper()
+        if s not in SEASON_MONTHS:
+            raise ValueError(
+                f"지원하지 않는 계절 코드: '{s}'\n"
+                f"  사용 가능: {list(SEASON_MONTHS.keys())}"
+            )
+        out.append(s)
+    return out
+
+
 def load_config(config_file: str) -> Dict[str, Any]:
     """acidwg_py.yaml을 읽어 파싱된 설정 딕셔너리 반환.
 
     YAML 섹션
     ---------
-    paths       : station_csv, forecast_csv, obs_dir, output_dir, model_file
-    observation : syear, eyear
-    forecast    : year, season(또는 months)
-    ensemble    : n_members, random_seed
-    model       : retrieve
-    output      : overwrite, variables
-    advanced    : max_retry_factor, n_cores, validate_after  (optional)
+    paths        : station_csv, obs_dir, picaso_dir, output_root, model_file
+    observation  : syear, eyear
+    operational  : year, season(또는 months)            # 단일 — acidwg-run 기본
+    hindcast     : years, seasons, observation_eyear_cap  # 일괄 — acidwg-run --hindcast
+    ensemble     : n_members, random_seed
+    model        : retrieve
+    output       : overwrite, variables
+    advanced     : max_retry_factor, n_cores, validate_after  (optional)
 
     Returns
     -------
-    dict with keys
-        station_csv, forecast_csv, obs_dir, output_dir, model_file,
-        syear_obs, eyear_obs, forecast_year, sim_period,
-        n_ensemble, random_seed, retrieve, overwrite, variables,
-        max_retry_factor, n_cores, validate_after
+    dict — operational 키들 (forecast_year, sim_period, output_dir 등) 은
+    operational 블록에서 채우고, hindcast 블록은 ``hindcast`` 하위 딕셔너리로
+    유지. CLI 가 mode 별로 분기.
     """
     config_path = Path(config_file)
     if not config_path.exists():
@@ -131,10 +166,13 @@ def load_config(config_file: str) -> Dict[str, Any]:
 
     # ── 경로 ──────────────────────────────────────────────────────────────────
     paths = resolved.get("paths") or {}
-    _required = ["station_csv", "forecast_csv", "obs_dir", "output_dir"]
+    _required = ["station_csv", "obs_dir", "picaso_dir", "output_root"]
     for key in _required:
         if key not in paths:
-            raise ValueError(f"paths.{key} 가 설정 파일에 없음")
+            raise ValueError(
+                f"paths.{key} 가 설정 파일에 없음 "
+                f"(operational/hindcast 공용)"
+            )
 
     # ── 관측 기간 ──────────────────────────────────────────────────────────
     obs = resolved.get("observation") or {}
@@ -144,22 +182,47 @@ def load_config(config_file: str) -> Dict[str, Any]:
     if syear_obs >= eyear_obs:
         raise ValueError(f"observation.syear({syear_obs}) ≥ eyear({eyear_obs})")
 
-    # ── 예보 대상 ──────────────────────────────────────────────────────────
-    fc = resolved.get("forecast") or {}
-    forecast_year = int(fc.get("year", 2025))
+    # ── operational 블록 (단일 연도/시즌) ─────────────────────────────────
+    op = resolved.get("operational") or {}
+    if not op:
+        # 친절한 안내 — 옛 'forecast:' 키 사용 시 명시적 에러
+        if "forecast" in resolved:
+            raise ValueError(
+                "yaml 의 'forecast:' 키는 'operational:' 으로 변경되었습니다.\n"
+                "  yaml 을 다음과 같이 수정하세요:\n"
+                "    operational:\n"
+                "      year:   2024\n"
+                "      season: 'JFM'"
+            )
+        raise ValueError("operational 섹션이 없습니다 (year/season 필요)")
 
-    if "months" in fc:
-        sim_period = [int(m) for m in fc["months"]]
+    forecast_year = int(op.get("year", 2025))
+    if "months" in op:
+        sim_period = [int(m) for m in op["months"]]
         if not all(1 <= m <= 12 for m in sim_period):
-            raise ValueError(f"forecast.months 범위 오류: {sim_period}")
+            raise ValueError(f"operational.months 범위 오류: {sim_period}")
     else:
-        season = str(fc.get("season", "JJA")).upper()
+        season = str(op.get("season", "JJA")).upper()
         if season not in SEASON_MONTHS:
             raise ValueError(
                 f"지원하지 않는 계절 코드: '{season}'\n"
                 f"  사용 가능: {list(SEASON_MONTHS.keys())}"
             )
         sim_period = SEASON_MONTHS[season]
+
+    # ── hindcast 블록 (선택) ─────────────────────────────────────────────
+    hc_raw = resolved.get("hindcast")
+    if hc_raw:
+        hc_years = _expand_years(hc_raw.get("years"))
+        hc_seasons = _expand_seasons(hc_raw.get("seasons", "all"))
+        hc_eyear_cap = bool(hc_raw.get("observation_eyear_cap", True))
+        hindcast_cfg: Optional[Dict[str, Any]] = {
+            "years":   hc_years,
+            "seasons": hc_seasons,
+            "observation_eyear_cap": hc_eyear_cap,
+        }
+    else:
+        hindcast_cfg = None
 
     # ── 앙상블 ────────────────────────────────────────────────────────────
     ens = resolved.get("ensemble") or {}
@@ -185,16 +248,34 @@ def load_config(config_file: str) -> Dict[str, Any]:
     n_cores          = int(adv.get("n_cores", 1))
     validate_after   = bool(adv.get("validate_after", False))
 
+    # operational 의 단일 forecast_csv / output_dir 자동 산출
+    forecast_csv_op = (
+        Path(paths["picaso_dir"])
+        / f"{forecast_year}_{_season_label(sim_period)}_picaso.csv"
+    )
+    output_dir_op = (
+        Path(paths["output_root"])
+        / "operational" / str(forecast_year) / _season_label(sim_period)
+    )
+
     return {
+        # 경로 (공용)
         "station_csv":       paths["station_csv"],
-        "forecast_csv":      paths["forecast_csv"],
         "obs_dir":           paths["obs_dir"],
-        "output_dir":        paths["output_dir"],
+        "picaso_dir":        paths["picaso_dir"],
+        "output_root":       paths["output_root"],
         "model_file":        paths.get("model_file"),
+        # 관측 기간
         "syear_obs":         syear_obs,
         "eyear_obs":         eyear_obs,
+        # operational (단일) 자동 산출 — acidwg-run 기본 모드에서 사용
         "forecast_year":     forecast_year,
         "sim_period":        sim_period,
+        "forecast_csv":      str(forecast_csv_op),
+        "output_dir":        str(output_dir_op),
+        # hindcast (일괄) — acidwg-run --hindcast 사용
+        "hindcast":          hindcast_cfg,
+        # 공통 옵션
         "n_ensemble":        n_ensemble,
         "random_seed":       random_seed,
         "retrieve":          retrieve,
@@ -206,6 +287,14 @@ def load_config(config_file: str) -> Dict[str, Any]:
     }
 
 
+def _season_label(sim_period: List[int]) -> str:
+    """월 리스트 → 계절 코드 (예: [1,2,3] → 'JFM'). 매칭 없으면 'M{months}' 형식."""
+    for code, months in SEASON_MONTHS.items():
+        if months == sim_period:
+            return code
+    return "M" + "_".join(str(m) for m in sim_period)
+
+
 def find_config(start: Optional[Path] = None) -> Optional[Path]:
     """acidwg_py.yaml 파일을 자동 탐색합니다.
 
@@ -213,7 +302,8 @@ def find_config(start: Optional[Path] = None) -> Optional[Path]:
     ---------
     1. 환경변수 ``ACIDWG_PY_CONFIG``
     2. 현재 디렉토리 → 상위로 올라가며 ``acidwg_py.yaml``
-    3. ``$PICASO_ROOT/acidwg_py.yaml``
+    3. ``$PICASO_ROOT/1_acidwg/config/acidwg_py.yaml`` (권장 위치)
+    4. ``$PICASO_ROOT/acidwg_py.yaml`` (대안 — 루트 직속)
     """
     if env := os.environ.get("ACIDWG_PY_CONFIG"):
         p = Path(env)
@@ -226,8 +316,10 @@ def find_config(start: Optional[Path] = None) -> Optional[Path]:
             return candidate
 
     if picaso := os.environ.get("PICASO_ROOT"):
-        candidate = Path(picaso) / "acidwg_py.yaml"
-        if candidate.is_file():
-            return candidate
+        for sub in (Path("1_acidwg") / "config" / "acidwg_py.yaml",
+                    Path("acidwg_py.yaml")):
+            candidate = Path(picaso) / sub
+            if candidate.is_file():
+                return candidate
 
     return None

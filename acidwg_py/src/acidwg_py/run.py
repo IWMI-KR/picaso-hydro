@@ -490,3 +490,114 @@ def acid_run(
 
     print(f"[acidwg_py] 완료: {success}개 시나리오 → {out_path}")
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# Hindcast 일괄 실행
+# ---------------------------------------------------------------------------
+
+def acid_run_hindcast(
+    *,
+    station_csv: str,
+    obs_dir: str,
+    picaso_dir: str,
+    output_root: str,
+    syear_obs: int,
+    eyear_obs: int,
+    years: list,
+    seasons: list,
+    n_ensemble: int = 1000,
+    model_file: str = None,
+    retrieve: bool = True,
+    observation_eyear_cap: bool = True,
+    dry_run: bool = False,
+) -> list:
+    """Hindcast 일괄 실행 — (years × seasons) 모든 조합을 순회.
+
+    각 (year, season) 에 대해:
+        forecast CSV 자동 경로  : ``picaso_dir/{year}_{season}_picaso.csv``
+        출력 경로               : ``output_root/hindcast/{year}/{season}/member_*``
+        관측 종료 연도          : observation_eyear_cap=True 면 ``min(eyear_obs, year-1)``
+                                  (각 hindcast 시점 이후 관측을 모델 적합에서 제외 — leakage 방지)
+
+    forecast CSV 가 없는 (year, season) 은 자동 건너뜀.
+    cap=True 일 때 관측 기간이 부족하면 (syear_obs >= year-1) 그 조합은 건너뜀.
+
+    Parameters
+    ----------
+    years   : 정수 리스트 (config 의 _expand_years 결과)
+    seasons : 계절 코드 리스트 (config 의 _expand_seasons 결과)
+    dry_run : True 면 실제 실행 없이 처리 대상 목록만 출력
+
+    Returns
+    -------
+    list of str : 실제 실행된 출력 폴더 경로 목록
+    """
+    from acidwg_py.config import SEASON_MONTHS
+    from pathlib import Path
+
+    if observation_eyear_cap and retrieve:
+        print("  [정보] hindcast + observation_eyear_cap=true → 매 year 재적합 "
+              "(model 캐시 사용 안 함)")
+        retrieve = False
+
+    jobs: list = []
+    skipped: list = []
+    for year in years:
+        if observation_eyear_cap:
+            eyear_use = min(eyear_obs, year - 1)
+            if syear_obs >= eyear_use:
+                skipped.append((year, "ALL", f"관측 기간 부족 (syear={syear_obs} ≥ eyear_cap={eyear_use})"))
+                continue
+        else:
+            eyear_use = eyear_obs
+        for season in seasons:
+            sim_period = SEASON_MONTHS[season]
+            fc_csv = Path(picaso_dir) / f"{year}_{season}_picaso.csv"
+            if not fc_csv.is_file():
+                skipped.append((year, season, "forecast CSV 없음"))
+                continue
+            out_dir = Path(output_root) / "hindcast" / str(year)
+            jobs.append({
+                "year": year, "season": season, "sim_period": sim_period,
+                "fc_csv": str(fc_csv), "out_dir": str(out_dir),
+                "eyear_use": eyear_use,
+            })
+
+    print("=" * 62)
+    print(f"  Hindcast 일괄 실행 — {len(jobs)} 작업 (건너뜀 {len(skipped)})")
+    print("=" * 62)
+    for j in jobs:
+        print(f"  {j['year']} {j['season']}  obs[{syear_obs}~{j['eyear_use']}]  "
+              f"→ {j['out_dir']}/{j['season']}")
+    if skipped:
+        print()
+        print(f"  건너뜀:")
+        for y, s, why in skipped[:10]:
+            print(f"    {y} {s}: {why}")
+        if len(skipped) > 10:
+            print(f"    ... 외 {len(skipped) - 10}개")
+    print("=" * 62)
+    print()
+
+    if dry_run:
+        print("  [DRY-RUN] 실제 실행 안 함.")
+        return []
+
+    out_paths: list = []
+    for j in jobs:
+        out = acid_run(
+            station_csv=station_csv,
+            obs_dir=obs_dir,
+            output_dir=j["out_dir"],
+            sim_period=j["sim_period"],
+            syear_obs=syear_obs,
+            eyear_obs=j["eyear_use"],
+            forecast_csv=j["fc_csv"],
+            n_ensemble=n_ensemble,
+            model_file=model_file,
+            retrieve=retrieve,
+            forecast_year=j["year"],
+        )
+        out_paths.append(out)
+    return out_paths
