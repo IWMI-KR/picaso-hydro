@@ -14,6 +14,7 @@ from affine import Affine
 from shapely.geometry import box
 
 from util_py.gis_user import (
+    _clip_reproject_rasterize_vector,
     _parse_area_from_filename,
     clip_to_user_area,
     discover_user_areas,
@@ -156,6 +157,107 @@ def test_clip_to_user_area_missing_boundary_raises(tmp_path) -> None:
     (gis_root / "user").mkdir(parents=True)
     with pytest.raises(FileNotFoundError, match="User boundary 없음"):
         clip_to_user_area("notexist", gis_root)
+
+
+def test_clip_reproject_rasterize_vector_basic(tmp_path) -> None:
+    """polygon shapefile → UTM shp + val rasterize."""
+    # 입력 vector: 4 features 와 val 값 다양
+    polys = [
+        box(-160.0, -22.0, -159.5, -21.5),  # val=10
+        box(-159.5, -22.0, -159.0, -21.5),  # val=20
+        box(-160.0, -21.5, -159.5, -21.0),  # val=30
+        box(-159.5, -21.5, -159.0, -21.0),  # val=40
+    ]
+    vshp = tmp_path / "soil-swat.shp"
+    gpd.GeoDataFrame({"val": [10, 20, 30, 40]},
+                     geometry=polys, crs="EPSG:4326").to_file(vshp)
+
+    # boundary: 좌하단 4분면만 포함
+    bshp = tmp_path / "boundary.shp"
+    gpd.GeoDataFrame({"id": [1]},
+                     geometry=[box(-160.0, -22.0, -159.5, -21.5)],
+                     crs="EPSG:4326").to_file(bshp)
+
+    out_shp = tmp_path / "out" / "soil-swat-utm.shp"
+    out_tif = tmp_path / "out" / "soil-swat-utm.tif"
+    _clip_reproject_rasterize_vector(
+        vshp, bshp, out_shp, out_tif,
+        target_epsg=32705,    # Cook UTM
+        val_column="val", pixel_size_m=100.0, buffer_deg=0.0,
+    )
+
+    assert out_shp.is_file()
+    assert out_tif.is_file()
+
+    # shp: UTM CRS, val=10만 남음
+    g_out = gpd.read_file(out_shp)
+    assert g_out.crs.to_epsg() == 32705
+    assert set(g_out["val"].unique()) == {10}
+
+    # tif: UTM, val=10 픽셀 존재
+    with rasterio.open(out_tif) as r:
+        assert r.crs.to_epsg() == 32705
+        arr = r.read(1)
+    assert (arr == 10).any()
+    assert (arr == 0).any()  # nodata 영역
+
+
+def test_clip_reproject_rasterize_vector_missing_val_raises(tmp_path) -> None:
+    """val 컬럼 없으면 ValueError."""
+    vshp = tmp_path / "no_val.shp"
+    gpd.GeoDataFrame({"id": [1]},
+                     geometry=[box(-160.0, -22.0, -159.0, -21.0)],
+                     crs="EPSG:4326").to_file(vshp)
+    bshp = tmp_path / "b.shp"
+    gpd.GeoDataFrame({"id": [1]},
+                     geometry=[box(-160.0, -22.0, -159.0, -21.0)],
+                     crs="EPSG:4326").to_file(bshp)
+    with pytest.raises(ValueError, match="'val' 컬럼 없음"):
+        _clip_reproject_rasterize_vector(
+            vshp, bshp, tmp_path / "o.shp", tmp_path / "o.tif",
+            target_epsg=32705, val_column="val", pixel_size_m=30.0,
+        )
+
+
+def test_clip_to_user_area_uses_vector_fallback_when_soil_tif_missing(tmp_path) -> None:
+    """soil.tif 없고 soil-swat.shp 있으면 vector→UTM shp + tif 생성 + lookup/mdb 복사."""
+    gis_root = tmp_path / "gis"
+    user_base = gis_root / "user"
+    user_base.mkdir(parents=True)
+    (gis_root / "soil").mkdir()
+
+    # soil-swat.shp (val 컬럼)
+    polys = [box(-160.0, -22.0, -159.5, -21.5),
+             box(-159.5, -22.0, -159.0, -21.5)]
+    gpd.GeoDataFrame({"val": [165, 570]}, geometry=polys, crs="EPSG:4326"
+                     ).to_file(gis_root / "soil" / "soil-swat.shp")
+    # lookup + mdb (FAO Soil 명으로 — 후보 인식 검증)
+    pd.DataFrame({"val": [165, 570], "SWAT_MUID": ["A", "B"]}).to_csv(
+        gis_root / "soil" / "soil_lookup.csv", index=False)
+    (gis_root / "soil" / "SWAT2009-Global-FAO Soil.mdb").write_bytes(b"FAKE")
+
+    # boundary
+    gpd.GeoDataFrame({"id": [1]},
+                     geometry=[box(-160.0, -22.0, -159.0, -21.0)],
+                     crs="EPSG:4326",
+                     ).to_file(user_base / "boundary-area1.shp")
+
+    saved = clip_to_user_area("area1", gis_root, user_base,
+                               raster_types=["soil"], buffer_deg=0.0)
+
+    soil_dir = user_base / "area1" / "soil"
+    # raster fallback 결과
+    vshp = next(soil_dir.glob("soil-swat-epsg*.shp"))
+    vtif = next(soil_dir.glob("soil-swat-epsg*.tif"))
+    assert vshp.is_file()
+    assert vtif.is_file()
+    # lookup + mdb 복사 (raster 부재에도 실행)
+    assert (soil_dir / "soil_lookup.csv").is_file()
+    assert (soil_dir / "SWAT2009-Global-FAO Soil.mdb").is_file()
+    assert "soil_vector_shp" in saved
+    assert "soil_vector_tif" in saved
+    assert "soil_lookup" in saved
+    assert "soil_mdb" in saved
 
 
 def test_clip_skips_when_country_canonical_missing(tmp_path, capsys) -> None:
