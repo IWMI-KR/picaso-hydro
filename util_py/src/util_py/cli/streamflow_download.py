@@ -55,7 +55,7 @@ def _load_or_default(config_path: str | None) -> Config:
     cfg = Config()
     root = _picaso_root()
     cfg.project.root = str(root)
-    cfg.region.boundary_csv = str(root / "0_database" / "gis" / "boundary" / "country_boundary.csv")
+    cfg.region.boundary_csv = str(root / "0_database" / "gis" / "admin" / "country_boundary.csv")
     cfg.streamflow.obs_dir = str(root / "0_database" / "obs" / "streamflow")
     return cfg
 

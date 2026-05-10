@@ -14,7 +14,7 @@ S:/Database-INT/CMIP6/Global_Services_V2 의 글로벌 NC 파일에서
 
 country_boundary.csv 위치
 --------------------------
-  {project_root}/0_database/gis/boundary/country_boundary.csv
+  {project_root}/0_database/gis/admin/country_boundary.csv
   컬럼: OBJECTID, NAME, ISO3, ISO2, xmin, ymin, xmax, ymax
 """
 
