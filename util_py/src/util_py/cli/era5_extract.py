@@ -29,6 +29,7 @@ from pathlib import Path
 
 from util_py.config import Config, find_config, load_config
 from util_py.extract import extract_era5_to_grid
+from util_py.grid import extract_era5_grid_points
 
 
 def _picaso_root() -> Path:
@@ -57,6 +58,21 @@ def _load_or_default(config_path: str | None) -> Config:
     return cfg
 
 
+def _autogen_grid_points(grid_csv: Path, era5_dir: Path, boundary_shp: Path) -> None:
+    """grid_points-era5.csv 가 없을 때 boundary + ERA5 NC 로 자동 생성."""
+    grid_shp = grid_csv.with_suffix(".shp")
+    print(f"  [자동생성] {grid_csv.name} 미존재 → boundary 로부터 격자점 추출")
+    print(f"    boundary : {boundary_shp}")
+    print(f"    era5_nc  : {era5_dir}")
+    extract_era5_grid_points(
+        boundary_shp=str(boundary_shp),
+        era5_nc_dir=str(era5_dir),
+        output_shp=str(grid_shp),
+        output_csv=str(grid_csv),
+    )
+    print()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="ERA5 NC 파일로부터 격자점별 시간·일 기상자료 추출",
@@ -79,6 +95,9 @@ def main() -> int:
                         help="추출 시작 연도 (YAML extract.start_year 오버라이드)")
     parser.add_argument("--end-year", type=int, default=None,
                         help="추출 종료 연도 (YAML extract.end_year 오버라이드)")
+    parser.add_argument("--boundary", default=None,
+                        help="격자점 자동생성용 boundary shapefile "
+                             "(기본: $PICASO_ROOT/0_database/gis/admin/admin.shp)")
     parser.add_argument("--overwrite", action="store_true",
                         help="기존 파일 덮어쓰기")
     args = parser.parse_args()
@@ -113,6 +132,21 @@ def main() -> int:
     print(f"  시간단위 출력: {hourly_dir}")
     print(f"  일단위 출력  : {daily_dir}")
     print("=" * 62 + "\n")
+
+    # 격자점 파일 없으면 boundary 로부터 자동 생성
+    grid_path = Path(grid)
+    if not grid_path.is_file():
+        boundary = Path(args.boundary) if args.boundary else (
+            Path(cfg.project.root) / "0_database" / "gis" / "admin" / "admin.shp"
+        )
+        if not boundary.is_file():
+            parser.error(
+                f"격자점 파일이 없고 자동생성용 boundary 도 없습니다.\n"
+                f"  격자점 : {grid_path}\n"
+                f"  boundary 후보: {boundary}\n"
+                f"먼저 'util-gis-download' 로 admin.shp 를 받거나 --boundary 로 지정하세요."
+            )
+        _autogen_grid_points(grid_path, Path(era5_dir), boundary)
 
     result = extract_era5_to_grid(
         grid_csv_or_shp  = grid,
