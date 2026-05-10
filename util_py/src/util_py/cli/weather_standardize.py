@@ -57,6 +57,27 @@ def _load_or_default(config_path: str | None) -> Config:
     cfg = Config()
     root = _picaso_root()
     cfg.project.root = str(root)
+
+    # ERA5 — grid_daily/_std, grid_hourly/_std (extract 출력 → standardize 입력)
+    era5_dir = root / "0_database" / "era5"
+    cfg.weather_std.era5.raw_daily_dir  = str(era5_dir / "grid_daily")
+    cfg.weather_std.era5.raw_hourly_dir = str(era5_dir / "grid_hourly")
+    cfg.weather_std.era5.std_daily_dir  = str(era5_dir / "grid_daily_std")
+    cfg.weather_std.era5.std_hourly_dir = str(era5_dir / "grid_hourly_std")
+
+    # GSOD — daily/_std
+    gsod_dir = root / "0_database" / "gsod"
+    cfg.weather_std.gsod.raw_dir = str(gsod_dir / "daily")
+    cfg.weather_std.gsod.std_dir = str(gsod_dir / "daily_std")
+
+    # local 관측 — obs/weather/{daily,hourly,daily_std,hourly_std} + mapping.yaml
+    obs_dir = root / "0_database" / "obs" / "weather"
+    cfg.weather_std.local.raw_daily_dir  = str(obs_dir / "daily")
+    cfg.weather_std.local.raw_hourly_dir = str(obs_dir / "hourly")
+    cfg.weather_std.local.std_daily_dir  = str(obs_dir / "daily_std")
+    cfg.weather_std.local.std_hourly_dir = str(obs_dir / "hourly_std")
+    cfg.weather_std.local.mapping_file   = str(obs_dir / "mapping.yaml")
+
     return cfg
 
 
