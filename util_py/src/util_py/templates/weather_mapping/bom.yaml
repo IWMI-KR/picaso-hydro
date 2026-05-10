@@ -1,0 +1,31 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  bom.yaml — 호주 Bureau of Meteorology (BoM) 일자료 매핑
+#
+#  BoM Daily Climate Data Online (bom.gov.au/climate/data/) 표준 컬럼:
+#    Date, Minimum temperature (Degree C), Maximum temperature (Degree C),
+#    Rainfall amount (millimetres), Solar exposure (MJ/m^2),
+#    9am wind speed (km/h), 3pm wind speed (km/h),
+#    9am relative humidity (%), 3pm relative humidity (%), ...
+#  (일평균 풍속·습도가 없으면 9am/3pm 평균을 별도로 계산해 사용)
+# ══════════════════════════════════════════════════════════════════════════════
+
+resolution: daily
+
+columns:
+  date:    "Date"
+  pcp_mm:  "Rainfall amount (millimetres)"
+  tmax_c:  "Maximum temperature (Degree C)"
+  tmin_c:  "Minimum temperature (Degree C)"
+  # tavg 는 BoM 직접 제공 안함 → magnus_rh 호출 시 (tmax+tmin)/2 자동
+  ws10_ms: "9am wind speed (km/h)"        # 또는 일평균 wind 컬럼
+  hmd_pct: "9am relative humidity (%)"
+  slr_mjm2: "Solar exposure (MJ/m^2)"
+
+units:
+  pcp:   mm
+  temp:  C
+  wind:  kmh                              # ★ km/h → m/s 자동 환산
+
+wind_height_m: 10.0
+date_format:   "%Y-%m-%d"
+missing_value: null                       # BoM 결측: 빈 셀

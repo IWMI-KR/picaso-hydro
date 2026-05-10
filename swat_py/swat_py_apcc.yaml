@@ -1,0 +1,205 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  swat_py 설정 파일 — PICASO-Hydro (APCC 계절예측 수문모델 연계)
+#  Python SWAT/SWAT-Plus 자동화 패키지 — 유역통합관리연구원(IWMI)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  [ 경로 참조 문법 ]
+#    $(섹션.키) 형태로 이미 정의된 값을 참조합니다.
+#
+#  [ 반드시 수정할 항목 ]
+#    ★ 표시 항목은 실제 값으로 수정해야 합니다.
+#
+#  [ 폴더 구조 참조 ]
+#    PICASO-Hydro/
+#      0_database/obs/weather/      ← 관측 기상 CSV
+#      0_database/obs/streamflow/   ← 관측 유량·수질 CSV
+#      0_database/cmip6/downscaled/ ← 기후변화 기상 자료
+#      1_acidwg/hindcast/{year}/JFM/   ← hindcast 앙상블 기상 (acidwg_py 출력)
+#      1_acidwg/operational/{year}/JFM/ ← 운용 앙상블 기상
+#      2_qswat/Scenarios/Default/TxtInOut/ ← QSWAT TxtInOut (GIS 기반)
+#      3_swatplus/base_txtinout/    ← 보정 완료 기준 TxtInOut (앙상블 기반)
+#      3_swatplus/calibration/      ← 보정 작업 폴더
+#      3_swatplus/cchange/          ← 기후변화 시나리오 분석 결과
+#      3_swatplus/forecast/hindcast/{year}/  ← hindcast SWAT 결과
+#      3_swatplus/forecast/operational/{year}/ ← 운용 예보 SWAT 결과
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ── 1. 프로젝트 디렉토리 ─────────────────────────────────────────────────────
+project:
+  root:     "I:/2025-APCC_Cook/PICASO-Hydro"    # ★ 프로젝트 루트 폴더
+  database: "$(project.root)/0_database"
+
+  input:
+    observed_weather: "$(project.database)/obs/weather"        # 관측 기상 CSV
+    cc_weather:       "$(project.database)/cmip6/downscaled"   # 기후변화 시나리오 기상
+    # forecast_weather: acidwg_py 앙상블 출력 경로 (ensemble_forecast.ensemble_dir 사용)
+    forecast_weather: "$(project.root)/1_acidwg/operational/2026/JFM"  # ★ 계절 예보 기상
+
+  output:
+    swat_run:       "$(project.root)/3_swatplus/base_txtinout"  # 앙상블 기준 TxtInOut
+    calibration:    "$(project.root)/3_swatplus/calibration"
+    climate_change: "$(project.root)/3_swatplus/cchange"
+    forecast:       "$(project.root)/3_swatplus/forecast/operational/2026"  # ★ 예보 결과 폴더
+    database:       "$(project.database)/obs/streamflow"        # 관측 유량·수질 DB
+
+
+# ── 2. 모델 설정 ─────────────────────────────────────────────────────────────
+model:
+  type:          "swat_plus"      # "swat_plus" 또는 "swat2012"
+  executable:    "SWAT-Plus.exe"  # ★ TxtInOut 내 실행 파일명
+  warm_up_years: 3
+  output_types:
+    - sd   # channel_sd_day.txt (SWAT-Plus)
+
+
+# ── 3. 기상 관측소 ───────────────────────────────────────────────────────────
+#  stations.csv 위치: project.input.observed_weather 폴더
+#  컬럼: Lon, Lat, Elev, ID, Ename, SYear
+# ─────────────────────────────────────────────────────────────────────────────
+stations:
+  metadata_file: "stations.csv"   # ★ 관측소 메타정보 CSV (1_acidwg/config/stations.csv와 공유)
+  ids:
+    - asos235                     # ★ 관측소 ID 목록 (Station-Info.csv의 ID 컬럼)
+
+
+# ── 4. 모니터링 지점 ─────────────────────────────────────────────────────────
+outlets:
+  flow:
+    ids:   [1]        # ★ GIS 하천 ID (channel_sd_day.txt의 gis_id)
+    names: [outlet]   # ★ 지점명
+
+  water_quality:
+    ids:   [1]
+    names: [outlet]
+
+
+# ── 5. 관측 자료 ─────────────────────────────────────────────────────────────
+#  파일 위치: project.output.database 폴더 기준
+#  flow CSV 컬럼: year, mon, day, inflow_cms
+#  water_quality CSV 컬럼: date(YYYY-MM-DD), ss_mgl, tn_mgl, tp_mgl
+# ─────────────────────────────────────────────────────────────────────────────
+observed:
+  flow:
+    file: "obs_flow.csv"      # ★
+  water_quality:
+    file: "obs_wq.csv"        # ★
+
+
+# ── 6. 시뮬레이션 기간 및 분석 변수 ─────────────────────────────────────────
+simulation:
+  output_types:
+    - flow    # 유량 (cms)
+    # - sedc  # 부유사 농도 — 수질 분석 시 주석 해제
+    # - tnc
+    # - tpc
+
+  calibration:
+    start_year: 2017    # ★
+    end_year:   2022    # ★
+
+  validation:
+    start_year: 2023    # ★
+    end_year:   2024    # ★
+
+  baseline:
+    start_year: 1981
+    end_year:   2010
+
+
+# ── 7. 기후변화 시나리오 분석 ────────────────────────────────────────────────
+#  기상 자료 폴더 구조 (cc_weather 기준):
+#    0_database/cmip6/downscaled/{모델명}/{station_id}_{시나리오}*.csv
+# ─────────────────────────────────────────────────────────────────────────────
+climate_change:
+  enabled: true
+
+  models:
+    - CanESM5
+    - ACCESS-CM2
+    - INM-CM4-8
+    - UKESM1-0-LL
+    - MPI-ESM1-2-HR
+    - IPSL-CM6A-LR
+    - ACCESS-ESM1-5
+    - CNRM-CM6-1
+    - CNRM-ESM2-1
+    - GFDL-ESM4
+    - INM-CM5-0
+    - MIROC6
+    - MIROC-ES2L
+    - MPI-ESM1-2-LR
+    - NorESM2-LM
+    - KACE-1-0-G
+    - MRI-ESM2-0
+    - EC-Earth3
+
+  scenarios:
+    - historical
+    - ssp126
+    - ssp245
+    - ssp370
+    - ssp585
+
+  historical_period:
+    start_year: 1981
+    end_year:   2010
+
+  future_periods:
+    - start_year: 2011
+      end_year:   2040
+      label:      "near_future"
+    - start_year: 2041
+      end_year:   2070
+      label:      "mid_future"
+    - start_year: 2071
+      end_year:   2100
+      label:      "far_future"
+
+
+# ── 8. 앙상블 확률예보 (acidwg_py 연계) ──────────────────────────────────────
+#  acidwg_py 출력 폴더 구조:
+#    ensemble_dir/
+#      member_0001/
+#        {station_id}.csv  (mon, day, prcp, tmax, tmin)
+#      member_0002/
+#      ...
+#
+#  ★ ensemble_dir 는 forecast_year와 season에 맞게 변경:
+#    Hindcast : $(project.root)/1_acidwg/hindcast/2013/JFM
+#    Operational: $(project.root)/1_acidwg/operational/2026/JFM
+# ─────────────────────────────────────────────────────────────────────────────
+ensemble_forecast:
+  enabled: false    # ★ true로 변경 후 실행
+
+  ensemble_dir: "$(project.root)/1_acidwg/operational/2026/JFM"  # ★
+
+  n_members: 1000
+
+  parallel:
+    enabled:   true
+    n_workers: 8    # CPU 코어 수 - 1 권장
+
+  quantiles:
+    - 0.05
+    - 0.10
+    - 0.25
+    - 0.50
+    - 0.75
+    - 0.90
+    - 0.95
+
+  forecast_period:
+    start_year: 2026    # ★
+    end_year:   2026    # ★
+
+
+# ── 9. 계절 예보 (단일 멤버) ─────────────────────────────────────────────────
+seasonal_forecast:
+  enabled: false    # ★ true로 변경 후 실행
+
+  forecast_period:
+    start_year: 2026    # ★
+    end_year:   2026    # ★
+
+  lookback_years: 3

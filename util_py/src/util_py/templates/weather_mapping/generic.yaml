@@ -1,0 +1,29 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  generic.yaml — 영문 표준 컬럼명을 사용하는 일반 CSV 매핑
+#  사용법:
+#    1. 본 파일을 0_database/weather/local/mapping.yaml 로 복사
+#    2. 자료 컬럼명/단위와 다르면 수정
+#    3. util-weather-standardize --source local 실행
+# ══════════════════════════════════════════════════════════════════════════════
+
+resolution: daily            # daily | hourly
+
+columns:                      # raw column → standard column
+  date:    date               # YYYY-MM-DD
+  pcp_mm:  precip
+  tmax_c:  tmax
+  tmin_c:  tmin
+  tavg_c:  tavg
+  tdew_c:  tdew
+  hmd_pct: rh                 # 직접 제공 시. 없으면 magnus 자동 산출
+  ws10_ms: wind
+  slr_mjm2: solar              # daily MJ/m²/day. hourly 면 slr_wm2 사용
+
+units:
+  pcp:   mm                   # mm | inch
+  temp:  C                    # C  | F
+  wind:  ms                   # ms | kmh | knots | mph
+
+wind_height_m:   10.0         # 풍속 측정 고도 (m). FAO-56 → 2 m 환산용
+date_format:     "%Y-%m-%d"
+missing_value:   -999          # raw 결측 sentinel (없으면 null)

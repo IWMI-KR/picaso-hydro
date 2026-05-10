@@ -1,0 +1,7 @@
+cdsapi>=0.7.0
+netCDF4>=1.6.0
+pandas>=2.0
+numpy>=1.24
+geopandas>=0.14
+shapely>=2.0
+rasterio>=1.3

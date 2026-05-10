@@ -1,0 +1,251 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  util_py 설정 파일 — PICASO-Hydro 기본값
+#  ERA5 다운로드/추출 + CMIP6 영역 추출 + GSOD 일자료 다운로드
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  [ 참조 문법 ]
+#    $(섹션.키)             — 같은 YAML 안의 다른 값을 참조
+#    ${env:VAR}             — 환경변수 사용 (없으면 빈 문자열)
+#    ${env:VAR:default}     — 환경변수 + 기본값
+#
+#  [ 우선순위 ]
+#    CLI 인자 > YAML 값 > 환경변수 > 코드상의 smart default
+#
+#  [ 자동 탐색 ]
+#    환경변수 UTIL_PY_CONFIG 또는 cwd 위로 올라가며 util_py.yaml 검색.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ── 1. 프로젝트 루트 ─────────────────────────────────────────────────────────
+project:
+  root: "${env:PICASO_ROOT:I:/2025-APCC_Cook/PICASO-Hydro}"
+
+
+# ── 2. 영역 / 시간대 ─────────────────────────────────────────────────────────
+#  boundary_csv 컬럼: OBJECTID, NAME, ISO3, ISO2, xmin, ymin, xmax, ymax
+#  국가 admin 정보와 일치하므로 gis/admin/ 폴더에 위치.
+region:
+  boundary_csv: "$(project.root)/0_database/gis/admin/country_boundary.csv"
+  utc_offset:   -10           # 쿡 아일랜드 표준시 (CIST = UTC−10).  한국=+9, 인도=+5
+  buffer_deg:   0.25          # CDS 영역 버퍼 (도)
+
+
+# ── 3. ERA5 다운로드 ─────────────────────────────────────────────────────────
+era5:
+  output_dir:  "$(project.root)/0_database/era5/nc_hourly"
+  start_year:  2022
+  end_year:    null            # null → 현재 연도까지 (현재 연도는 전월까지)
+
+  # 빈 목록이면 전체 8개 (prcp, tavg, tmax, tmin, tdew, rsds, u10m, v10m)
+  variables: []
+
+  # CDS API 인증 (생략 시 ~/.cdsapirc 또는 환경변수 CDSAPI_URL/CDSAPI_KEY 사용)
+  cds:
+    url: null
+    key: null
+
+
+# ── 4-2. 표준화된 기상자료 (Option 2: raw 보존 + 표준 별도) ─────────────────
+#  SWAT 표준 컬럼 (daily): date, pcp_mm, tmax_c, tmin_c, tavg_c, tdew_c,
+#                          hmd_pct, slr_mjm2, ws10_ms, ws2_ms, source
+#  표준 컬럼 (hourly):     datetime, pcp_mm, tavg_c, tdew_c, hmd_pct,
+#                          slr_wm2, ws10_ms, ws2_ms, source
+#  - hmd_pct: Magnus 식 (FAO-56) — tavg/tdew 로부터 산출
+#  - ws2_ms : FAO-56 로그 풍속 프로파일 (z=10m → factor ≈ 0.748)
+#  - GSOD slr: 데이터 없음 → NaN (사용자가 ERA5 등으로 보충)
+weather_std:
+  era5:
+    raw_daily_dir:  "$(project.root)/0_database/era5/grid_daily"
+    raw_hourly_dir: "$(project.root)/0_database/era5/grid_hourly"
+    std_daily_dir:  "$(project.root)/0_database/era5/grid_daily_std"
+    std_hourly_dir: "$(project.root)/0_database/era5/grid_hourly_std"
+    wind_height_m:  10.0
+  gsod:
+    raw_dir:        "$(project.root)/0_database/gsod/daily"
+    std_dir:        "$(project.root)/0_database/gsod/daily_std"
+    wind_height_m:  10.0
+  local:
+    raw_daily_dir:  "$(project.root)/0_database/weather/local/raw_daily"
+    raw_hourly_dir: "$(project.root)/0_database/weather/local/raw_hourly"
+    std_daily_dir:  "$(project.root)/0_database/weather/local/std_daily"
+    std_hourly_dir: "$(project.root)/0_database/weather/local/std_hourly"
+    mapping_file:   "$(project.root)/0_database/weather/local/mapping.yaml"
+    wind_height_m:  10.0
+
+
+# ── 4-3. ERA5 vs 관측 산점 검증 (analysis 출력) ─────────────────────────────
+weather_validation:
+  output_base: "$(project.root)/0_database/analysis"   # era5_vs_{source}/ 가 하위 생성
+  variables:                                            # 비교 변수 (기본 SWAT 7개)
+    - pcp_mm
+    - tmax_c
+    - tmin_c
+    - tavg_c
+    - tdew_c
+    - hmd_pct
+    - ws10_ms
+  radius_km:        10.0       # 매칭 반경(km). 이내 station 모두 채택, 없으면 nearest 1개
+  show_regression:  false      # true 면 그래프에 회귀선 추가
+  write_per_variable: true     # 변수별 단일 패널 PNG (plots/{var}/)
+  write_combined:     true     # pair 별 다변수 통합 PNG (plots/combined/)
+  combined_ncols:     4        # combined plot 의 subplot 열 수
+
+
+# ── 4. 격자점 추출 (NC → hourly/daily CSV) ──────────────────────────────────
+#  grid_file 은 extract_era5_grid_points() 가 생성한 격자점 CSV.
+#  gsod 의 station-gsod.csv 와 일관되게 era5/ 폴더에 통합 보관.
+extract:
+  grid_file:  "$(project.root)/0_database/era5/grid_points-era5.csv"
+  hourly_dir: "$(project.root)/0_database/era5/grid_hourly"
+  daily_dir:  "$(project.root)/0_database/era5/grid_daily"
+  start_year: null             # null → 사용 가능한 첫 연도
+  end_year:   null             # null → 사용 가능한 마지막 연도
+
+
+# ── 5. CMIP6 영역 추출 ───────────────────────────────────────────────────────
+cmip6:
+  source_dir: "S:/Database-INT/CMIP6/Global_Services_V2"
+  output_dir: "$(project.root)/0_database/cmip6/regional"
+  variables:  null             # null → 디렉토리 내 모든 NC 파일
+
+
+# ── 6. 격자 ──────────────────────────────────────────────────────────────────
+grid:
+  era5_resolution: 0.25        # ERA5 격자 해상도 (도)
+
+
+# ── 7. NOAA GSOD 일자료 다운로드 ─────────────────────────────────────────────
+#  isd-history.csv 의 CTRY 필드는 FIPS 10-4 코드 사용 (ISO2 와 다름).
+#  ISO2 → FIPS 매핑 테이블이 gsod 모듈에 내장되어 있고,
+#  bbox 검증을 함께 수행해 외부 영토 관측소를 제외함.
+# ─────────────────────────────────────────────────────────────────────────────
+gsod:
+  obs_dir:     "$(project.root)/0_database/gsod/daily"           # 관측소별 통합 일자료 CSV
+  station_csv: "$(project.root)/0_database/gsod/station-gsod.csv"  # 다운로드된 관측소 메타 (CSV)
+  station_shp: "$(gis.root)/gsod/station-gsod.shp"                 # 관측소 위치 shapefile (GIS)
+  archive_dir: "I:/2025-APCC_Cook/Database/GSOD/archive"          # 로컬 .tar.gz (선택, 빠름)
+
+  start_year: 1929              # NOAA archive 시작 연도
+  end_year:   null              # null → 현재 연도
+
+  # ISO2 또는 FIPS 코드 직접 지정 (생략 시 boundary_csv 의 ISO2 사용)
+  country_code: null
+  use_bbox_filter: true         # 국가 코드 + bbox 교집합으로 제한
+
+  # NOAA URL (기본값. 변경 가능)
+  isd_history_url: "https://www.ncei.noaa.gov/pub/data/noaa/isd-history.csv"
+  gsod_access_url: "https://www.ncei.noaa.gov/data/global-summary-of-the-day/access"
+
+
+# ── 8. GIS 자료 관리 ─────────────────────────────────────────────────────────
+#  폴더 컨벤션 (theme/type 우선, CRS 는 메타데이터)
+#    {gis.root}/{data_type}/{data_type}.{ext}                 ← canonical (default_epsg)
+#    {gis.root}/{data_type}/{data_type}-epsg{N}.{ext}         ← 재투영 사본 (auto-generated)
+#
+#  CRS 의 단일 진실 원천은 파일 메타데이터(.prj, GeoTIFF tag).
+#  파일명 suffix 는 사람이 즉시 알아보기 위한 보조 표시.
+#
+#  표준 데이터 타입: boundary, dem, landuse, soil, era5 (격자점)
+#  새 타입은 폴더만 추가하면 헬퍼 함수가 자동 인식.
+# ─────────────────────────────────────────────────────────────────────────────
+gis:
+  root:         "$(project.root)/0_database/gis"
+  default_epsg: 4326             # canonical 자료 좌표계 (수집 원본 기본값)
+  # SWAT 워크플로우에서 사용할 평면 좌표계. null 이면 boundary bbox 중심에서 자동 산출.
+  swat_epsg:    null             # 예: Cook Islands → 32704 (자동), 한국 → 32652
+  # raster 클립 시 boundary 주변 버퍼 (도). SWAT 변두리 셀 + 흐름방향 안전 여유.
+  # 30m DEM 기준 0.05° ≈ 5.5 km ≈ 180 픽셀.
+  swat_buffer_deg: 0.05
+
+
+# ── 8-2. 사용자 정의 SWAT 영역 (Stage 2) ─────────────────────────────────────
+#  Stage 1 (gis_download) 으로 받은 국가 전체 자료를, 사용자가 지정한
+#  특정 유역(예: 라로통가 섬)으로 클립 + UTM 재투영하여 SWAT-ready 자료 생성.
+#
+#  사용 패턴
+#    1. 사용자가 ``gis/user/boundary-{area}.shp`` 파일을 직접 배치
+#       (예: boundary-rarotonga.shp)
+#    2. ``util-gis-clip-to-user`` 실행 →
+#       gis/user/{area}/{type}/{type}.tif (클립) +
+#       gis/user/{area}/{type}/{type}-epsg{N}.tif (UTM)
+#    3. 한 국가에 여러 area 가능 (boundary-rarotonga.shp + boundary-aitutaki.shp)
+# ─────────────────────────────────────────────────────────────────────────────
+gis_user:
+  base_dir:         "$(gis.root)/user"               # 사용자 area 루트
+  filename_pattern: "boundary-{area}.shp"            # area 명을 파일명에서 추출
+  raster_types:     ["dem", "landuse", "soil"]       # 클립 대상 (canonical 있는 것)
+  copy_lookups:     true                             # landuse/soil lookup CSV 도 복사
+  copy_mdb:         true                             # SWAT mdb 도 복사 (영역 무관 참조)
+  swat_epsg:        null                             # null → area boundary 로 자동 산출
+  swat_buffer_deg:  0.05                             # 버퍼 (도)
+
+
+# ── 9. 글로벌 공개 GIS 자료 다운로드 (SWAT 입력 준비용) ─────────────────────
+#  모두 무료·무인증 공개 소스. 각 함수는 boundary_csv 의 ISO3/bbox 자동 사용.
+#  출력 파일은 모두 ``{gis.root}/{type}/`` 컨벤션으로 저장.
+# ─────────────────────────────────────────────────────────────────────────────
+gis_download:
+  # ── ADMIN: GADM v4.1 (~1:50k 행정구역) ──
+  gadm:
+    url_template: "https://geodata.ucdavis.edu/gadm/gadm4.1/shp/gadm41_{iso3}_shp.zip"
+    level:        0           # 0=국가, 1=주, 2=시도, ... (국가별 최대 깊이 다름)
+
+  # ── BASIN: HydroSHEDS HydroBASINS lev12 (~10 km² 단위) ──
+  hydrobasins:
+    url_template: "https://data.hydrosheds.org/file/HydroBASINS/standard/hybas_{region}_lev{level}_v1c.zip"
+    region:       null        # null → bbox 로 자동 (au/as/eu/na/sa/af/ar)
+    level:        12
+
+  # ── RIVER: HydroSHEDS HydroRIVERS v10 ──
+  hydrorivers:
+    url_template: "https://data.hydrosheds.org/file/HydroRIVERS/HydroRIVERS_v10_{region}_shp.zip"
+    region:       null
+
+  # ── DEM: Copernicus GLO-30 (AWS S3, 1°×1° tile) ──
+  dem:
+    url_template: "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_{lat}_00_{lon}_00_DEM/Copernicus_DSM_COG_10_{lat}_00_{lon}_00_DEM.tif"
+
+  # ── SOIL: ISRIC SoilGrids 250m (OGC WCS) ──
+  soilgrids:
+    wcs_url:    "https://maps.isric.org/mapserv"
+    properties: ["sand", "silt", "clay"]   # SWAT 텍스처 핵심 3개 (bdod, soc 등 추가 가능)
+    depth:      "0-5cm"                     # 표토. 5-15cm, 15-30cm 등 가능
+
+  # ── SOIL (SWAT 권장): FAO DSMW + SWAT2009 속성 DB ──
+  #   FAO Digital Soil Map of the World (DSMW) 기반 글로벌 토양 raster
+  #   + Texas A&M SWAT 그룹의 SWAT2009-Global-V1.0.mdb 속성 DB.
+  #   raster 픽셀값 → MUID → SOL_BD/AWC/K/USLE_K/SOL_CBN 등 매핑.
+  #   ★ HWSD (Harmonized World Soil Database) 는 다른 분류체계로 SWAT2009 mdb 와
+  #     호환되지 않아 본 함수에서 제외함.
+  #   boundary_csv 가 있으면 자동으로 클립 → 유효 픽셀 0개면 canonical 저장 안 함.
+  swat_soil:
+    source:    "local"                          # local | url
+    local_dir: "S:/Database-INT/GISDB/Soils"    # 사내 SWAT GISDB 위치
+
+  # ── LANDUSE: ESA WorldCover 2021 v200 (AWS S3, 3°×3° tile) ──
+  worldcover:
+    url_template: "https://esa-worldcover.s3.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{tile}_Map.tif"
+    year:         2021
+
+
+# ── 10. 관측 유량 자료 다운로드 (SWAT 검증용) ───────────────────────────────
+#  CARAVAN  : 글로벌 6,800 유역 일자료 (CAMELS 통합) — Zenodo
+#  USGS NWIS: 미국 전역 일·시간 단위 — REST API, 무인증
+#
+#  GRDC(WMO 9,500 관측소)는 수기 신청 필수로 자동화 미지원. 도서국·소수국가는
+#  국가 수문기관 직접 연락 필요.
+# ─────────────────────────────────────────────────────────────────────────────
+streamflow:
+  obs_dir: "$(project.root)/0_database/obs/streamflow"   # 다운로드 출력 폴더
+
+  caravan:
+    zenodo_record_id: "7944025"               # v1.4 (2023). 새 버전 나오면 갱신
+    base_url:         "https://zenodo.org/records/{record_id}/files"
+    # 빈 목록이면 bbox 가 교차하는 모든 sub-dataset 자동 선택
+    sub_datasets:     []
+
+  usgs:
+    nwis_url:  "https://waterservices.usgs.gov/nwis/dv/"
+    parameter: "00060"                        # 00060 = 유량 (cfs), 00065 = 수위 (ft)
+    start_date: "1990-01-01"
+    end_date:   null                          # null → 오늘

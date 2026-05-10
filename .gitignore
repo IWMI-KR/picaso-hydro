@@ -1,0 +1,56 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+MANIFEST
+
+# ── Virtual environments ────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Editable install metadata ───────────────────────────────────────────────
+*.pth
+
+# ── Test artifacts ──────────────────────────────────────────────────────────
+.pytest_cache/
+pytest-cache-files-*/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+test_reports/
+
+# ── Type checkers ───────────────────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# ── IDE / OS ────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Local user data (must NOT be committed) ─────────────────────────────────
+*.cdsapirc
+*.pem
+*.key
+secrets.yaml
+.env
+.env.local
+
+# ── Generated / one-shot scripts ────────────────────────────────────────────
+_*.py        # 일회성 _build_*.py, _create_*.py 등 (commit 제외)

@@ -1,0 +1,278 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  swat_py 설정 파일  (swat_py.yaml)
+#  Python SWAT/SWAT-Plus 자동화 패키지 — 유역통합관리연구원(IWMI)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  [ 경로 참조 문법 ]
+#    $(섹션.키) 형태로 이미 정의된 값을 참조합니다.
+#    예) $(project.root)  →  project 섹션의 root 값으로 자동 치환
+#    참조 체인도 지원합니다: $(project.input.observed) → $(project.database)/Observed
+#
+#  [ 필수 수정 항목 ]
+#    ★ 표시가 된 항목은 반드시 실제 경로/값으로 수정해야 합니다.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ── 1. 프로젝트 디렉토리 ─────────────────────────────────────────────────────
+#  폴더 구조 예시:
+#    project.root/
+#      ├── Database/           ← project.database
+#      │   ├── Observed/       ← project.input.observed_weather
+#      │   ├── ClimateChange/  ← project.input.cc_weather
+#      │   ├── Forecast/       ← project.input.forecast_weather
+#      │   └── SWAT/           ← project.output.database
+#      ├── swat_run/TxtInOut/  ← project.output.swat_run
+#      ├── Results/
+#      │   ├── Calibration/    ← project.output.calibration
+#      │   ├── ClimateChange/  ← project.output.climate_change
+#      │   └── Forecast/       ← project.output.forecast
+# ─────────────────────────────────────────────────────────────────────────────
+project:
+  root: "C:/Projects/MyWatershed"           # ★ 프로젝트 루트 폴더
+
+  database: "$(project.root)/Database"      # 데이터베이스 루트 폴더
+
+  # 입력 자료 폴더 (기상 CSV, 관측소 정보 등)
+  input:
+    observed_weather:  "$(project.database)/Observed"        # 실측 기상 자료
+    cc_weather:        "$(project.database)/ClimateChange"   # 기후변화 시나리오 기상 자료
+    forecast_weather:  "$(project.database)/Forecast"        # 예보 기상 자료 (acidwg_py 출력)
+
+  # SWAT 실행 및 결과 저장 폴더
+  output:
+    swat_run:       "$(project.root)/swat_run/TxtInOut"  # SWAT 입출력 폴더 (TxtInOut)
+    calibration:    "$(project.root)/Results/Calibration"
+    climate_change: "$(project.root)/Results/ClimateChange"
+    forecast:       "$(project.root)/Results/Forecast"
+    database:       "$(project.database)/SWAT"           # SWAT 출력 데이터베이스
+
+
+# ── 2. 모델 설정 ─────────────────────────────────────────────────────────────
+model:
+  # 모델 종류: "swat_plus" (권장) 또는 "swat2012"
+  type: "swat_plus"
+
+  # 실행 파일 이름 (swat_run 폴더 안에 위치해야 합니다)
+  # SWAT-Plus: "SWAT-Plus.exe"  /  SWAT 2012: "SWAT2020.exe"
+  executable: "SWAT-Plus.exe"
+
+  # 워밍업 기간 (연수) — 모델 초기화를 위해 출력에서 제외
+  # 권장: 최소 2~3년. 0이면 시뮬레이션 시작일부터 출력
+  warm_up_years: 3
+
+  # 출력 파일 종류 (분석에 사용할 채널 출력)
+  #   SWAT-Plus:  sd  → channel_sd_day.txt  (sediment + nutrients)
+  #               wb  → basin_wb_day.txt    (물수지)
+  #   SWAT 2012:  rch → output.rch
+  #               sub → output.sub
+  output_types:
+    - sd
+
+
+# ── 3. 기상 관측소 설정 ──────────────────────────────────────────────────────
+#  메타정보 CSV 형식 (project.input.observed_weather 폴더 기준):
+#    ID,Lat,Lon,Elev
+#    asos203,37.23,-127.05,45
+#    asos232,37.25,-127.08,52
+# ─────────────────────────────────────────────────────────────────────────────
+stations:
+  metadata_file: "stations.csv"   # ★ 관측소 메타정보 CSV 파일명
+
+  # ★ 사용할 관측소 ID 목록 (CSV의 ID 열과 일치해야 함)
+  ids:
+    - asos203
+    - asos232
+
+
+# ── 4. 모니터링 지점 설정 ────────────────────────────────────────────────────
+#  GIS 하천 ID (SWAT 출력 파일의 gis_id 또는 RCH 번호와 일치해야 함)
+# ─────────────────────────────────────────────────────────────────────────────
+outlets:
+  # 유량 모니터링 지점
+  flow:
+    ids:   [23]          # ★ GIS 하천 ID 목록
+    names: [Outlet_A]    # ★ 지점 이름 (파일명·그래프 제목에 사용)
+
+  # 수질 모니터링 지점 (유량 지점과 다를 경우 별도 지정)
+  water_quality:
+    ids:   [23]
+    names: [Outlet_A]
+
+
+# ── 5. 관측 자료 파일 ────────────────────────────────────────────────────────
+#  파일 위치: project.output.database 폴더 기준
+# ─────────────────────────────────────────────────────────────────────────────
+observed:
+  # 유량 관측 파일
+  #   필수 열: year(정수), mon(정수), day(정수), inflow_cms(실수)
+  #   또는:    date(YYYY-MM-DD 형식), inflow_cms(실수)
+  flow:
+    file: "obs_flow.csv"    # ★
+
+  # 수질 관측 파일
+  #   필수 열: date(YYYY-MM-DD), ss_mgl, tn_mgl, tp_mgl
+  water_quality:
+    file: "obs_wq.csv"      # ★
+
+
+# ── 6. 시뮬레이션 기간 및 분석 변수 ─────────────────────────────────────────
+#  보정·검증·기준 기간을 정의합니다.
+#  분석 변수(output_types)는 각 기간에 공통으로 적용됩니다.
+# ─────────────────────────────────────────────────────────────────────────────
+simulation:
+  # 분석할 출력 변수 목록
+  #   flow  : 유량 (cms)         — 유량 관측소 기준
+  #   flowd : 유량 (mm/day)      — 유역 면적으로 나눈 값
+  #   sedc  : 부유사 농도 (mg/L)
+  #   tnc   : 총질소 농도 (mg/L)
+  #   tpc   : 총인 농도 (mg/L)
+  #   sed   : 부유사 부하 (ton/day)  — SWAT 2012 전용
+  #   tn    : 총질소 부하 (kg/day)   — SWAT 2012 전용
+  #   tp    : 총인 부하 (kg/day)     — SWAT 2012 전용
+  output_types:
+    - flow
+    - sedc
+    - tnc
+    - tpc
+
+  # 보정 기간 (Calibration)
+  calibration:
+    start_year: 2017    # ★
+    end_year:   2018    # ★
+
+  # 검증 기간 (Validation)
+  validation:
+    start_year: 2019    # ★
+    end_year:   2020    # ★
+
+  # 역사 기준 기간 (Historical baseline)
+  baseline:
+    start_year: 1981
+    end_year:   2010
+
+
+# ── 7. 기후변화 시나리오 분석 ────────────────────────────────────────────────
+#  GCM 앙상블로 미래 유출량 변화를 분석합니다.
+#  기상 자료 폴더 구조:
+#    project.input.cc_weather/
+#      ├── CanESM5/
+#      │   ├── *asos203*historical*.csv
+#      │   ├── *asos203*ssp126*.csv
+#      │   └── ...
+#      └── ACCESS-CM2/
+#          └── ...
+# ─────────────────────────────────────────────────────────────────────────────
+climate_change:
+  enabled: true   # true: 기후변화 분석 수행  /  false: 건너뜀
+
+  # CMIP6 GCM 모델 목록 (사용 가능한 자료가 있는 모델만 포함)
+  models:
+    - CanESM5
+    - ACCESS-CM2
+    - INM-CM4-8
+    - UKESM1-0-LL
+    - MPI-ESM1-2-HR
+    - IPSL-CM6A-LR
+    - ACCESS-ESM1-5
+    - CNRM-CM6-1
+    - CNRM-ESM2-1
+    - GFDL-ESM4
+    - INM-CM5-0
+    - MIROC6
+    - MIROC-ES2L
+    - MPI-ESM1-2-LR
+    - NorESM2-LM
+    - KACE-1-0-G
+    - MRI-ESM2-0
+    - EC-Earth3
+
+  # 시나리오 목록
+  #   historical : 역사 기간 재현
+  #   ssp126     : 저탄소 시나리오 (1.9 W/m²)
+  #   ssp245     : 중간 시나리오 (4.5 W/m²)
+  #   ssp370     : 중간-높음 시나리오 (7.0 W/m²)
+  #   ssp585     : 고탄소 시나리오 (8.5 W/m²)
+  scenarios:
+    - historical
+    - ssp126
+    - ssp245
+    - ssp370
+    - ssp585
+
+  # 역사 재현 기간
+  historical_period:
+    start_year: 1981
+    end_year:   2010
+
+  # 미래 분석 기간 (복수 기간 정의 가능)
+  #   label: 결과 파일명에 사용되는 구분자
+  future_periods:
+    - start_year: 2011
+      end_year:   2040
+      label:      "near_future"     # 근미래 (2011–2040)
+    - start_year: 2041
+      end_year:   2070
+      label:      "mid_future"      # 중간미래 (2041–2070)
+    - start_year: 2071
+      end_year:   2100
+      label:      "far_future"      # 먼미래 (2071–2100)
+
+
+# ── 8. 앙상블 확률예보 (acidwg_py 연계) ──────────────────────────────────────
+#  acidwg_py가 생성한 1000개 앙상블 기상 자료를 입력으로 하여
+#  유출량 확률예보를 산출합니다 (exceedance probability, 분위수 등).
+#
+#  ensemble_dir 폴더 구조:
+#    ensemble_dir/
+#      ├── member_001/
+#      │   ├── asos203.csv
+#      │   └── asos232.csv
+#      ├── member_002/
+#      │   └── ...
+#      └── member_1000/
+# ─────────────────────────────────────────────────────────────────────────────
+ensemble_forecast:
+  enabled: false    # true: 앙상블 예보 수행  /  false: 건너뜀
+
+  # ★ acidwg_py 출력 폴더 (1000개 멤버 하위 폴더 포함)
+  ensemble_dir: "$(project.root)/acidwg_output"
+
+  # 사용할 앙상블 멤버 수 (최대 ensemble_dir의 하위 폴더 수)
+  n_members: 1000
+
+  # 병렬 실행 설정
+  parallel:
+    enabled: true
+    n_workers: 8      # 동시 실행 프로세스 수 (CPU 코어 수 - 1 권장)
+
+  # 분위수 설정 (확률예보 출력값)
+  # 예) 0.10 → Q10 (상위 90% 초과 확률)
+  quantiles:
+    - 0.05   # Q5
+    - 0.10   # Q10
+    - 0.25   # Q25 (1사분위)
+    - 0.50   # Q50 (중앙값)
+    - 0.75   # Q75 (3사분위)
+    - 0.90   # Q90
+    - 0.95   # Q95
+
+  # 예보 기간
+  forecast_period:
+    start_year: 2024    # ★
+    end_year:   2024    # ★
+
+
+# ── 9. 계절 예보 (단일 멤버) ─────────────────────────────────────────────────
+#  단일 예보 자료(관측 + 예보 이어붙이기)를 이용한 계절 예보입니다.
+#  앙상블 예보(섹션 8)와는 별개입니다.
+# ─────────────────────────────────────────────────────────────────────────────
+seasonal_forecast:
+  enabled: false    # true: 계절 예보 수행  /  false: 건너뜀
+
+  # 예보 기간
+  forecast_period:
+    start_year: 2024    # ★
+    end_year:   2024    # ★
+
+  # 관측 자료 소급 연수 (예보 시작 전 몇 년의 실측 자료를 앞에 붙일지)
+  lookback_years: 3
