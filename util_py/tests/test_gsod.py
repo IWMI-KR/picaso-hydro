@@ -10,6 +10,7 @@ from util_py.gsod import (
     ISO2_TO_FIPS,
     _filter_stations,
     _iso2_to_fips,
+    _make_station_id,
     _read_boundary,
     write_station_shapefile,
 )
@@ -100,6 +101,7 @@ def _make_isd(*rows) -> pd.DataFrame:
 
 
 def test_filter_by_country_only() -> None:
+    """일반 케이스 (WBAN=99999): STATION_ID 는 USAF (6자), NOAA_ID 는 11자."""
     isd = _make_isd(
         ("066225", "99999", "RAROTONGA", "CW", "",  -21.20, -159.80,  6.7, 19450101, 20251231),
         ("076225", "99999", "PUKAPUKA",  "CW", "",  -10.88, -165.83,  3.0, 19560101, 20251231),
@@ -107,7 +109,8 @@ def test_filter_by_country_only() -> None:
     )
     out = _filter_stations(isd, fips="CW", bbox=None)
     assert len(out) == 2
-    assert set(out["STATION_ID"]) == {"06622599999", "07622599999"}
+    assert set(out["STATION_ID"]) == {"066225", "076225"}             # 6자 USAF
+    assert set(out["NOAA_ID"])    == {"06622599999", "07622599999"}    # 11자 fetch ID
 
 
 def test_filter_with_bbox_excludes_outside() -> None:
@@ -120,9 +123,10 @@ def test_filter_with_bbox_excludes_outside() -> None:
     bbox = (-165.86, -21.94, -157.31, -8.94)  # Cook Islands
     out = _filter_stations(isd, fips="CW", bbox=bbox)
     ids = set(out["STATION_ID"])
-    assert "06622599999" in ids
-    assert "07622599999" in ids
-    assert "09999999999" not in ids
+    assert "066225" in ids       # 6자
+    assert "076225" in ids
+    assert "099999" not in ids   # bbox 밖 → 제외 (USAF 자체)
+    assert "09999999999" not in ids   # 11자 NOAA 명도 제외
 
 
 def test_filter_no_match_returns_empty() -> None:
@@ -134,14 +138,15 @@ def test_filter_no_match_returns_empty() -> None:
 
 
 def test_filter_pads_usaf_wban_with_zeros() -> None:
-    """USAF 6자리, WBAN 5자리 zfill 검증."""
+    """USAF 6자리, WBAN 5자리 zfill 검증 + STATION_ID/NOAA_ID 분리."""
     isd = _make_isd(
         ("66225", "99999", "RAROTONGA", "CW", "", -21.20, -159.80, 6.7, 0, 0),
     )
     out = _filter_stations(isd, fips="CW", bbox=None)
-    assert out.iloc[0]["USAF"] == "066225"
-    assert out.iloc[0]["WBAN"] == "99999"
-    assert out.iloc[0]["STATION_ID"] == "06622599999"
+    assert out.iloc[0]["USAF"]       == "066225"
+    assert out.iloc[0]["WBAN"]       == "99999"
+    assert out.iloc[0]["NOAA_ID"]    == "06622599999"   # NOAA archive 명
+    assert out.iloc[0]["STATION_ID"] == "066225"        # 로컬 파일명 (USAF)
 
 
 def test_filter_handles_string_lat_lon() -> None:
@@ -254,4 +259,50 @@ def test_korea_fips_differs_from_iso2() -> None:
     iso2 = "KR"
     fips = _iso2_to_fips(iso2)   # → "KS"
     out = _filter_stations(isd, fips=fips, bbox=None)
-    assert set(out["STATION_ID"]) == {"47123099999", "47180099999"}
+    assert set(out["STATION_ID"]) == {"471230", "471800"}      # 6자 USAF
+    assert set(out["NOAA_ID"])    == {"47123099999", "47180099999"}
+
+
+# ── _make_station_id 단위 + 새 fallback 동작 ────────────────────────────────
+
+def test_make_station_id_normal_case() -> None:
+    """일반 케이스: USAF 6자만 사용."""
+    assert _make_station_id("918430", "99999") == "918430"
+    assert _make_station_id("066225", "99999") == "066225"
+
+
+def test_make_station_id_usaf_sentinel_uses_combined() -> None:
+    """USAF=999999 (sentinel) 이면 USAF+WBAN 으로 fallback."""
+    assert _make_station_id("999999", "12345") == "99999912345"
+    assert _make_station_id("999999", "99999") == "99999999999"
+
+
+def test_filter_falls_back_to_combined_on_usaf_collision() -> None:
+    """같은 USAF 가 다른 WBAN 으로 등장하면 그 행들은 NOAA_ID(11자) 사용."""
+    isd = _make_isd(
+        ("123456", "00100", "STATION_A", "US", "", 40.0, -80.0, 100.0, 0, 0),
+        ("123456", "00200", "STATION_B", "US", "", 40.5, -80.5, 105.0, 0, 0),
+        ("789012", "99999", "STATION_C", "US", "", 41.0, -81.0, 110.0, 0, 0),
+    )
+    out = _filter_stations(isd, fips="US", bbox=None)
+    # 중복 USAF (123456) 두 행 → STATION_ID 도 11자
+    sa = out[out["STATION_NAME"] == "STATION_A"].iloc[0]
+    sb = out[out["STATION_NAME"] == "STATION_B"].iloc[0]
+    assert sa["STATION_ID"] == "12345600100"
+    assert sb["STATION_ID"] == "12345600200"
+    # 중복 없는 STATION_C 는 USAF 만
+    sc = out[out["STATION_NAME"] == "STATION_C"].iloc[0]
+    assert sc["STATION_ID"] == "789012"
+
+
+def test_filter_usaf_sentinel_uses_combined_id() -> None:
+    """USAF=999999 sentinel 행은 STATION_ID 가 11자 (NOAA_ID 와 동일)."""
+    isd = _make_isd(
+        ("999999", "12345", "OLD_STATION", "US", "",  40.0, -80.0, 100.0, 0, 0),
+        ("123456", "99999", "NORMAL",      "US", "",  41.0, -81.0, 110.0, 0, 0),
+    )
+    out = _filter_stations(isd, fips="US", bbox=None)
+    old = out[out["STATION_NAME"] == "OLD_STATION"].iloc[0]
+    norm = out[out["STATION_NAME"] == "NORMAL"].iloc[0]
+    assert old["STATION_ID"] == "99999912345"
+    assert norm["STATION_ID"] == "123456"

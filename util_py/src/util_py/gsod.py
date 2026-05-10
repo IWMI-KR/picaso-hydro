@@ -5,8 +5,16 @@
 1. boundary_csv 에서 ISO2 국가 코드 + bbox 추출
 2. NOAA isd-history.csv 다운로드 → FIPS 매핑 후 해당 국가 + bbox 내 관측소 필터
 3. 각 관측소의 연도별 GSOD .csv 수집 (로컬 archive 우선, URL 보조)
-4. 관측소별로 모든 연도 통합 → ``obs_dir/{USAF}{WBAN}.csv``
+4. 관측소별로 모든 연도 통합 → ``obs_dir/{STATION_ID}.csv``
 5. 처리 완료 관측소 메타를 ``station-gsod.csv`` 로 저장
+
+식별자 규약
+-----------
+- ``NOAA_ID``     : ``{USAF}{WBAN}`` (11자) — NOAA 측 archive/URL 의 파일명
+- ``STATION_ID``  : 로컬 파일명 (보통 6자 USAF, 일부 케이스만 11자)
+    * 기본       : USAF (6자)  — 본 사업 대상 도서국·동남아 거의 모두 해당
+    * fallback   : USAF=``999999`` 또는 같은 USAF 가 중복되는 경우 NOAA_ID (11자)
+NOAA 원본 파일 fetch 는 항상 NOAA_ID 사용, 로컬 저장만 STATION_ID 사용.
 
 데이터 소스
 -----------
@@ -134,6 +142,18 @@ def _fetch_isd_history(url: str, cache_path: Path,
     return df
 
 
+def _make_station_id(usaf: str, wban: str) -> str:
+    """로컬 파일명 ID 결정.
+
+    - 기본       : USAF (6자) — 본 사업 대상 도서국·동남아 일반 케이스
+    - fallback   : USAF=``999999`` (sentinel) 이면 USAF+WBAN (11자)
+    중복 USAF 검출은 _filter_stations 에서 처리 (해당 행만 NOAA_ID 로 swap).
+    """
+    if usaf == "999999":
+        return f"{usaf}{wban}"
+    return usaf
+
+
 def _filter_stations(
     isd: pd.DataFrame,
     fips: str,
@@ -143,8 +163,11 @@ def _filter_stations(
 
     Returns
     -------
-    DataFrame with columns: USAF, WBAN, STATION_ID, STATION_NAME, CTRY,
-        LAT, LON, ELEV_M, BEGIN, END
+    DataFrame with columns: USAF, WBAN, NOAA_ID, STATION_ID, STATION_NAME,
+        CTRY, LAT, LON, ELEV_M, BEGIN, END
+
+    - NOAA_ID    : USAF+WBAN (11자, NOAA archive/URL 측 식별자)
+    - STATION_ID : 로컬 파일명 (보통 USAF 6자, sentinel/중복 시 NOAA_ID)
     """
     df = isd.copy()
     df.columns = [c.strip().upper().replace(" ", "_") for c in df.columns]
@@ -164,11 +187,19 @@ def _filter_stations(
     if out.empty:
         return out
 
-    out["USAF"] = out["USAF"].astype(str).str.zfill(6)
-    out["WBAN"] = out["WBAN"].astype(str).str.zfill(5)
-    out["STATION_ID"] = out["USAF"] + out["WBAN"]
+    out["USAF"]    = out["USAF"].astype(str).str.zfill(6)
+    out["WBAN"]    = out["WBAN"].astype(str).str.zfill(5)
+    out["NOAA_ID"] = out["USAF"] + out["WBAN"]
+    out["STATION_ID"] = [
+        _make_station_id(u, w) for u, w in zip(out["USAF"], out["WBAN"])
+    ]
+
+    # USAF 중복 검사 — 같은 USAF + 다른 WBAN 행이 있으면 그 행들만 NOAA_ID 로 fallback
+    dup_mask = out["STATION_ID"].duplicated(keep=False)
+    out.loc[dup_mask, "STATION_ID"] = out.loc[dup_mask, "NOAA_ID"]
+
     keep = [c for c in
-            ["USAF", "WBAN", "STATION_ID", "STATION_NAME", "CTRY",
+            ["USAF", "WBAN", "NOAA_ID", "STATION_ID", "STATION_NAME", "CTRY",
              "STATE", "ICAO", "LAT", "LON", "ELEV_M", "BEGIN", "END"]
             if c in out.columns]
     return out[keep].reset_index(drop=True)
@@ -340,14 +371,15 @@ def download_gsod_country(
         empty.to_csv(station_p, index=False)
         return empty
     for _, st in stations.iterrows():
-        print(f"    {st['STATION_ID']}  {st['STATION_NAME']:<32} "
+        print(f"    {st['STATION_ID']:<11s}  {st['STATION_NAME']:<32} "
               f"({st['LAT']:+.3f}, {st['LON']:+.3f})")
 
     # 관측소별 통합
     print()
     done_rows: List[dict] = []
     for _, st in stations.iterrows():
-        sid = st["STATION_ID"]
+        sid     = st["STATION_ID"]   # 로컬 파일명 (보통 USAF 6자)
+        noaa_id = st["NOAA_ID"]      # NOAA fetch 식별자 (USAF+WBAN 11자)
         out = obs_dir / f"{sid}.csv"
         if out.exists() and not overwrite:
             print(f"  [SKIP] {sid} (이미 존재 — overwrite=False)")
@@ -360,9 +392,9 @@ def download_gsod_country(
         for year in years:
             df = None
             if archive_p:
-                df = _extract_from_archive(archive_p / f"{year}.tar.gz", sid)
+                df = _extract_from_archive(archive_p / f"{year}.tar.gz", noaa_id)
             if df is None:
-                df = _download_station_year(gsod_access_url, sid, year)
+                df = _download_station_year(gsod_access_url, noaa_id, year)
             if df is not None and not df.empty:
                 yearly.append(df)
 
