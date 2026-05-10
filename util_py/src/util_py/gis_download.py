@@ -603,11 +603,33 @@ def download_soilgrids(
         out = out_dir / f"soil_{prop}_{depth}.tif"
         try:
             _http_download(url, out, show_progress=False)
+            if not _has_valid_soil_pixels(out):
+                out.unlink(missing_ok=True)
+                print(f"    [정보] {out.name} → boundary 안에 유효 SoilGrids 픽셀 없음, 저장 안 함.")
+                continue
             print(f"    [OK]   {out.name}  ({out.stat().st_size/1e3:.1f} KB)")
             saved.append(out)
         except RuntimeError as e:
             print(f"    [WARN] {prop}: {e}")
     return saved
+
+
+def _has_valid_soil_pixels(
+    tif_path: Path,
+    nodata_values: Tuple[float, ...] = (0, -9999, -32768, 65535),
+) -> bool:
+    """raster 에 nodata 가 아닌 픽셀이 1개 이상 있으면 True."""
+    try:
+        import numpy as np
+        import rasterio
+    except ImportError:
+        return True
+    with rasterio.open(tif_path) as r:
+        arr = r.read(1)
+        nd_set = set(nodata_values)
+        if r.nodata is not None:
+            nd_set.add(r.nodata)
+    return bool((~np.isin(arr, list(nd_set))).any())
 
 
 # ── 7. SWAT 권장 토양 (FAO DSMW + SWAT2009-Global-V1.0.mdb) ─────────────────
@@ -641,12 +663,15 @@ def _clip_swat_soil_to_boundary(
     out_canonical_tif: Path,
     boundary_path: Path,
     buffer_deg: float = 0.05,
-    nodata_values: Tuple[int, ...] = (0,),
+    nodata_values: Tuple[float, ...] = (0, -9999, -32768, 65535),
 ) -> Optional[Path]:
     """SWAT 글로벌 soil raster 를 boundary 로 클립.
 
     클립 결과에 유효 픽셀(nodata 가 아닌)이 0개면 ``None`` 반환 + 파일 저장 안 함.
     임시 파일에 먼저 클립한 뒤 유효성 확인되면 canonical 위치로 이동 (atomic).
+
+    nodata_values 디폴트는 0 외에도 sentinel 값 ``-9999, -32768, 65535`` 포함
+    (DSMW raster 가 영역 밖을 ``-9999`` 로 채우는 경우 등을 안전하게 처리).
     """
     import tempfile
 
@@ -688,6 +713,10 @@ def _clip_swat_soil_to_boundary(
         valid_count = int((~np.isin(arr, list(nd_set))).sum())
 
         if valid_count == 0:
+            # 이전(버그) 실행에서 남은 soil.tif / aux.xml 도 정리
+            out_canonical_tif.unlink(missing_ok=True)
+            for ext in (".aux.xml", ".tif.aux.xml"):
+                Path(str(out_canonical_tif) + ext).unlink(missing_ok=True)
             return None
 
         # 3) atomic move → canonical
