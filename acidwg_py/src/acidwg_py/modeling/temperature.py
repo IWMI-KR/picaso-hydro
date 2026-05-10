@@ -533,6 +533,9 @@ def temper_modeling(tmax_table: np.ndarray, tmin_table: np.ndarray,
             result_fit_sn_tmin[m].append(_fit_skewnorm(anomaly_tmin[k, j]))
 
     # --- EOF 분해 (월별) ---
+    # n_comp = min(2, d) — 관측소 1개 (d=1) 인 경우 PC 1개만 사용
+    # 기존 코드는 [:2]/range(2) 하드코딩이라 d=1 에서 IndexError 발생했던 부분
+    n_comp = min(2, d)
     z_mean = np.zeros((12, 2 * d))
     eof_tmax = {}
     eof_tmin = {}
@@ -547,22 +550,21 @@ def temper_modeling(tmax_table: np.ndarray, tmin_table: np.ndarray,
         zt = z_score_tmax[k] - z_mean[m - 1, :d]
         zn = z_score_tmin[k] - z_mean[m - 1, d:]
 
-        n_comp = min(2, d)
         pca_t = PCA(n_components=d).fit(zt)
         pca_n = PCA(n_components=d).fit(zn)
 
-        eof_tmax[m] = pca_t.components_[:2].T   # (d, 2)
-        eof_tmin[m] = pca_n.components_[:2].T
+        eof_tmax[m] = pca_t.components_[:n_comp].T   # (d, n_comp)
+        eof_tmin[m] = pca_n.components_[:n_comp].T
 
-        # 잔차 (PC 3 이후)
+        # 잔차 (n_comp 이후 PC) — d <= n_comp 이면 자연히 빈 행렬
         scores_t = zt @ pca_t.components_.T
         scores_n = zn @ pca_n.components_.T
-        residual_tmax[m] = scores_t[:, 2:] @ pca_t.components_[2:]
-        residual_tmin[m] = scores_n[:, 2:] @ pca_n.components_[2:]
+        residual_tmax[m] = scores_t[:, n_comp:] @ pca_t.components_[n_comp:]
+        residual_tmin[m] = scores_n[:, n_comp:] @ pca_n.components_[n_comp:]
 
     # EOF 방향 일관성 (월 간 부호 정렬, R과 동일)
     for m in range(2, 13):
-        for i in range(2):
+        for i in range(n_comp):
             if np.dot(eof_tmax[m - 1][:, i], eof_tmax[m][:, i]) < 0:
                 eof_tmax[m][:, i] *= -1
             if np.dot(eof_tmin[m - 1][:, i], eof_tmin[m][:, i]) < 0:
