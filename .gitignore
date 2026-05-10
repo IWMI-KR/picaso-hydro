@@ -54,3 +54,4 @@ secrets.yaml
 
 # ── Generated / one-shot scripts ────────────────────────────────────────────
 _*.py        # 일회성 _build_*.py, _create_*.py 등 (commit 제외)
+dev_prompt-*.txt   # 개발용 프롬프트 메모 (로컬 전용)
