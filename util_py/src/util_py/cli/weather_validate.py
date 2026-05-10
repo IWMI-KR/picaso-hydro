@@ -50,6 +50,22 @@ def _load_or_default(config_path: str | None) -> Config:
     root = _picaso_root()
     cfg.project.root = str(root)
     cfg.weather_validation.output_base = str(root / "0_database" / "analysis")
+
+    # ERA5 격자점 메타 + std daily (extract / standardize 출력)
+    era5_dir = root / "0_database" / "era5"
+    cfg.extract.grid_file               = str(era5_dir / "grid_points-era5.csv")
+    cfg.weather_std.era5.std_daily_dir  = str(era5_dir / "grid_daily_std")
+
+    # GSOD station 메타 + std daily
+    gsod_dir = root / "0_database" / "gsod"
+    cfg.gsod.station_csv         = str(gsod_dir / "station-gsod.csv")
+    cfg.weather_std.gsod.std_dir = str(gsod_dir / "daily_std")
+
+    # local 관측 — std + stations.csv 위치 추론용 raw_daily_dir
+    obs_dir = root / "0_database" / "obs" / "weather"
+    cfg.weather_std.local.raw_daily_dir = str(obs_dir / "daily")
+    cfg.weather_std.local.std_daily_dir = str(obs_dir / "daily_std")
+
     return cfg
 
 
