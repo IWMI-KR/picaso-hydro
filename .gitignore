@@ -58,4 +58,3 @@ dev_prompt-*.txt   # 개발용 프롬프트 메모 (로컬 전용)
 
 # ── Sister packages (별도 저장소로 분리 예정) ───────────────────────────────
 swat_py/
-acidwg_py/

@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acidwg_py"
+version = "1.0.0"
+description = "APCC Climate Information Downscaling Weather Generator (Python port of rACID)"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "IWMI-KR"}
+]
+keywords = ["APCC", "downscaling", "weather generator", "ensemble forecast", "hydrology"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.11",
+    "statsmodels>=0.14",
+    "scikit-learn>=1.3",
+    "tqdm>=4.65",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "mypy>=1.4",
+    "ruff>=0.1",
+]
+
+[project.scripts]
+acidwg-run            = "acidwg_py.cli.acidwg:main"
+acidwg-picaso-convert = "acidwg_py.cli.picaso_convert:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+acidwg_py = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
