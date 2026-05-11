@@ -56,5 +56,4 @@ secrets.yaml
 _*.py        # 일회성 _build_*.py, _create_*.py 등 (commit 제외)
 dev_prompt-*.txt   # 개발용 프롬프트 메모 (로컬 전용)
 
-# ── Sister packages (별도 저장소로 분리 예정) ───────────────────────────────
-swat_py/
+# (sister packages — util_py, acidwg_py, swat_py 모두 본 저장소에 통합됨)
