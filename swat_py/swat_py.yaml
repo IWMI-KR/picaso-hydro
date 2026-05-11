@@ -1,298 +1,151 @@
 # ══════════════════════════════════════════════════════════════════════════════
-#  swat_py 설정 파일  (swat_py.yaml)
-#  Python SWAT/SWAT-Plus 자동화 패키지 — 유역통합관리연구원(IWMI)
-# ══════════════════════════════════════════════════════════════════════════════
+#  swat_py 설정 파일 — SWAT/SWAT-Plus 자동화 패키지 (IWMI-KR)
 #
-#  [ 경로 참조 문법 ]
-#    $(섹션.키) 형태로 이미 정의된 값을 참조합니다.
-#    예) $(project.root)  →  project 섹션의 root 값으로 자동 치환
-#    참조 체인도 지원합니다: $(project.input.observed) → $(project.database)/Observed
+#  파일 위치 (자동 탐색 우선순위)
+#    1. ACIDWG_PY_CONFIG / SWAT_PY_CONFIG 환경변수
+#    2. 호출 시 명시한 yaml 경로
+#    3. cwd → 상위 ``swat_py.yaml``
+#    4. $PICASO_ROOT/config/swat_py.yaml   ★ 권장
+#    5. $PICASO_ROOT/swat_py.yaml
 #
-#  [ 필수 수정 항목 ]
-#    ★ 표시가 된 항목은 반드시 실제 경로/값으로 수정해야 합니다.
+#  ★ 표시 항목은 실제 값으로 수정 필요
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 # ── 1. 프로젝트 디렉토리 ─────────────────────────────────────────────────────
-#  폴더 구조 예시:
-#    project.root/
-#      ├── Database/           ← project.database
-#      │   ├── Observed/       ← project.input.observed_weather
-#      │   ├── ClimateChange/  ← project.input.cc_weather
-#      │   ├── Forecast/       ← project.input.forecast_weather
-#      │   └── SWAT/           ← project.output.database
-#      ├── swat_run/TxtInOut/  ← project.output.swat_run
-#      ├── Results/
-#      │   ├── Calibration/    ← project.output.calibration
-#      │   ├── ClimateChange/  ← project.output.climate_change
-#      │   └── Forecast/       ← project.output.forecast
-# ─────────────────────────────────────────────────────────────────────────────
 project:
-  root: "C:/Projects/MyWatershed"           # ★ 프로젝트 루트 폴더
-
-  database: "$(project.root)/Database"      # 데이터베이스 루트 폴더
-
-  # 입력 자료 폴더 (기상 CSV, 관측소 정보 등)
+  root:     "${env:PICASO_ROOT:C:/Projects/MyWatershed}"   # ★ 프로젝트 루트
+  database: "$(project.root)/Database"
   input:
-    observed_weather:  "$(project.database)/Observed"        # 실측 기상 자료
-    cc_weather:        "$(project.database)/ClimateChange"   # 기후변화 시나리오 기상 자료
-    forecast_weather:  "$(project.database)/Forecast"        # 예보 기상 자료 (acidwg_py 출력)
-
-  # SWAT 실행 및 결과 저장 폴더
-  # output 경로는 model.type 으로 자동 산출됨 — 마스터 2 + 작업 폴더 3:
-  #
-  #   model.type='swat_plus' →   $(root)/3_swatplus/...
-  #   model.type='swat2012'  →   $(root)/3_swat2012/...
-  #
-  #   {root}/{3_swatplus|3_swat2012}/
-  #     default/        ← QSWAT+ 출력 (READ-ONLY 마스터)
-  #     calibrated/     ← 보정 완료 (READ-ONLY 마스터)
-  #     calibration/
-  #       runs/         ← 보정 시도 (임시, cleanup=true 시 자동 삭제)
-  #       results/      ← 분석 결과 + parameter_changes.csv
-  #     forecast/{operational|hindcast|seasonal}/{year}/{season}/
-  #       runs/member_NNNN/  ← 앙상블 멤버별 임시 실행
-  #       results/      ← 분위수·초과확률
-  #     cchange/
-  #       runs/{GCM}/{scenario}/{period}/  ← 시뮬레이션 작업
-  #       summary/      ← 앙상블 분위수·비교 그래프
-  #
-  # 명시 시에만 yaml 에 적습니다 (mismatch 시 경고).
+    observed_weather:  "$(project.database)/Observed"
+    cc_weather:        "$(project.database)/ClimateChange"
+    forecast_weather:  "$(project.database)/Forecast"
+  # output 경로는 model.type 으로 자동 산출 (3_swatplus/ 또는 3_swat2012/ 아래
+  # default/, calibrated/, calibration/, forecast/, cchange/)
   output:
-    # default:        "$(project.root)/3_swatplus/default"
-    # calibrated:     "$(project.root)/3_swatplus/calibrated"
-    # calibration:    "$(project.root)/3_swatplus/calibration"
-    # forecast:       "$(project.root)/3_swatplus/forecast"
-    # climate_change: "$(project.root)/3_swatplus/cchange"
-    database:       "$(project.database)/SWAT"           # 관측 DB — 명시 필요
+    database: "$(project.database)/SWAT"     # 관측 자료 DB
 
 
-# ── 2. 모델 설정 ─────────────────────────────────────────────────────────────
+# ── 2. 모델 ──────────────────────────────────────────────────────────────────
 model:
-  # 모델 종류: "swat_plus" (권장) 또는 "swat2012"
-  type: "swat_plus"
-
-  # 실행 파일 이름 (swat_run 폴더 안에 위치해야 합니다)
-  # SWAT-Plus: "SWAT-Plus.exe"  /  SWAT 2012: "SWAT2020.exe"
-  executable: "SWAT-Plus.exe"
-
-  # 워밍업 기간 (연수) — 모델 초기화를 위해 출력에서 제외
-  # 권장: 최소 2~3년. 0이면 시뮬레이션 시작일부터 출력
-  warm_up_years: 3
-
-  # 출력 파일 종류 (분석에 사용할 채널 출력)
-  #   SWAT-Plus:  sd  → channel_sd_day.txt  (sediment + nutrients)
-  #               wb  → basin_wb_day.txt    (물수지)
-  #   SWAT 2012:  rch → output.rch
-  #               sub → output.sub
-  output_types:
-    - sd
+  type:        "swat_plus"        # ★ swat_plus | swat2012
+  executable:  "SWAT-Plus.exe"    # ★ TxtInOut 안 실행파일 이름
 
 
-# ── 3. 기상 관측소 설정 ──────────────────────────────────────────────────────
-#  메타정보 CSV 형식 (project.input.observed_weather 폴더 기준):
-#    ID,Lat,Lon,Elev
-#    asos203,37.23,-127.05,45
-#    asos232,37.25,-127.08,52
-# ─────────────────────────────────────────────────────────────────────────────
-stations:
-  metadata_file: "stations.csv"   # ★ 관측소 메타정보 CSV 파일명
-
-  # ★ 사용할 관측소 ID 목록 (CSV의 ID 열과 일치해야 함)
-  ids:
-    - asos203
-    - asos232
-
-
-# ── 4. 모니터링 지점 설정 ────────────────────────────────────────────────────
-#  GIS 하천 ID (SWAT 출력 파일의 gis_id 또는 RCH 번호와 일치해야 함)
-# ─────────────────────────────────────────────────────────────────────────────
-outlets:
-  # 유량 모니터링 지점
-  flow:
-    ids:   [23]          # ★ GIS 하천 ID 목록
-    names: [Outlet_A]    # ★ 지점 이름 (파일명·그래프 제목에 사용)
-
-  # 수질 모니터링 지점 (유량 지점과 다를 경우 별도 지정)
-  water_quality:
-    ids:   [23]
-    names: [Outlet_A]
-
-
-# ── 5. 관측 자료 파일 ────────────────────────────────────────────────────────
-#  파일 위치: project.output.database 폴더 기준
-# ─────────────────────────────────────────────────────────────────────────────
-observed:
-  # 유량 관측 파일
-  #   필수 열: year(정수), mon(정수), day(정수), inflow_cms(실수)
-  #   또는:    date(YYYY-MM-DD 형식), inflow_cms(실수)
-  flow:
-    file: "obs_flow.csv"    # ★
-
-  # 수질 관측 파일
-  #   필수 열: date(YYYY-MM-DD), ss_mgl, tn_mgl, tp_mgl
-  water_quality:
-    file: "obs_wq.csv"      # ★
-
-
-# ── 6. 시뮬레이션 기간 및 분석 변수 ─────────────────────────────────────────
-#  보정·검증·기준 기간을 정의합니다.
-#  분석 변수(output_types)는 각 기간에 공통으로 적용됩니다.
-# ─────────────────────────────────────────────────────────────────────────────
+# ── 3. 시뮬레이션 기간 (일자 단위 YYYY-MM-DD) ───────────────────────────────
 simulation:
-  # 분석할 출력 변수 목록
-  #   flow  : 유량 (cms)         — 유량 관측소 기준
-  #   flowd : 유량 (mm/day)      — 유역 면적으로 나눈 값
-  #   sedc  : 부유사 농도 (mg/L)
-  #   tnc   : 총질소 농도 (mg/L)
-  #   tpc   : 총인 농도 (mg/L)
-  #   sed   : 부유사 부하 (ton/day)  — SWAT 2012 전용
-  #   tn    : 총질소 부하 (kg/day)   — SWAT 2012 전용
-  #   tp    : 총인 부하 (kg/day)     — SWAT 2012 전용
-  output_types:
-    - flow
-    - sedc
-    - tnc
-    - tpc
+  start_date:    "2015-01-01"     # ★ 전체 시뮬레이션 시작 (warm-up 포함)
+  end_date:      "2020-12-31"     # ★ 종료
+  warm_up_years: 3                # 출력 제외 워밍업 (start_date 이후 N년)
+  time_step:    "daily"           # daily | monthly
 
-  # 보정 기간 (Calibration)
-  calibration:
-    start_year: 2017    # ★
-    end_year:   2018    # ★
 
-  # 검증 기간 (Validation)
+# ── 4. 보정 (Calibration) ───────────────────────────────────────────────────
+calibration:
+  # 4.1 보정·검증 기간 (시뮬레이션 기간의 부분집합)
+  period:
+    start: "2017-01-01"           # ★
+    end:   "2018-12-31"           # ★
   validation:
-    start_year: 2019    # ★
-    end_year:   2020    # ★
+    start: "2019-01-01"           # ★
+    end:   "2020-12-31"           # ★
 
-  # 역사 기준 기간 (Historical baseline)
-  baseline:
-    start_year: 1981
-    end_year:   2010
+  # 4.2 ★ 관측점 × 변수 (flat list — 각 항목 독립)
+  #     허용 unit (단위 자동 변환은 swat_py.units 모듈):
+  #       flow : m3/s (기본) | mm/day (depth) | l/s | m3/day
+  #       ss   : t/day (기본) | mg/L
+  #       tn   : kg/day (기본) | mg/L | t/day
+  #       tp   : kg/day (기본) | mg/L | t/day
+  observations:
+    - id:         "outlet1_flow"
+      outlet_id:  1                       # ★ SWAT 채널 GIS ID
+      variable:   "flow"
+      unit:       "m3/s"
+      obs_file:   "obs_flow_outlet1.csv"  # ★ project.output.database 기준
+      obs_column: "inflow_cms"            # ★ CSV 의 컬럼명
+      time_step:  "daily"
+      weight:     1.0                     # 다중 변수 결합 시 가중치
+      objective:  "NSE"                   # NSE | KGE | R2 | PBIAS | RMSE
+
+    # 같은 outlet 에 다른 변수 추가 가능
+    # - id:         "outlet1_tn"
+    #   outlet_id:  1
+    #   variable:   "tn"
+    #   unit:       "mg/L"
+    #   obs_file:   "obs_wq_outlet1.csv"
+    #   obs_column: "tn_mgl"
+    #   time_step:  "monthly"
+    #   weight:     0.3
+    #   objective:  "PBIAS"
+
+    # 다른 outlet 추가 가능
+    # - id:         "outlet2_flow"
+    #   outlet_id:  5
+    #   variable:   "flow"
+    #   unit:       "mm/day"
+    #   ...
+
+  # 4.3 보정 인자 (자동 보정 알고리즘이 사용할 인자·범위·변환 방식)
+  #     change_type:
+  #       absval  — 절대값으로 설정 (range 가 인자 자체의 범위)
+  #       relchg  — 기존값 × (1 + r), r ∈ range
+  #       abschg  — 기존값 + r, r ∈ range
+  parameters:
+    - file:        "hydrology.hyd"
+      key:         "cn3_swf"
+      range:       [0.5, 1.0]
+      change_type: "absval"
+    - file:        "soils.sol"
+      key:         "sol_awc"
+      range:       [-0.04, 0.04]
+      change_type: "abschg"
+    - file:        "basin.bsn"
+      key:         "surlag"
+      range:       [0.5, 10.0]
+      change_type: "absval"
+
+  # 4.4 보정 알고리즘
+  method:
+    name:         "manual"        # manual | sufi2 | pso | de | sce-ua
+    n_iterations: 100
+    seed:         1
+    parallel:
+      enabled:   true
+      n_workers: 8
+
+  # 4.5 결과 관리
+  output:
+    save_all_runs:           false   # 모든 시도 결과 보존
+    save_best_n:             5        # 상위 N개만 보존
+    auto_parameter_changes:  true     # default vs calibrated 자동 비교 CSV
 
 
-# ── 7. 기후변화 시나리오 분석 ────────────────────────────────────────────────
-#  GCM 앙상블로 미래 유출량 변화를 분석합니다.
-#  기상 자료 폴더 구조:
-#    project.input.cc_weather/
-#      ├── CanESM5/
-#      │   ├── *asos203*historical*.csv
-#      │   ├── *asos203*ssp126*.csv
-#      │   └── ...
-#      └── ACCESS-CM2/
-#          └── ...
-# ─────────────────────────────────────────────────────────────────────────────
+# ── 5. 관측소 ────────────────────────────────────────────────────────────────
+stations:
+  metadata_file: "stations.csv"     # ★
+  ids: []                            # ★ 사용할 관측소 ID 목록
+
+
+# ── 6. 모니터링 지점 (outlets — observations 에서 outlet_id 로 참조) ─────────
+outlets:
+  flow:
+    ids:   []                       # ★
+    names: []
+  water_quality:
+    ids:   []
+    names: []
+
+
+# ── 7. 기후변화 시나리오 (선택) ─────────────────────────────────────────────
 climate_change:
-  enabled: true   # true: 기후변화 분석 수행  /  false: 건너뜀
-
-  # CMIP6 GCM 모델 목록 (사용 가능한 자료가 있는 모델만 포함)
-  models:
-    - CanESM5
-    - ACCESS-CM2
-    - INM-CM4-8
-    - UKESM1-0-LL
-    - MPI-ESM1-2-HR
-    - IPSL-CM6A-LR
-    - ACCESS-ESM1-5
-    - CNRM-CM6-1
-    - CNRM-ESM2-1
-    - GFDL-ESM4
-    - INM-CM5-0
-    - MIROC6
-    - MIROC-ES2L
-    - MPI-ESM1-2-LR
-    - NorESM2-LM
-    - KACE-1-0-G
-    - MRI-ESM2-0
-    - EC-Earth3
-
-  # 시나리오 목록
-  #   historical : 역사 기간 재현
-  #   ssp126     : 저탄소 시나리오 (1.9 W/m²)
-  #   ssp245     : 중간 시나리오 (4.5 W/m²)
-  #   ssp370     : 중간-높음 시나리오 (7.0 W/m²)
-  #   ssp585     : 고탄소 시나리오 (8.5 W/m²)
-  scenarios:
-    - historical
-    - ssp126
-    - ssp245
-    - ssp370
-    - ssp585
-
-  # 역사 재현 기간
-  historical_period:
-    start_year: 1981
-    end_year:   2010
-
-  # 미래 분석 기간 (복수 기간 정의 가능)
-  #   label: 결과 파일명에 사용되는 구분자
-  future_periods:
-    - start_year: 2011
-      end_year:   2040
-      label:      "near_future"     # 근미래 (2011–2040)
-    - start_year: 2041
-      end_year:   2070
-      label:      "mid_future"      # 중간미래 (2041–2070)
-    - start_year: 2071
-      end_year:   2100
-      label:      "far_future"      # 먼미래 (2071–2100)
+  enabled: false
 
 
-# ── 8. 앙상블 확률예보 (acidwg_py 연계) ──────────────────────────────────────
-#  acidwg_py가 생성한 1000개 앙상블 기상 자료를 입력으로 하여
-#  유출량 확률예보를 산출합니다 (exceedance probability, 분위수 등).
-#
-#  ensemble_dir 폴더 구조:
-#    ensemble_dir/
-#      ├── member_001/
-#      │   ├── asos203.csv
-#      │   └── asos232.csv
-#      ├── member_002/
-#      │   └── ...
-#      └── member_1000/
-# ─────────────────────────────────────────────────────────────────────────────
+# ── 8. 앙상블 확률예보 (선택, acidwg_py 연계) ──────────────────────────────
 ensemble_forecast:
-  enabled: false    # true: 앙상블 예보 수행  /  false: 건너뜀
-
-  # ★ acidwg_py 출력 폴더 (1000개 멤버 하위 폴더 포함)
-  ensemble_dir: "$(project.root)/acidwg_output"
-
-  # 사용할 앙상블 멤버 수 (최대 ensemble_dir의 하위 폴더 수)
-  n_members: 1000
-
-  # 병렬 실행 설정
-  parallel:
-    enabled: true
-    n_workers: 8      # 동시 실행 프로세스 수 (CPU 코어 수 - 1 권장)
-
-  # 분위수 설정 (확률예보 출력값)
-  # 예) 0.10 → Q10 (상위 90% 초과 확률)
-  quantiles:
-    - 0.05   # Q5
-    - 0.10   # Q10
-    - 0.25   # Q25 (1사분위)
-    - 0.50   # Q50 (중앙값)
-    - 0.75   # Q75 (3사분위)
-    - 0.90   # Q90
-    - 0.95   # Q95
-
-  # 예보 기간
-  forecast_period:
-    start_year: 2024    # ★
-    end_year:   2024    # ★
+  enabled: false
 
 
-# ── 9. 계절 예보 (단일 멤버) ─────────────────────────────────────────────────
-#  단일 예보 자료(관측 + 예보 이어붙이기)를 이용한 계절 예보입니다.
-#  앙상블 예보(섹션 8)와는 별개입니다.
-# ─────────────────────────────────────────────────────────────────────────────
+# ── 9. 단일 계절 예보 (선택) ────────────────────────────────────────────────
 seasonal_forecast:
-  enabled: false    # true: 계절 예보 수행  /  false: 건너뜀
-
-  # 예보 기간
-  forecast_period:
-    start_year: 2024    # ★
-    end_year:   2024    # ★
-
-  # 관측 자료 소급 연수 (예보 시작 전 몇 년의 실측 자료를 앞에 붙일지)
-  lookback_years: 3
+  enabled: false

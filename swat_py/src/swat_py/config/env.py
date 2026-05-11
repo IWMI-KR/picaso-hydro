@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import warnings
 from dataclasses import dataclass, field
@@ -19,6 +20,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import yaml
+
+
+# ── 환경변수 치환 ${env:VAR} / ${env:VAR:default} ────────────────────────────
+
+_ENV_PATTERN = re.compile(r"\$\{env:([A-Z_][A-Z0-9_]*)(?::([^}]*))?\}")
+
+
+def _resolve_env_vars(text: str) -> str:
+    """문자열 내 ``${env:VAR}`` / ``${env:VAR:default}`` 환경변수 치환."""
+    def _sub(m: "re.Match[str]") -> str:
+        var, default = m.group(1), m.group(2)
+        return os.environ.get(var, default if default is not None else "")
+    return _ENV_PATTERN.sub(_sub, text)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -81,6 +95,48 @@ class _EnsembleParallelCfg:
     n_workers: int = 4
 
 
+# ── 신규 — calibration 확장 (관측점 × 변수 × 단위, 인자 범위, 알고리즘) ───────
+
+@dataclass
+class _Observation:
+    """yaml.calibration.observations[] 항목."""
+    id:         str
+    outlet_id:  int
+    variable:   str           # flow | ss | tn | tp
+    unit:       str           # m3/s, mm/day, mg/L, kg/day 등
+    obs_file:   str
+    obs_column: str
+    time_step:  str = "daily"  # daily | monthly | 10day
+    weight:     float = 1.0
+    objective:  str = "NSE"    # NSE | KGE | R2 | PBIAS | RMSE
+
+
+@dataclass
+class _CalParameter:
+    """yaml.calibration.parameters[] 항목."""
+    file:        str           # 입력 파일명 (basin.bsn, hydrology.hyd 등)
+    key:         str           # 인자 이름
+    range:       List[float]   # [min, max]
+    change_type: str = "absval"  # absval | relchg | abschg
+
+
+@dataclass
+class _CalMethodCfg:
+    """yaml.calibration.method 블록."""
+    name:         str = "manual"   # manual | sufi2 | pso | de | sce-ua
+    n_iterations: int = 100
+    seed:         int = 1
+    parallel:     _EnsembleParallelCfg = field(default_factory=_EnsembleParallelCfg)
+
+
+@dataclass
+class _CalOutputCfg:
+    """yaml.calibration.output 블록."""
+    save_all_runs:           bool = False
+    save_best_n:             int  = 5
+    auto_parameter_changes:  bool = True
+
+
 @dataclass
 class EnvConfig:
     """swat_py 전체 설정을 담는 데이터클래스.
@@ -132,6 +188,7 @@ class EnvConfig:
     ObsWqFile: str = ""
 
     # ── 시뮬레이션 기간 및 분석 변수 ─────────────────────────────────────────
+    # 옛 (호환 alias)
     SimOutputTypes: List[str] = field(default_factory=lambda: ["flow"])
     CalibrationStartYear: int = 0
     CalibrationEndYear: int = 0
@@ -139,6 +196,19 @@ class EnvConfig:
     ValidationEndYear: int = 0
     BaselineStartYear: int = 0
     BaselineEndYear: int = 0
+    # 신규 — 일자 단위 (YYYY-MM-DD)
+    SimStartDate: str = ""           # simulation.start_date
+    SimEndDate:   str = ""           # simulation.end_date
+    SimTimeStep:  str = "daily"      # daily | monthly
+    CalPeriodStart: str = ""         # calibration.period.start
+    CalPeriodEnd:   str = ""
+    ValPeriodStart: str = ""         # calibration.validation.start
+    ValPeriodEnd:   str = ""
+    # 신규 — observations / parameters / method / output
+    Observations:   List[_Observation]  = field(default_factory=list)
+    CalParameters:  List[_CalParameter] = field(default_factory=list)
+    CalMethod:      _CalMethodCfg       = field(default_factory=_CalMethodCfg)
+    CalOutput:      _CalOutputCfg       = field(default_factory=_CalOutputCfg)
 
     # ── 기후변화 ──────────────────────────────────────────────────────────────
     CChangeOpt: str = "off"         # "on" | "off"
@@ -244,6 +314,9 @@ def _resolve_refs(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def _resolve_node(node: Any, flat: Dict[str, str]) -> Any:
     if isinstance(node, str):
+        # 1) ${env:VAR[:default]} 환경변수 먼저 치환
+        node = _resolve_env_vars(node)
+        # 2) $(섹션.키) 교차참조 치환
         def _replace(m: re.Match) -> str:  # type: ignore[type-arg]
             ref_key = m.group(1)
             return flat.get(ref_key, m.group(0))
@@ -348,9 +421,13 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
     flat["ObsFlowFile"] = flow_obs.get("file", "")
     flat["ObsWqFile"]   = wq_obs.get("file", "")
 
-    # 6. 시뮬레이션 기간
+    # 6. 시뮬레이션 기간 — 신규 일자 단위 + 옛 연도 호환
     sim  = raw.get("simulation", {})
     flat["SimOutputTypes"] = _as_list(sim.get("output_types", ["flow"]))
+    flat["SimStartDate"]   = str(sim.get("start_date", "") or "")
+    flat["SimEndDate"]     = str(sim.get("end_date",   "") or "")
+    flat["SimTimeStep"]    = str(sim.get("time_step", "daily") or "daily")
+    # 옛 simulation.calibration / validation / baseline (호환)
     cal  = sim.get("calibration", {})
     flat["CalibrationStartYear"] = int(cal.get("start_year", 0) or 0)
     flat["CalibrationEndYear"]   = int(cal.get("end_year",   0) or 0)
@@ -360,6 +437,61 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
     base = sim.get("baseline", {})
     flat["BaselineStartYear"]    = int(base.get("start_year", 0) or 0)
     flat["BaselineEndYear"]      = int(base.get("end_year",   0) or 0)
+
+    # 6b. calibration — 신규 블록 (★ observations / parameters / method)
+    cal_new = raw.get("calibration", {})
+    period = cal_new.get("period", {})
+    flat["CalPeriodStart"] = str(period.get("start", "") or "")
+    flat["CalPeriodEnd"]   = str(period.get("end",   "") or "")
+    val_new = cal_new.get("validation", {})
+    flat["ValPeriodStart"] = str(val_new.get("start", "") or "")
+    flat["ValPeriodEnd"]   = str(val_new.get("end",   "") or "")
+
+    obs_list_raw = cal_new.get("observations", []) or []
+    flat["Observations"] = [
+        _Observation(
+            id=         str(o.get("id", f"obs_{i}")),
+            outlet_id=  int(o.get("outlet_id", 0)),
+            variable=   str(o.get("variable", "flow")).lower(),
+            unit=       str(o.get("unit", "m3/s")),
+            obs_file=   str(o.get("obs_file", "")),
+            obs_column= str(o.get("obs_column", "")),
+            time_step=  str(o.get("time_step", "daily")),
+            weight=     float(o.get("weight", 1.0)),
+            objective=  str(o.get("objective", "NSE")).upper(),
+        )
+        for i, o in enumerate(obs_list_raw)
+    ]
+
+    param_list_raw = cal_new.get("parameters", []) or []
+    flat["CalParameters"] = [
+        _CalParameter(
+            file=         str(p.get("file", "")),
+            key=          str(p.get("key", "")),
+            range=        [float(x) for x in (p.get("range") or [0.0, 1.0])],
+            change_type=  str(p.get("change_type", "absval")),
+        )
+        for p in param_list_raw
+    ]
+
+    mth = cal_new.get("method", {}) or {}
+    mth_par = mth.get("parallel", {}) or {}
+    flat["CalMethod"] = _CalMethodCfg(
+        name=         str(mth.get("name", "manual")),
+        n_iterations= int(mth.get("n_iterations", 100) or 100),
+        seed=         int(mth.get("seed", 1) or 1),
+        parallel=     _EnsembleParallelCfg(
+            enabled=   bool(mth_par.get("enabled", True)),
+            n_workers= int(mth_par.get("n_workers", 4) or 4),
+        ),
+    )
+
+    cal_out = cal_new.get("output", {}) or {}
+    flat["CalOutput"] = _CalOutputCfg(
+        save_all_runs=          bool(cal_out.get("save_all_runs", False)),
+        save_best_n=            int(cal_out.get("save_best_n", 5) or 5),
+        auto_parameter_changes= bool(cal_out.get("auto_parameter_changes", True)),
+    )
 
     # 7. 기후변화
     cc = raw.get("climate_change", {})
