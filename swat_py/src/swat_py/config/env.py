@@ -99,13 +99,20 @@ class _EnsembleParallelCfg:
 
 @dataclass
 class _Observation:
-    """yaml.calibration.observations[] 항목."""
+    """yaml.calibration.observations[] 항목.
+
+    yaml 에서 obs_file / obs_column / outlet_name 생략 가능 — 컨벤션 기반 자동 산출:
+        obs_file   = {obs_root}/{variable}/{time_step}/{outlet_name}.csv
+        obs_column = {variable}_{unit_suffix} (예: flow_m3s, tn_mgl)
+        outlet_name = yaml.outlets.flow.names 에서 outlet_id 로 lookup
+    """
     id:         str
     outlet_id:  int
     variable:   str           # flow | ss | tn | tp
     unit:       str           # m3/s, mm/day, mg/L, kg/day 등
-    obs_file:   str
-    obs_column: str
+    obs_file:   str = ""       # 미명시 시 자동 산출
+    obs_column: str = ""       # 미명시 시 자동 산출
+    outlet_name: str = ""      # 미명시 시 outlets.flow.names lookup
     time_step:  str = "daily"  # daily | monthly | 10day
     weight:     float = 1.0
     objective:  str = "NSE"    # NSE | KGE | R2 | PBIAS | RMSE
@@ -149,6 +156,7 @@ class EnvConfig:
     PrjDir: str = ""          # project.root
     DbDir: str = ""           # project.database
     ObsDayDir: str = ""       # project.input.observed_weather
+    ObservedDataDir: str = ""  # project.input.observed (★ 신규 — 관측 자료 루트, obs/)
     CcDataDir: str = ""       # project.input.cc_weather
     FcstDataDir: str = ""     # project.input.forecast_weather
     SwatRunDir: str = ""      # 호환 alias — CalibratedDir 와 동일
@@ -370,6 +378,10 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
     flat["ObsDayDir"]  = inp.get("observed_weather", "")
     flat["CcDataDir"]  = inp.get("cc_weather", "")
     flat["FcstDataDir"]= inp.get("forecast_weather", "")
+    # 관측 자료 루트 — 미명시 시 $(project.database)/obs 자동
+    flat["ObservedDataDir"] = inp.get("observed") or (
+        f"{flat['DbDir']}/obs" if flat.get("DbDir") else ""
+    )
 
     # output 경로 — model.type 기반 자동 산출 (사용자 명시 시 그게 우선)
     # 옵션 C 구조: 마스터 2개 (default/calibrated) + 작업 폴더 3개 (calibration/forecast/cchange)
@@ -448,20 +460,53 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
     flat["ValPeriodEnd"]   = str(val_new.get("end",   "") or "")
 
     obs_list_raw = cal_new.get("observations", []) or []
-    flat["Observations"] = [
+    observations = [
         _Observation(
-            id=         str(o.get("id", f"obs_{i}")),
-            outlet_id=  int(o.get("outlet_id", 0)),
-            variable=   str(o.get("variable", "flow")).lower(),
-            unit=       str(o.get("unit", "m3/s")),
-            obs_file=   str(o.get("obs_file", "")),
-            obs_column= str(o.get("obs_column", "")),
-            time_step=  str(o.get("time_step", "daily")),
-            weight=     float(o.get("weight", 1.0)),
-            objective=  str(o.get("objective", "NSE")).upper(),
+            id=          str(o.get("id", f"obs_{i}")),
+            outlet_id=   int(o.get("outlet_id", 0)),
+            variable=    str(o.get("variable", "flow")).lower(),
+            unit=        str(o.get("unit", "m3/s")),
+            obs_file=    str(o.get("obs_file", "") or ""),
+            obs_column=  str(o.get("obs_column", "") or ""),
+            outlet_name= str(o.get("outlet_name", "") or ""),
+            time_step=   str(o.get("time_step", "daily")),
+            weight=      float(o.get("weight", 1.0)),
+            objective=   str(o.get("objective", "NSE")).upper(),
         )
         for i, o in enumerate(obs_list_raw)
     ]
+    # 관측 자료 obs_file/obs_column/outlet_name 자동 산출
+    # (yaml 에 명시되어 있으면 그게 우선)
+    flow_ids   = _as_list(outlets.get("flow",          {}).get("ids", []))
+    flow_names = _as_list(outlets.get("flow",          {}).get("names", []))
+    wq_ids     = _as_list(outlets.get("water_quality", {}).get("ids", []))
+    wq_names   = _as_list(outlets.get("water_quality", {}).get("names", []))
+    id_to_name: Dict[int, str] = {}
+    for ids, names in ((flow_ids, flow_names), (wq_ids, wq_names)):
+        for i, oid in enumerate(ids):
+            try:
+                id_to_name[int(oid)] = str(names[i]) if i < len(names) else ""
+            except (TypeError, ValueError):
+                continue
+
+    obs_root = flat["ObservedDataDir"]
+    for obs in observations:
+        # outlet_name 자동
+        if not obs.outlet_name:
+            obs.outlet_name = id_to_name.get(obs.outlet_id, f"outlet_{obs.outlet_id}")
+        # obs_column 자동
+        if not obs.obs_column:
+            try:
+                from swat_py.units import default_column_name
+                obs.obs_column = default_column_name(obs.variable, obs.unit)
+            except Exception:
+                pass
+        # obs_file 자동 — obs_root/{variable}/{time_step}/{outlet_name}.csv
+        if not obs.obs_file and obs_root:
+            obs.obs_file = (
+                f"{obs_root}/{obs.variable}/{obs.time_step}/{obs.outlet_name}.csv"
+            )
+    flat["Observations"] = observations
 
     param_list_raw = cal_new.get("parameters", []) or []
     flat["CalParameters"] = [

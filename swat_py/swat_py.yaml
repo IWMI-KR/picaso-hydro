@@ -17,13 +17,12 @@ project:
   root:     "${env:PICASO_ROOT:C:/Projects/MyWatershed}"   # ★ 프로젝트 루트
   database: "$(project.root)/Database"
   input:
-    observed_weather:  "$(project.database)/Observed"
+    observed:          "$(project.database)/obs"               # ★ 관측 자료 루트
+    observed_weather:  "$(project.database)/obs/weather/daily_std"
     cc_weather:        "$(project.database)/ClimateChange"
     forecast_weather:  "$(project.database)/Forecast"
   # output 경로는 model.type 으로 자동 산출 (3_swatplus/ 또는 3_swat2012/ 아래
   # default/, calibrated/, calibration/, forecast/, cchange/)
-  output:
-    database: "$(project.database)/SWAT"     # 관측 자료 DB
 
 
 # ── 2. 모델 ──────────────────────────────────────────────────────────────────
@@ -51,39 +50,55 @@ calibration:
     end:   "2020-12-31"           # ★
 
   # 4.2 ★ 관측점 × 변수 (flat list — 각 항목 독립)
+  #     관측 자료 폴더 구조 (자동 산출, 사용자 수정 가능):
+  #       $(input.observed)/{variable}/{time_step}/{outlet_name}.csv
+  #       예: 0_database/obs/flow/daily/Rarotonga_Outlet.csv
+  #
   #     허용 unit (단위 자동 변환은 swat_py.units 모듈):
   #       flow : m3/s (기본) | mm/day (depth) | l/s | m3/day
   #       ss   : t/day (기본) | mg/L
   #       tn   : kg/day (기본) | mg/L | t/day
   #       tp   : kg/day (기본) | mg/L | t/day
+  #
+  #     컬럼명 컨벤션 (자동): {variable}_{unit_suffix}
+  #       flow_m3s, flow_mm, ss_mgl, ss_td, tn_mgl, tn_kgd, tp_mgl, tp_kgd
+  #
+  #     obs_file / obs_column 명시 시 자동 산출보다 우선.
   observations:
-    - id:         "outlet1_flow"
-      outlet_id:  1                       # ★ SWAT 채널 GIS ID
-      variable:   "flow"
-      unit:       "m3/s"
-      obs_file:   "obs_flow_outlet1.csv"  # ★ project.output.database 기준
-      obs_column: "inflow_cms"            # ★ CSV 의 컬럼명
-      time_step:  "daily"
-      weight:     1.0                     # 다중 변수 결합 시 가중치
-      objective:  "NSE"                   # NSE | KGE | R2 | PBIAS | RMSE
+    - id:        "outlet1_flow"
+      outlet_id: 1                        # ★ SWAT 채널 GIS ID (outlets.flow.ids 와 일치)
+      variable:  "flow"
+      unit:      "m3/s"
+      time_step: "daily"
+      weight:    1.0                      # 다중 변수 결합 시 가중치
+      objective: "NSE"                    # NSE | KGE | R2 | PBIAS | RMSE
+      # obs_file / obs_column 자동 산출 (생략 가능)
+      # outlet_name 도 outlets.flow.names lookup 자동
 
-    # 같은 outlet 에 다른 변수 추가 가능
-    # - id:         "outlet1_tn"
+    # 같은 outlet 에 다른 변수 추가
+    # - id:        "outlet1_tn"
+    #   outlet_id: 1
+    #   variable:  "tn"
+    #   unit:      "mg/L"
+    #   time_step: "monthly"
+    #   weight:    0.3
+    #   objective: "PBIAS"
+
+    # 다른 outlet 추가
+    # - id:        "outlet2_flow"
+    #   outlet_id: 5
+    #   variable:  "flow"
+    #   unit:      "mm/day"
+    #   time_step: "daily"
+
+    # 비표준 파일을 명시적으로 사용하려면:
+    # - id:         "legacy_flow"
     #   outlet_id:  1
-    #   variable:   "tn"
-    #   unit:       "mg/L"
-    #   obs_file:   "obs_wq_outlet1.csv"
-    #   obs_column: "tn_mgl"
-    #   time_step:  "monthly"
-    #   weight:     0.3
-    #   objective:  "PBIAS"
-
-    # 다른 outlet 추가 가능
-    # - id:         "outlet2_flow"
-    #   outlet_id:  5
     #   variable:   "flow"
-    #   unit:       "mm/day"
-    #   ...
+    #   unit:       "m3/s"
+    #   time_step:  "daily"
+    #   obs_file:   "/custom/legacy_obs.csv"
+    #   obs_column: "Q_cms"
 
   # 4.3 보정 인자 (자동 보정 알고리즘이 사용할 인자·범위·변환 방식)
   #     change_type:

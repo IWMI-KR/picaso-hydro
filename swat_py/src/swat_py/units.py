@@ -36,6 +36,32 @@ _ALLOWED_UNITS = {
     "tp":   {"kg/day", "mg/L", "t/day"},
 }
 
+# 단위 → 파일·컬럼 접미사 매핑 (관측 CSV 컬럼명 컨벤션)
+# 예: flow + m3/s → flow_m3s, tn + mg/L → tn_mgl
+_UNIT_SUFFIX = {
+    "m3/s":   "m3s",
+    "mm/day": "mm",
+    "l/s":    "ls",
+    "m3/day": "m3d",
+    "kg/day": "kgd",
+    "t/day":  "td",
+    "mg/L":   "mgl",
+}
+
+
+def default_column_name(variable: str, unit: str) -> str:
+    """관측 CSV 의 표준 컬럼명 산출: ``{variable}_{unit_suffix}``.
+
+    예시
+    ----
+    >>> default_column_name("flow", "m3/s")
+    'flow_m3s'
+    >>> default_column_name("tn", "mg/L")
+    'tn_mgl'
+    """
+    validate_unit(variable, unit)
+    return f"{variable.lower()}_{_UNIT_SUFFIX[unit]}"
+
 
 # ── 검증 ────────────────────────────────────────────────────────────────────
 
