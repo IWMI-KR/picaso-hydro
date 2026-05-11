@@ -2,8 +2,8 @@
 
 URL 매핑
 --------
-- swat_plus → http://shared.iwmi.kr:48080/permanent/swat_py/SWAT-Plus.exe
-- swat2012  → (현재 URL 미제공 — 사용자가 직접 배치 필요)
+- swat_plus → http://shared.iwmi.kr:48080/permanent/swat_py/SWAT-Plus.exe (5 MB)
+- swat2012  → http://shared.iwmi.kr:48080/permanent/swat_py/SWAT2012.exe (20 MB)
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import Union
 
 _SWAT_EXE_URLS = {
     "swat_plus":  "http://shared.iwmi.kr:48080/permanent/swat_py/SWAT-Plus.exe",
-    # swat2012 는 현재 URL 미제공 — 사용자가 직접 배치
+    "swat2012":   "http://shared.iwmi.kr:48080/permanent/swat_py/SWAT2012.exe",
 }
 
 
