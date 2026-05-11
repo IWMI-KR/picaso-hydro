@@ -25,17 +25,24 @@ def write_all_runs_csv(
     param_names: List[str],
     output_csv: Union[str, Path],
 ) -> Path:
-    """history → CSV (iter, param1, param2, ..., f, [is_best, n_dims_changed])."""
+    """history → CSV.
+
+    컬럼: iter, [params...], f, [is_best, n_dims_changed], [detail 키...]
+    history[i] 에 'iter', 'x', 'f' 외에 임의의 추가 필드가 있으면 모두 포함.
+    """
+    _SKIP = {"iter", "x", "f"}
     rows = []
     for h in history:
         row = {"iter": h["iter"]}
         for i, name in enumerate(param_names):
             row[name] = h["x"][i]
         row["f"] = h["f"]
-        if "is_best" in h:
-            row["is_best"] = h["is_best"]
-        if "n_dims_changed" in h:
-            row["n_dims_changed"] = h["n_dims_changed"]
+        # 추가 필드 (is_best, n_dims_changed, detail__keys, metrics_per_obs 제외)
+        for k, v in h.items():
+            if k in _SKIP:
+                continue
+            if isinstance(v, (int, float, bool, str)):
+                row[k] = v
         rows.append(row)
     df = pd.DataFrame(rows)
     output_csv = Path(output_csv)
@@ -52,12 +59,21 @@ def write_top_n_csv(
     n: int = 5,
     maximize: bool = True,
 ) -> Path:
-    """상위 N개 시도 → CSV (랭킹, iter, params, f)."""
-    df_all = pd.DataFrame([
-        {"iter": h["iter"], "f": h["f"],
-         **{name: h["x"][i] for i, name in enumerate(param_names)}}
-        for h in history
-    ])
+    """상위 N개 시도 → CSV (랭킹, iter, params, f, 그 외 스칼라 필드)."""
+    _SKIP = {"iter", "x", "f"}
+    records = []
+    for h in history:
+        rec = {"iter": h["iter"]}
+        for i, name in enumerate(param_names):
+            rec[name] = h["x"][i]
+        rec["f"] = h["f"]
+        for k, v in h.items():
+            if k in _SKIP:
+                continue
+            if isinstance(v, (int, float, bool, str)):
+                rec[k] = v
+        records.append(rec)
+    df_all = pd.DataFrame(records)
     df_sorted = df_all.sort_values("f", ascending=not maximize).head(n).copy()
     df_sorted.insert(0, "rank", range(1, len(df_sorted) + 1))
     output_csv = Path(output_csv)
