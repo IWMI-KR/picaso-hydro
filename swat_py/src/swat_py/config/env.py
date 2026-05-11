@@ -95,12 +95,21 @@ class EnvConfig:
     ObsDayDir: str = ""       # project.input.observed_weather
     CcDataDir: str = ""       # project.input.cc_weather
     FcstDataDir: str = ""     # project.input.forecast_weather
-    SwatRunDir: str = ""      # project.output.swat_run
-    SwatObsDir: str = ""      # project.output.calibration
-    SwatCcDir: str = ""       # project.output.climate_change
-    SwatFcstDir: str = ""     # project.output.forecast
-    SwatDbDir: str = ""       # project.output.database
+    SwatRunDir: str = ""      # 호환 alias — CalibratedDir 와 동일
+    SwatObsDir: str = ""      # 호환 alias — CalibrationDir 와 동일
+    SwatCcDir: str = ""       # 호환 alias — CchangeDir 와 동일
+    SwatFcstDir: str = ""     # 호환 alias — ForecastDir 와 동일
+    SwatDbDir: str = ""       # project.output.database (관측 자료 DB)
     SmplDir: str = ""         # (미사용 / 하위 호환)
+
+    # ── 옵션 C 마스터 + 작업 폴더 (model.type 기반 자동 산출) ─────────────────
+    # 마스터 (READ-ONLY)
+    DefaultDir: str = ""      # $(root)/3_swatplus/default — QSWAT+ 출력
+    CalibratedDir: str = ""   # $(root)/3_swatplus/calibrated — 보정 완료
+    # 작업 (runs/ + results/ 하위 구조)
+    CalibrationDir: str = ""  # $(root)/3_swatplus/calibration
+    ForecastDir: str = ""     # $(root)/3_swatplus/forecast
+    CchangeDir: str = ""      # $(root)/3_swatplus/cchange
 
     # ── 모델 ──────────────────────────────────────────────────────────────────
     ModelType: str = "swat_plus"    # "swat_plus" | "swat2012"
@@ -290,20 +299,31 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
     flat["FcstDataDir"]= inp.get("forecast_weather", "")
 
     # output 경로 — model.type 기반 자동 산출 (사용자 명시 시 그게 우선)
+    # 옵션 C 구조: 마스터 2개 (default/calibrated) + 작업 폴더 3개 (calibration/forecast/cchange)
     auto_root = _auto_output_root(flat["PrjDir"], model_type)
     out = proj.get("output", {})
-    flat["SwatRunDir"]  = out.get("swat_run")       or (f"{auto_root}/base_txtinout" if auto_root else "")
-    flat["SwatObsDir"]  = out.get("calibration")    or (f"{auto_root}/calibration"   if auto_root else "")
-    flat["SwatCcDir"]   = out.get("climate_change") or (f"{auto_root}/cchange"       if auto_root else "")
-    flat["SwatFcstDir"] = out.get("forecast")       or (f"{auto_root}/forecast"      if auto_root else "")
-    flat["SwatDbDir"]   = out.get("database", "")   # 관측 DB 는 자동 산출 안 함
+
+    # 옵션 C 신규 키 (yaml 에서 명시 가능, 미명시 시 자동)
+    flat["DefaultDir"]     = out.get("default")     or (f"{auto_root}/default"     if auto_root else "")
+    flat["CalibratedDir"]  = out.get("calibrated")  or (f"{auto_root}/calibrated"  if auto_root else "")
+    flat["CalibrationDir"] = out.get("calibration") or (f"{auto_root}/calibration" if auto_root else "")
+    flat["ForecastDir"]    = out.get("forecast")    or (f"{auto_root}/forecast"    if auto_root else "")
+    flat["CchangeDir"]     = out.get("climate_change") or (f"{auto_root}/cchange"  if auto_root else "")
+
+    # 호환 alias — 옛 코드용
+    flat["SwatRunDir"]  = out.get("swat_run") or flat["CalibratedDir"]
+    flat["SwatObsDir"]  = flat["CalibrationDir"]
+    flat["SwatCcDir"]   = flat["CchangeDir"]
+    flat["SwatFcstDir"] = flat["ForecastDir"]
+    flat["SwatDbDir"]   = out.get("database", "")
 
     # mismatch 경고 — 사용자 명시 경로가 다른 버전 폴더를 가리키는지 검사
     for name, path in (
-        ("output.swat_run",       flat["SwatRunDir"]),
-        ("output.calibration",    flat["SwatObsDir"]),
-        ("output.climate_change", flat["SwatCcDir"]),
-        ("output.forecast",       flat["SwatFcstDir"]),
+        ("output.default",        flat["DefaultDir"]),
+        ("output.calibrated",     flat["CalibratedDir"]),
+        ("output.calibration",    flat["CalibrationDir"]),
+        ("output.forecast",       flat["ForecastDir"]),
+        ("output.climate_change", flat["CchangeDir"]),
     ):
         _warn_if_version_mismatch(name, str(path), model_type)
 
@@ -400,19 +420,26 @@ def _normalize_legacy(raw: Dict[str, Any]) -> Dict[str, Any]:
             f"ModelType 은 {VALID_MODEL_TYPES} 중 하나여야 합니다: '{flat['ModelType']}'"
         )
 
-    # output 경로 자동 산출 (사용자 명시 시 우선)
+    # output 경로 자동 산출 (사용자 명시 시 우선) — 옵션 C 구조
     prj_dir = str(flat.get("PrjDir", ""))
     auto_root = _auto_output_root(prj_dir, flat["ModelType"])
     if auto_root:
-        flat["SwatRunDir"]  = flat.get("SwatRunDir")  or f"{auto_root}/base_txtinout"
-        flat["SwatObsDir"]  = flat.get("SwatObsDir")  or f"{auto_root}/calibration"
-        flat["SwatCcDir"]   = flat.get("SwatCcDir")   or f"{auto_root}/cchange"
-        flat["SwatFcstDir"] = flat.get("SwatFcstDir") or f"{auto_root}/forecast"
+        flat["DefaultDir"]     = flat.get("DefaultDir")     or f"{auto_root}/default"
+        flat["CalibratedDir"]  = flat.get("CalibratedDir")  or f"{auto_root}/calibrated"
+        flat["CalibrationDir"] = flat.get("CalibrationDir") or f"{auto_root}/calibration"
+        flat["ForecastDir"]    = flat.get("ForecastDir")    or f"{auto_root}/forecast"
+        flat["CchangeDir"]     = flat.get("CchangeDir")     or f"{auto_root}/cchange"
+        # 호환 alias
+        flat["SwatRunDir"]  = flat.get("SwatRunDir") or flat["CalibratedDir"]
+        flat["SwatObsDir"]  = flat["CalibrationDir"]
+        flat["SwatCcDir"]   = flat["CchangeDir"]
+        flat["SwatFcstDir"] = flat["ForecastDir"]
     for name, path in (
-        ("SwatRunDir",  flat.get("SwatRunDir", "")),
-        ("SwatObsDir",  flat.get("SwatObsDir", "")),
-        ("SwatCcDir",   flat.get("SwatCcDir", "")),
-        ("SwatFcstDir", flat.get("SwatFcstDir", "")),
+        ("DefaultDir",     flat.get("DefaultDir", "")),
+        ("CalibratedDir",  flat.get("CalibratedDir", "")),
+        ("CalibrationDir", flat.get("CalibrationDir", "")),
+        ("ForecastDir",    flat.get("ForecastDir", "")),
+        ("CchangeDir",     flat.get("CchangeDir", "")),
     ):
         _warn_if_version_mismatch(name, str(path), flat["ModelType"])
 
@@ -449,13 +476,21 @@ def _as_list(val: Any) -> list:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _ensure_dirs(cfg: EnvConfig) -> None:
-    """존재하지 않는 출력 디렉토리를 자동으로 생성합니다."""
+    """존재하지 않는 출력 디렉토리를 자동으로 생성합니다 (옵션 C 마스터+작업 분리)."""
     dirs = [
         cfg.ObsDayDir,
         cfg.SwatDbDir,
-        cfg.SwatRunDir,
-        cfg.SwatObsDir,
-        cfg.SwatCcDir,
+        # 마스터 (READ-ONLY 의도, 폴더만 미리 생성)
+        cfg.DefaultDir,
+        cfg.CalibratedDir,
+        # 작업 폴더 + runs/results 하위 컨벤션
+        cfg.CalibrationDir,
+        f"{cfg.CalibrationDir}/runs"    if cfg.CalibrationDir else "",
+        f"{cfg.CalibrationDir}/results" if cfg.CalibrationDir else "",
+        cfg.ForecastDir,
+        cfg.CchangeDir,
+        f"{cfg.CchangeDir}/runs"    if cfg.CchangeDir else "",
+        f"{cfg.CchangeDir}/summary" if cfg.CchangeDir else "",
     ]
     for d in dirs:
         if d:

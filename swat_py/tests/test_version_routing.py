@@ -48,10 +48,17 @@ def test_load_config_swat_plus_auto_paths(tmp_path) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error")        # 경고가 없어야 함
         cfg = load_config(p)
-    assert Path(cfg.SwatRunDir)  == Path("/proj/3_swatplus/base_txtinout")
-    assert Path(cfg.SwatObsDir)  == Path("/proj/3_swatplus/calibration")
-    assert Path(cfg.SwatCcDir)   == Path("/proj/3_swatplus/cchange")
-    assert Path(cfg.SwatFcstDir) == Path("/proj/3_swatplus/forecast")
+    # 옵션 C — 마스터 2개 + 작업 3개
+    assert Path(cfg.DefaultDir)     == Path("/proj/3_swatplus/default")
+    assert Path(cfg.CalibratedDir)  == Path("/proj/3_swatplus/calibrated")
+    assert Path(cfg.CalibrationDir) == Path("/proj/3_swatplus/calibration")
+    assert Path(cfg.ForecastDir)    == Path("/proj/3_swatplus/forecast")
+    assert Path(cfg.CchangeDir)     == Path("/proj/3_swatplus/cchange")
+    # 호환 alias
+    assert Path(cfg.SwatRunDir)  == Path(cfg.CalibratedDir)
+    assert Path(cfg.SwatObsDir)  == Path(cfg.CalibrationDir)
+    assert Path(cfg.SwatFcstDir) == Path(cfg.ForecastDir)
+    assert Path(cfg.SwatCcDir)   == Path(cfg.CchangeDir)
 
 
 def test_load_config_swat2012_auto_paths(tmp_path) -> None:
@@ -67,10 +74,11 @@ def test_load_config_swat2012_auto_paths(tmp_path) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         cfg = load_config(p)
-    assert Path(cfg.SwatRunDir)  == Path("/proj/3_swat2012/base_txtinout")
-    assert Path(cfg.SwatObsDir)  == Path("/proj/3_swat2012/calibration")
-    assert Path(cfg.SwatCcDir)   == Path("/proj/3_swat2012/cchange")
-    assert Path(cfg.SwatFcstDir) == Path("/proj/3_swat2012/forecast")
+    assert Path(cfg.DefaultDir)     == Path("/proj/3_swat2012/default")
+    assert Path(cfg.CalibratedDir)  == Path("/proj/3_swat2012/calibrated")
+    assert Path(cfg.CalibrationDir) == Path("/proj/3_swat2012/calibration")
+    assert Path(cfg.ForecastDir)    == Path("/proj/3_swat2012/forecast")
+    assert Path(cfg.CchangeDir)     == Path("/proj/3_swat2012/cchange")
     assert cfg.Executable == "SWAT2020.exe"
 
 
@@ -86,17 +94,19 @@ def test_load_config_invalid_model_type_raises(tmp_path) -> None:
 # ── 수동 오버라이드 ──────────────────────────────────────────────────────────
 
 def test_user_override_takes_precedence(tmp_path) -> None:
-    """yaml 에 output.swat_run 을 명시하면 자동 산출보다 우선."""
+    """yaml 에 명시한 경로가 자동 산출보다 우선 (default/calibrated 키 직접 명시)."""
     p = _write_yaml(tmp_path, dedent("""
         project:
           root: "/proj"
           output:
-            swat_run: "/custom/path/TxtInOut"
+            calibrated: "/custom/path/calibrated"
         model:
           type: "swat_plus"
     """))
     cfg = load_config(p)
-    assert Path(cfg.SwatRunDir) == Path("/custom/path/TxtInOut")
+    assert Path(cfg.CalibratedDir) == Path("/custom/path/calibrated")
+    # SwatRunDir 는 CalibratedDir 의 alias
+    assert Path(cfg.SwatRunDir) == Path("/custom/path/calibrated")
 
 
 # ── mismatch 경고 ───────────────────────────────────────────────────────────
@@ -107,7 +117,7 @@ def test_mismatch_warning_swat_plus_with_swat2012_path(tmp_path) -> None:
         project:
           root: "/proj"
           output:
-            swat_run: "/proj/3_swat2012/base_txtinout"
+            calibrated: "/proj/3_swat2012/calibrated"
         model:
           type: "swat_plus"
     """))
@@ -141,7 +151,7 @@ def test_no_warning_when_paths_match(tmp_path) -> None:
         project:
           root: "/proj"
           output:
-            swat_run: "/proj/3_swatplus/base_txtinout"
+            calibrated: "/proj/3_swatplus/calibrated"
         model:
           type: "swat_plus"
     """))

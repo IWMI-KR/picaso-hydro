@@ -39,15 +39,31 @@ project:
     forecast_weather:  "$(project.database)/Forecast"        # 예보 기상 자료 (acidwg_py 출력)
 
   # SWAT 실행 및 결과 저장 폴더
-  # output 경로는 model.type 으로 자동 산출됨 — 명시 안 하면 다음과 같이 결정:
-  #   swat_plus → $(project.root)/3_swatplus/{base_txtinout|calibration|cchange|forecast}
-  #   swat2012  → $(project.root)/3_swat2012/{base_txtinout|calibration|cchange|forecast}
-  # 직접 명시하고 싶을 때만 아래 키들을 적습니다 (mismatch 시 경고 출력).
+  # output 경로는 model.type 으로 자동 산출됨 — 마스터 2 + 작업 폴더 3:
+  #
+  #   model.type='swat_plus' →   $(root)/3_swatplus/...
+  #   model.type='swat2012'  →   $(root)/3_swat2012/...
+  #
+  #   {root}/{3_swatplus|3_swat2012}/
+  #     default/        ← QSWAT+ 출력 (READ-ONLY 마스터)
+  #     calibrated/     ← 보정 완료 (READ-ONLY 마스터)
+  #     calibration/
+  #       runs/         ← 보정 시도 (임시, cleanup=true 시 자동 삭제)
+  #       results/      ← 분석 결과 + parameter_changes.csv
+  #     forecast/{operational|hindcast|seasonal}/{year}/{season}/
+  #       runs/member_NNNN/  ← 앙상블 멤버별 임시 실행
+  #       results/      ← 분위수·초과확률
+  #     cchange/
+  #       runs/{GCM}/{scenario}/{period}/  ← 시뮬레이션 작업
+  #       summary/      ← 앙상블 분위수·비교 그래프
+  #
+  # 명시 시에만 yaml 에 적습니다 (mismatch 시 경고).
   output:
-    # swat_run:       "$(project.root)/3_swatplus/base_txtinout"   # 자동 산출 — 보통 명시 불필요
+    # default:        "$(project.root)/3_swatplus/default"
+    # calibrated:     "$(project.root)/3_swatplus/calibrated"
     # calibration:    "$(project.root)/3_swatplus/calibration"
-    # climate_change: "$(project.root)/3_swatplus/cchange"
     # forecast:       "$(project.root)/3_swatplus/forecast"
+    # climate_change: "$(project.root)/3_swatplus/cchange"
     database:       "$(project.database)/SWAT"           # 관측 DB — 명시 필요
 
 
