@@ -9,6 +9,8 @@
 """
 from swat_py.calibration.analysis_swat import run_calibration_analysis
 from swat_py.calibration.analysis_swat_plus import run_calibration_analysis_plus
+from swat_py.calibration.auto import run_auto_calibration
+from swat_py.calibration.exe_download import ensure_swat_exe
 from swat_py.calibration.modify import (
     ParameterChange,
     apply_change,
@@ -17,6 +19,7 @@ from swat_py.calibration.modify import (
     modify_swat2012_file,
     modify_swat_plus_file,
 )
+from swat_py.calibration.optimizer import DDSResult, dds_optimize
 from swat_py.calibration.parameters import (
     CATALOG,
     CHANGE_TYPES,
@@ -50,4 +53,6 @@ __all__ = [
     # synthetic
     "generate_synthetic_flow", "generate_synthetic_water_quality",
     "generate_synthetic_obs_for_calibration",
+    # auto-calibration (DDS)
+    "DDSResult", "dds_optimize", "ensure_swat_exe", "run_auto_calibration",
 ]
