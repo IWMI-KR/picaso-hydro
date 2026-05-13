@@ -7,11 +7,12 @@ ws10_ms, ws2_ms, source
 
 SWAT-Plus 가중치 파일 형식 (per station, per variable)
 -----------------------------------------------------
-헤더 4행
-    {filename}                                # 1행
-    nbyr  tstep  lat  lon  elev               # 2행 (메타 라벨)
-    {nbyr}  {tstep}  {lat:.5f}  {lon:.5f}  {elev:.1f}   # 3행
-    {variable header line}                    # 4행 (변수명 + 단위)
+헤더 3행 — SWAT+ 표준 / SWAT+ Editor import 파서 (`add_weather_files_type`)
+도 동일하게 line idx 3 부터 데이터로 해석한다.
+
+    {filename}                                # 1행 (코멘트)
+    nbyr  tstep  lat  lon  elev               # 2행 (라벨)
+    {nbyr}  {tstep}  {lat:.5f}  {lon:.5f}  {elev:.1f}   # 3행 (값)
 데이터
     {year}  {jday}  {value(s)}                # tmp 는 두 값, 나머지는 한 값
 
@@ -30,6 +31,7 @@ SWAT-Plus 가중치 파일 형식 (per station, per variable)
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -124,12 +126,11 @@ def _write_variable_file(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with output_path.open("w", encoding="utf-8") as f:
-        # 헤더 4행
-        f.write(f"{output_path.name}\n")
+        # 헤더 3행 (SWAT+ 표준 — Editor import 파서가 line idx 3 부터 데이터로 읽음)
+        f.write(f"{output_path.name}: {spec['header']} - written by swat_py\n")
         f.write(f"nbyr  tstep  lat       lon        elev\n")
         f.write(f"{nbyr:4d}  {0:4d}  "
                 f"{station.lat:9.5f}  {station.lon:10.5f}  {station.elev:6.1f}\n")
-        f.write(f"year  jday  {spec['header']}\n")
 
         # 데이터
         if len(cols) == 1:
@@ -267,6 +268,86 @@ def write_swat_plus_weather_batch(
     if write_sta_cli and sta_entries:
         idx = write_weather_sta_cli(sta_entries, output_dir / "weather-sta.cli")
         print(f"  [INDEX] {idx.name}  ({len(sta_entries)}개 station)")
+
+    return results
+
+
+# ── QSWAT+ / SWAT+ Editor weather import 폴더 ──────────────────────────────
+
+def write_qswatplus_cli_index(
+    filenames: List[str],
+    output_path: Union[str, Path],
+    var: str,
+    *,
+    written_by: str = "swat_py.io.weather_std_adapter",
+) -> Path:
+    """QSWAT+ / SWAT+ Editor 의 per-variable weather import index 파일 작성.
+
+    SWAT+ Editor ``actions/import_weather.py::add_weather_files_type`` 가
+    읽는 형식 — 첫 2 줄은 헤더로 건너뛰고, line 3+ 의 각 줄을 station 파일명
+    으로 해석한다 (``if i > 1: station_name = line.strip('\\n')``).
+
+    출력 포맷::
+        {var}.cli: written by {written_by} on {date}
+        filename
+        sta1.{var}
+        sta2.{var}
+
+    Parameters
+    ----------
+    filenames    : station 데이터 파일명 목록 (예: ["918430.pcp", "461303.pcp"])
+    output_path  : 출력 .cli 경로 (예: .../pcp.cli)
+    var          : 변수 약어 (pcp/tmp/hmd/slr/wnd/pet) — 첫 줄 메타 표기용
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines: List[str] = [f"{var}.cli: written by {written_by} on {now}",
+                        "filename"] + list(filenames)
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return output_path
+
+
+def write_qswatplus_weather_input(
+    std_csvs: List[Tuple[Union[str, Path], StationMeta]],
+    output_dir: Union[str, Path],
+    variables: Optional[List[str]] = None,
+    *,
+    write_sta_cli: bool = True,
+) -> Dict[str, Dict[str, Path]]:
+    """QSWAT+ / SWAT+ Editor 의 weather import 폴더 일괄 생성.
+
+    출력 구조 ::
+        output_dir/
+            {sta}.pcp, {sta}.tmp, {sta}.hmd, {sta}.slr, {sta}.wnd  (station × 변수)
+            pcp.cli, tmp.cli, hmd.cli, slr.cli, wnd.cli            (변수별 index)
+            weather-sta.cli                                         (선택)
+
+    QSWAT+ 가 "Use SWAT+ weather data" → 폴더 지정 시 즉시 import 가능한
+    파일 셋이다. 각 station 데이터 파일은 line 2 (값 행) 에 ``nbyr tstep
+    lat lon elev`` 가 들어가야 하며, Editor 는 그 lat/lon 으로 station
+    좌표를 인식한다 (`write_swat_plus_weather_batch` 가 이미 보장).
+
+    Parameters
+    ----------
+    std_csvs       : [(표준 일자료 CSV 경로, StationMeta), ...]
+    output_dir     : QSWAT+ import 폴더
+    variables      : 작성할 변수 목록 (기본: pcp/tmp/hmd/slr/wnd)
+    write_sta_cli  : True 면 SWAT+ 모형 runtime 용 weather-sta.cli 도 작성
+    """
+    output_dir = Path(output_dir)
+    results = write_swat_plus_weather_batch(
+        std_csvs, output_dir, variables=variables, write_sta_cli=write_sta_cli,
+    )
+
+    by_var: Dict[str, List[str]] = {}
+    for _sta_id, files in results.items():
+        for var, p in files.items():
+            by_var.setdefault(var, []).append(p.name)
+
+    for var, fnames in by_var.items():
+        write_qswatplus_cli_index(sorted(fnames), output_dir / f"{var}.cli", var)
+        print(f"  [INDEX] {var}.cli  ({len(fnames)}개 파일)")
 
     return results
 
