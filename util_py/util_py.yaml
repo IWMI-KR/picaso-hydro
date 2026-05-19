@@ -211,16 +211,15 @@ gis_download:
     properties: ["sand", "silt", "clay"]   # SWAT 텍스처 핵심 3개 (bdod, soc 등 추가 가능)
     depth:      "0-5cm"                     # 표토. 5-15cm, 15-30cm 등 가능
 
-  # ── SOIL (SWAT 권장): FAO DSMW + SWAT2009 속성 DB ──
-  #   FAO Digital Soil Map of the World (DSMW) 기반 글로벌 토양 raster
-  #   + Texas A&M SWAT 그룹의 SWAT2009-Global-V1.0.mdb 속성 DB.
-  #   raster 픽셀값 → MUID → SOL_BD/AWC/K/USLE_K/SOL_CBN 등 매핑.
-  #   ★ HWSD (Harmonized World Soil Database) 는 다른 분류체계로 SWAT2009 mdb 와
-  #     호환되지 않아 본 함수에서 제외함.
-  #   boundary_csv 가 있으면 자동으로 클립 → 유효 픽셀 0개면 canonical 저장 안 함.
+  # ── SOIL (SWAT 권장): 한국 RDA / 글로벌 FAO 자동 분기 ──
+  #   country_boundary.csv 의 ISO3 가 'KOR' 이면 농진청(RDA) 정밀토양도,
+  #   그 외 국가는 FAO Digital Soil Map of the World (DSMW) 기반 글로벌 토양.
+  #   각 분기 마다 raster(tif) + QSWAT(mdb) + QSWATPlus(sqlite) + lookup 4종을
+  #   IWMI 사내 HTTP (shared.iwmi.kr:48080) 에서 다운로드.
+  #   boundary_csv 가 있으면 raster 를 자동 클립 → 유효 픽셀 0개면 soil.tif 저장 안 함.
   swat_soil:
     source:    "local"                          # local | url
-    local_dir: "S:/Database-INT/GISDB/Soils"    # 사내 SWAT GISDB 위치
+    local_dir: "S:/Database-INT/GISDB/Soils"    # 사내 SWAT GISDB 위치 (sidecar 만 참조)
 
   # ── LANDUSE: ESA WorldCover 2021 v200 (AWS S3, 3°×3° tile) ──
   worldcover:

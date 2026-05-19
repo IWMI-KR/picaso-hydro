@@ -174,7 +174,8 @@ def main() -> int:
 
     if "swat_soil" in targets:
         try:
-            # 국가 boundary = gis/admin/admin.shp (GADM)
+            # 국가 boundary = gis/admin/admin.shp (GADM). ISO3 로 한국(RDA) /
+            # 그 외(글로벌 FAO) 자동 분기.
             admin_shp = Path(gis_root) / "admin" / "admin.shp"
             paths = download_swat_soil(
                 gis_root=gis_root,
@@ -182,7 +183,8 @@ def main() -> int:
                 local_dir=cfg.gis_download.swat_soil.local_dir,
                 boundary_path=str(admin_shp) if admin_shp.is_file() else None,
                 bbox=bbox if not admin_shp.is_file() else None,
-                buffer_deg=cfg.gis.swat_buffer_deg)
+                buffer_deg=cfg.gis.swat_buffer_deg,
+                iso3=iso3)
             soil_saved = "soil" in paths
             summary.append(f"swat_soil {'✓' if soil_saved else '—'}  "
                            f"{len(paths)}개 파일{' (canonical 저장)' if soil_saved else ' (canonical 미저장: 자료 없음)'}")

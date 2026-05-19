@@ -3,18 +3,20 @@
 워크플로우
 ----------
 Stage 1 (gis_download) 으로 받은 국가 전체 자료
-    gis/{type}/{type}.tif        DEM, LULC, soil 등 canonical
-    gis/{type}/{type}_lookup.csv lookup
-    gis/{type}/SWAT2009-...mdb   속성 DB
+    gis/{type}/{type}.tif         DEM, LULC, soil 등 canonical
+    gis/{type}/{type}_lookup.csv  lookup
+    gis/soil/QSWAT-*.mdb          QSWAT (SWAT2012) 속성 DB
+    gis/soil/QSWATPlus-*.sqlite   QSWAT+ (SWAT+ Editor) 속성 DB
 
 Stage 2 (gis_user) 로 사용자 SWAT 영역으로 클립
     1. 사용자가 ``gis/user/boundary-{area}.shp`` 배치 (예: boundary-rarotonga.shp)
     2. ``clip_to_user_area("rarotonga", ...)`` 호출
     3. 결과:
-       gis/user/{area}/{type}/{type}.tif          ← boundary 클립 (EPSG:4326)
-       gis/user/{area}/{type}/{type}-epsg{N}.tif  ← UTM (SWAT-ready, area 별 자동 EPSG)
-       gis/user/{area}/{type}/{type}_lookup.csv   ← lookup 복사 (참조)
-       gis/user/{area}/{type}/SWAT2009-...mdb     ← mdb 복사 (참조)
+       gis/user/{area}/{type}/{type}.tif           ← boundary 클립 (EPSG:4326)
+       gis/user/{area}/{type}/{type}-epsg{N}.tif   ← UTM (SWAT-ready, area 별 자동 EPSG)
+       gis/user/{area}/{type}/{type}_lookup.csv    ← lookup 복사 (참조)
+       gis/user/{area}/{type}/QSWAT-*.mdb          ← QSWAT 속성 DB 복사 (참조)
+       gis/user/{area}/{type}/QSWATPlus-*.sqlite   ← QSWAT+ 속성 DB 복사 (참조)
 
 규약
 ----
@@ -38,13 +40,18 @@ from util_py.gis import auto_utm_epsg, prepare_raster_for_swat
 
 # ── area discovery ──────────────────────────────────────────────────────────
 
-# raster type 별 처리 방식 (resampling, lookup 파일명, mdb 후보 파일명들)
-# mdb 는 코드 컨벤션(V1.0) + 실제 사내·서버 파일명(FAO Soil) 모두 시도
+# raster type 별 처리 방식 (resampling, lookup 파일명, mdb 후보 파일명들).
+# soil/mdb 는 한국(RDA)/글로벌(FAO) + 구버전(SWAT2009-Global-V1.0) 까지 모두 시도.
+# QSWATPlus 의 sqlite 도 함께 복사.
 _TYPE_META: Dict[str, Dict] = {
     "dem":     {"resampling": "bilinear", "lookup": None,                 "mdb": []},
     "landuse": {"resampling": "nearest",  "lookup": "landuse_lookup.csv", "mdb": []},
     "soil":    {"resampling": "nearest",  "lookup": "soil_lookup.csv",
-                "mdb": ["SWAT2009-Global-V1.0.mdb",
+                "mdb": ["QSWAT-Korea-RDA Soil.mdb",
+                        "QSWAT-Global-FAO Soil.mdb",
+                        "QSWATPlus-Korea-RDA Soil.sqlite",
+                        "QSWATPlus-Global-FAO Soil.sqlite",
+                        "SWAT2009-Global-V1.0.mdb",
                         "SWAT2009-Global-FAO Soil.mdb"]},
 }
 
@@ -350,15 +357,16 @@ def clip_to_user_area(
                 shutil.copy2(src_lookup, dst)
                 saved[f"{rtype}_lookup"] = dst
 
-        # mdb 복사 (raster/vector 유무 무관, 후보 파일명 모두 시도)
+        # 속성 DB 복사 (raster/vector 유무 무관, 후보 파일명 모두 시도).
+        # QSWAT(.mdb) + QSWATPlus(.sqlite) 가 동시에 있을 수 있으므로 모두 복사.
         if copy_mdb and meta["mdb"]:
             for cand in meta["mdb"]:
                 src_mdb = gis_root / rtype / cand
                 if src_mdb.is_file():
                     dst = out_type_dir / cand   # 원본 파일명 유지
                     shutil.copy2(src_mdb, dst)
-                    saved[f"{rtype}_mdb"] = dst
-                    break
+                    ext_key = Path(cand).suffix.lstrip(".") or "db"
+                    saved[f"{rtype}_{ext_key}"] = dst
 
     print()
     print("=" * 64)

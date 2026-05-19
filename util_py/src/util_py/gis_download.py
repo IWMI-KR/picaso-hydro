@@ -632,35 +632,69 @@ def _has_valid_soil_pixels(
     return bool((~np.isin(arr, list(nd_set))).any())
 
 
-# ── 7. SWAT 권장 토양 (FAO DSMW + SWAT2009-Global-V1.0.mdb) ─────────────────
+# ── 7. SWAT 권장 토양 (국가별 분기: 한국 RDA / 그 외 글로벌 FAO) ───────────
 
-# 글로벌 원본은 항상 download/ 에 보관, canonical 은 boundary 클립 결과만
-_SWAT_SOIL_GLOBAL_FILES = [
-    "soil_global.tif",
-    "soil_global.tif.aux.xml",
-    "soil_global.aux",
-    "soil_global.rrd",
-    "Soil_global_lookup.txt",
-    "SWAT2009-Global-V1.0.mdb",
-]
+# IWMI 사내 HTTP 저장소 — 핵심 4종 (raster tif / QSWAT mdb / QSWATPlus sqlite /
+# lookup) 모두 URL 다운로드. country_boundary.csv 의 ISO3 가 'KOR' 이면 한국 RDA
+# 토양, 그 외에는 글로벌 FAO 토양 자료를 다운로드.
+_SWAT_SOIL_BASE_URL = "http://shared.iwmi.kr:48080/permanent/swat_py/"
 
-# IWMI 사내 HTTP 저장소 — 핵심 3종 (tif / mdb / lookup txt) 모두 URL 다운로드
-# sidecar (aux / rrd / aux.xml) 만 local_dir 에서 선택 복사 (없어도 동작에 영향 X,
-# GDAL 이 자동 재생성).
-# 서버 측 mdb 파일명은 'SWAT2009-Global-FAO Soil.mdb' 이지만
-# 로컬 저장 파일명은 기존 컨벤션 유지.
-_SWAT_SOIL_URLS: Dict[str, str] = {
-    "soil_global.tif":
-        "http://shared.iwmi.kr:48080/permanent/swat_py/soil_global.tif",
-    "SWAT2009-Global-V1.0.mdb":
-        "http://shared.iwmi.kr:48080/permanent/swat_py/SWAT2009-Global-FAO%20Soil.mdb",
-    "Soil_global_lookup.txt":
-        "http://shared.iwmi.kr:48080/permanent/swat_py/Soil_global_lookup.txt",
+_SWAT_SOIL_URLS_GLOBAL: Dict[str, str] = {
+    "tif":    _SWAT_SOIL_BASE_URL + "soil_global.tif",
+    "mdb":    _SWAT_SOIL_BASE_URL + "QSWAT-Global-FAO%20Soil.mdb",
+    "sqlite": _SWAT_SOIL_BASE_URL + "QSWATPlus-Global-FAO%20Soil.sqlite",
+    "lookup": _SWAT_SOIL_BASE_URL + "Soil_global_lookup.txt",
 }
+
+_SWAT_SOIL_URLS_KOREA: Dict[str, str] = {
+    "tif":    _SWAT_SOIL_BASE_URL + "soil_korea.tif",
+    "mdb":    _SWAT_SOIL_BASE_URL + "QSWAT-Korea-RDA%20Soil.mdb",
+    "sqlite": _SWAT_SOIL_BASE_URL + "QSWATPlus-Korea-RDA%20Soil.sqlite",
+    "lookup": _SWAT_SOIL_BASE_URL + "soil_korea_lookup.csv",
+}
+
+# download/ 에 저장될 파일명 (URL 의 마지막 segment 와 동일, 공백 디코딩).
+_SWAT_SOIL_FILENAMES_GLOBAL: Dict[str, str] = {
+    "tif":    "soil_global.tif",
+    "mdb":    "QSWAT-Global-FAO Soil.mdb",
+    "sqlite": "QSWATPlus-Global-FAO Soil.sqlite",
+    "lookup": "Soil_global_lookup.txt",
+}
+
+_SWAT_SOIL_FILENAMES_KOREA: Dict[str, str] = {
+    "tif":    "soil_korea.tif",
+    "mdb":    "QSWAT-Korea-RDA Soil.mdb",
+    "sqlite": "QSWATPlus-Korea-RDA Soil.sqlite",
+    "lookup": "soil_korea_lookup.csv",
+}
+
+# (deprecated alias — 단일 dict 형태로 redirect 하려는 기존 호출자 호환)
+_SWAT_SOIL_URLS: Dict[str, str] = dict(_SWAT_SOIL_URLS_GLOBAL)
+
+
+def _is_korea(iso3: Optional[str]) -> bool:
+    """ISO3 코드가 한국이면 True (대소문자 무관)."""
+    return (iso3 or "").strip().upper() == "KOR"
+
+
+def _swat_soil_sources(iso3: Optional[str]) -> Tuple[Dict[str, str], Dict[str, str], str]:
+    """ISO3 → (URLs, filenames, 라벨) 반환.
+
+    iso3 == 'KOR' → 한국 RDA 토양; 그 외 → 글로벌 FAO 토양.
+    """
+    if _is_korea(iso3):
+        return _SWAT_SOIL_URLS_KOREA, _SWAT_SOIL_FILENAMES_KOREA, "Korea-RDA"
+    return _SWAT_SOIL_URLS_GLOBAL, _SWAT_SOIL_FILENAMES_GLOBAL, "Global-FAO"
 
 
 def _convert_lookup_txt_to_csv(src_txt: Path, dst_csv: Path) -> Path:
-    """``Value,NAME`` → ``val,SWAT_MUID`` (QSWAT 호환 + 일관 컬럼명)."""
+    """lookup 표를 ``val,SWAT_MUID`` 표준 컬럼으로 변환.
+
+    소스 컬럼 매핑:
+        ``Value/VALUE``  → ``val``
+        ``NAME/Name``    → ``SWAT_MUID``
+    이미 ``val,SWAT_MUID`` 인 한국 lookup CSV 는 그대로 통과.
+    """
     lookup = pd.read_csv(src_txt)
     lookup.columns = [c.strip() for c in lookup.columns]
     rename = {"Value": "val", "VALUE": "val",
@@ -753,68 +787,65 @@ def download_swat_soil(
     boundary_path: Optional[Union[str, Path]] = None,
     bbox: Optional[BBox] = None,
     buffer_deg: float = 0.05,
+    iso3: Optional[str] = None,
 ) -> Dict[str, Path]:
-    """SWAT 개발자 그룹 권장 토양 자료 (FAO DSMW + SWAT 속성 DB) 준비.
+    """SWAT 권장 토양 자료 (raster + QSWAT mdb + QSWATPlus sqlite + lookup) 준비.
 
-    SWAT-Plus / QSWAT 의 sub-basin → HRU 단계에서 토양 속성 lookup 에 직접 사용.
+    ISO3 가 ``KOR`` 이면 농촌진흥청(RDA) 정밀토양도(한국), 그 외에는 FAO DSMW 기반
+    글로벌 토양 자료를 IWMI 사내 HTTP 저장소에서 다운로드한다. 4종 파일은 모두
+    ``gis/soil/download/`` 에 저장되며, raster 는 boundary 가 있을 경우 클립 →
+    ``soil.tif`` canonical 로 저장된다.
 
-    원천 출처
-    ----------
-    soil_global.tif (raster)
-        FAO Digital Soil Map of the World (DSMW) 기반 글로벌 토양 (~7.5 km).
-        Texas A&M SWAT 그룹이 SWAT MUID 인코딩으로 재포맷.
-        https://swat.tamu.edu/data/
-
-    Soil_global_lookup.txt
-        raster 픽셀값 → SWAT MUID 매핑.
-
-    SWAT2009-Global-V1.0.mdb
-        DSMW MUID → SWAT 파라미터(SOL_BD, SOL_AWC, SOL_K, USLE_K, SOL_CBN, ...).
-
-    ⚠️ HWSD (Harmonized World Soil Database, FAO/IIASA/ISRIC) 는 다른 분류체계로
-       SWAT2009-Global-V1.0.mdb 와 MUID 가 호환되지 않아 본 함수에서 제외.
+    원천 출처 (IWMI 사내 HTTP)
+    --------------------------
+    글로벌 (ISO3 ≠ 'KOR')
+        soil_global.tif                        FAO DSMW 기반 글로벌 토양 (~7.5 km)
+        QSWAT-Global-FAO Soil.mdb              QSWAT (SWAT2012) 속성 DB
+        QSWATPlus-Global-FAO Soil.sqlite       QSWAT+ (SWAT+ Editor) 속성 DB
+        Soil_global_lookup.txt                 raster 값 → SWAT MUID lookup
+    한국 (ISO3 == 'KOR')
+        soil_korea.tif                         농진청 정밀토양도 raster
+        QSWAT-Korea-RDA Soil.mdb               QSWAT (SWAT2012) 속성 DB
+        QSWATPlus-Korea-RDA Soil.sqlite        QSWAT+ (SWAT+ Editor) 속성 DB
+        soil_korea_lookup.csv                  raster 값 → SWAT MUID lookup
 
     파일 배치
     ----------
-    download/ (글로벌 원본, 항상 준비)
-        gis/soil/download/soil_global.tif          IWMI URL 다운로드
-        gis/soil/download/Soil_global_lookup.txt   IWMI URL 다운로드
-        gis/soil/download/SWAT2009-Global-V1.0.mdb IWMI URL 다운로드
+    download/ (원본 4종, 항상 준비)
+        gis/soil/download/{tif|mdb|sqlite|lookup}     IWMI URL 다운로드
         (sidecar aux/rrd/aux.xml — local_dir 있을 때만 선택 복사,
-         없어도 GDAL 이 자동 재생성)
+         없어도 GDAL 이 필요 시 자동 재생성)
 
-    canonical (boundary 안 유효 픽셀이 있을 때만)
-        gis/soil/soil.tif                       boundary 클립된 raster
-        gis/soil/soil_lookup.csv                ★ 항상 (val,SWAT_MUID, 참조용)
-        gis/soil/SWAT2009-Global-V1.0.mdb       ★ 항상 (속성 DB, 참조용)
-
-    원본 출처
-    ---------
-    핵심 3종 → ``http://shared.iwmi.kr:48080/permanent/swat_py/`` (IWMI 사내)
-    sidecar  → local_dir (선택)
+    canonical
+        gis/soil/soil.tif                  ★ boundary 안 유효 픽셀 있을 때만 저장
+        gis/soil/soil_lookup.csv           ★ 항상 (val, SWAT_MUID 표준 컬럼)
+        gis/soil/{mdb_filename}            ★ 항상 (QSWAT 속성 DB, 참조용)
+        gis/soil/{sqlite_filename}         ★ 항상 (QSWAT+ 속성 DB, 참조용)
 
     Parameters
     ----------
-    gis_root      : GIS 루트
-    source        : "local" (예약 — 현재 핵심 파일은 항상 IWMI URL)
+    gis_root      : GIS 루트 (예: ``0_database/gis``)
+    source        : "local" (예약 — 현재 핵심 4종은 항상 IWMI URL)
     local_dir     : sidecar (aux/rrd/aux.xml) 위치. 없어도 동작
     boundary_path : 폴리곤 shapefile (None 이면 클립 생략, 글로벌 그대로 canonical)
     bbox          : (xmin, ymin, xmax, ymax) — boundary_path 없을 때 fallback
     buffer_deg    : boundary 외측 버퍼 (도). SWAT 변두리 안전 여유.
+    iso3          : 3자 ISO 국가코드. 'KOR' → 한국 RDA, 그 외 → 글로벌 FAO.
+                    None 이면 글로벌로 처리.
 
     Returns
     -------
-    dict : {파일 키: 저장 경로}. canonical soil.tif 가 빠질 수 있음.
+    dict : {키: 저장 경로}. 키는 ``download:{filename}``, ``mdb``, ``sqlite``,
+           ``lookup``, ``soil`` (canonical raster, 유효 픽셀 없으면 빠짐).
     """
     if source != "local":
         raise NotImplementedError(
             f"source='{source}' 미구현. 현재는 'local' 만 지원 "
-            "(mdb/txt 는 IWMI URL 에서, tif/aux/rrd 는 local_dir 에서 자동 분기)."
+            "(핵심 4종은 IWMI URL, sidecar 는 local_dir 에서 자동 분기)."
         )
 
+    urls, filenames, label = _swat_soil_sources(iso3)
     src_dir = Path(local_dir)
-    # local_dir 은 tif/aux/rrd 용. URL-only 파일(mdb, txt)은 src_dir 없어도 동작.
-    # tif 부재 시는 아래 루프 안에서 명시적 FileNotFoundError 로 안내.
 
     out_dir = Path(gis_root) / "soil"
     download_dir = out_dir / "download"
@@ -822,9 +853,10 @@ def download_swat_soil(
     download_dir.mkdir(exist_ok=True)
 
     print("=" * 64)
-    print("  SWAT 권장 토양 자료 (FAO DSMW + SWAT 속성 DB) 준비")
+    print(f"  SWAT 권장 토양 자료 ({label}) 준비")
     print("=" * 64)
     print(f"  source        : {source}")
+    print(f"  iso3          : {iso3 or '(미지정 → Global)'}")
     print(f"  local_dir     : {src_dir}")
     print(f"  out_dir       : {out_dir}")
     print(f"  boundary      : {boundary_path or bbox or '(없음 — 글로벌 보존)'}")
@@ -834,55 +866,58 @@ def download_swat_soil(
 
     saved: Dict[str, Path] = {}
 
-    # ── 1. 글로벌 원본을 download/ 에 준비 ───────────────────────────────
-    #      tif / mdb / txt → IWMI URL (필수)
-    #      aux / rrd / aux.xml → local_dir 에서 선택 복사 (없으면 GDAL 이 자동 생성)
-    print("  [글로벌 원본 → download/]")
-    sidecar_skip_announced = False
-    for fname in _SWAT_SOIL_GLOBAL_FILES:
+    # ── 1. 핵심 4종 (tif / mdb / sqlite / lookup) → download/ ────────────
+    print("  [원본 4종 → download/]")
+    for key in ("tif", "mdb", "sqlite", "lookup"):
+        fname = filenames[key]
+        url = urls[key]
         dst_path = download_dir / fname
-
-        if fname in _SWAT_SOIL_URLS:
-            url = _SWAT_SOIL_URLS[fname]
-            try:
-                _http_download(url, dst_path, show_progress=False)
-            except Exception as e:
-                raise RuntimeError(
-                    f"URL 다운로드 실패: {fname}\n  URL: {url}\n  사유: {e}"
-                ) from e
-            size_mb = dst_path.stat().st_size / 1e6
-            print(f"    [URL]  {fname:<32s} ({size_mb:>7.2f} MB)")
-            saved[f"download:{fname}"] = dst_path
-            continue
-
-        # 선택 sidecar (aux / rrd / aux.xml) — local_dir 에서만 복사
-        if not src_dir.is_dir():
-            if not sidecar_skip_announced:
-                print(f"    [skip] sidecar (aux/rrd/aux.xml) — local_dir 미존재, "
-                      f"GDAL 이 필요 시 자동 재생성")
-                sidecar_skip_announced = True
-            continue
-        src_path = src_dir / fname
-        if not src_path.is_file():
-            print(f"    [MISS] {fname}  (선택 sidecar — 무시 가능)")
-            continue
-        shutil.copy2(src_path, dst_path)
+        try:
+            _http_download(url, dst_path, show_progress=False)
+        except Exception as e:
+            raise RuntimeError(
+                f"URL 다운로드 실패: {fname}\n  URL: {url}\n  사유: {e}"
+            ) from e
         size_mb = dst_path.stat().st_size / 1e6
-        print(f"    [OK]   {fname:<32s} ({size_mb:>7.2f} MB)")
+        print(f"    [URL]  {fname:<36s} ({size_mb:>7.2f} MB)")
         saved[f"download:{fname}"] = dst_path
 
-    # ── 2. SWAT 속성 DB 는 canonical 에도 복사 (참조용, 영역 무관) ────────
-    #      이제 download/ 에 URL 다운로드 본이 있으므로 거기서 복사
+    # 선택 sidecar (aux / rrd / aux.xml) — local_dir 에서만 복사
+    sidecar_announced = False
+    tif_stem = Path(filenames["tif"]).stem
+    sidecar_names = [f"{filenames['tif']}.aux.xml",
+                     f"{tif_stem}.aux",
+                     f"{tif_stem}.rrd"]
+    if src_dir.is_dir():
+        for fname in sidecar_names:
+            src_path = src_dir / fname
+            if not src_path.is_file():
+                continue
+            shutil.copy2(src_path, download_dir / fname)
+            size_mb = (download_dir / fname).stat().st_size / 1e6
+            print(f"    [OK]   {fname:<36s} ({size_mb:>7.2f} MB)  (sidecar)")
+            saved[f"download:{fname}"] = download_dir / fname
+    else:
+        print(f"    [skip] sidecar (aux/rrd/aux.xml) — local_dir 미존재, "
+              f"GDAL 이 필요 시 자동 재생성")
+        sidecar_announced = True
+
+    # ── 2. mdb / sqlite 속성 DB → canonical (영역 무관) ──────────────────
     print()
     print("  [속성 DB 복사 → canonical]")
-    mdb_dst = out_dir / "SWAT2009-Global-V1.0.mdb"
-    shutil.copy2(download_dir / "SWAT2009-Global-V1.0.mdb", mdb_dst)
+    mdb_dst = out_dir / filenames["mdb"]
+    shutil.copy2(download_dir / filenames["mdb"], mdb_dst)
     print(f"    [OK]   {mdb_dst.name}  ({mdb_dst.stat().st_size/1e6:.2f} MB)")
     saved["mdb"] = mdb_dst
 
-    # ── 3. lookup CSV 변환 (항상) ─────────────────────────────────────────
+    sqlite_dst = out_dir / filenames["sqlite"]
+    shutil.copy2(download_dir / filenames["sqlite"], sqlite_dst)
+    print(f"    [OK]   {sqlite_dst.name}  ({sqlite_dst.stat().st_size/1e6:.2f} MB)")
+    saved["sqlite"] = sqlite_dst
+
+    # ── 3. lookup → canonical soil_lookup.csv (val,SWAT_MUID 표준화) ─────
     csv_lookup = out_dir / "soil_lookup.csv"
-    _convert_lookup_txt_to_csv(download_dir / "Soil_global_lookup.txt", csv_lookup)
+    _convert_lookup_txt_to_csv(download_dir / filenames["lookup"], csv_lookup)
     n_rows = sum(1 for _ in csv_lookup.open()) - 1
     print(f"    [OK]   {csv_lookup.name}  ({n_rows} rows, val,SWAT_MUID)")
     saved["lookup"] = csv_lookup
@@ -891,23 +926,22 @@ def download_swat_soil(
     print()
     print("  [boundary 클립 → canonical soil.tif]")
     canonical_tif = out_dir / "soil.tif"
-    global_tif = download_dir / "soil_global.tif"
+    src_tif = download_dir / filenames["tif"]
 
     if boundary_path is None and bbox is None:
-        # 클립 생략 — 글로벌 raster 를 canonical 로
-        shutil.copy2(global_tif, canonical_tif)
-        print(f"    [OK]   {canonical_tif.name} (boundary 없음, 글로벌 그대로 복사)")
+        # 클립 생략 — 원본 raster 를 canonical 로
+        shutil.copy2(src_tif, canonical_tif)
+        print(f"    [OK]   {canonical_tif.name} (boundary 없음, 원본 그대로 복사)")
         saved["soil"] = canonical_tif
     else:
         if boundary_path is not None:
             clipped = _clip_swat_soil_to_boundary(
-                global_tif, canonical_tif,
+                src_tif, canonical_tif,
                 Path(boundary_path), buffer_deg)
         else:
-            # bbox fallback: 임시 폴리곤 만들어서 같은 함수 사용 — 단순화 위해 생략
+            # bbox fallback
             from util_py.gis import clip_raster
-            clip_raster(global_tif, canonical_tif, bbox=bbox, buffer_deg=buffer_deg)
-            # 유효 검사
+            clip_raster(src_tif, canonical_tif, bbox=bbox, buffer_deg=buffer_deg)
             import numpy as np
             import rasterio
             with rasterio.open(canonical_tif) as r:
