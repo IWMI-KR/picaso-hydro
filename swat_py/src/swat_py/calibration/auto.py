@@ -204,13 +204,21 @@ def _extract_obs_from_swat_output(run_dir: Path, ctx: CalibrationContext) -> Dic
     out: Dict = {}
     if ctx.cfg.ModelType == "swat_plus":
         from swat_py.output.reader_swat_plus import parse_channel_sd_day
-        df = parse_channel_sd_day(run_dir / "channel_sd_day.txt")
+        # 출력 첫 행에 부여할 시작일 — simulation.start_date 기준.
+        sdate = ctx.cfg.SimStartDate or "2015-01-01"
         for obs in ctx.observations:
             col = var_column_map_plus.get(obs.variable, "flo_out")
-            sub = df[df.get("gis_id", df.get("unit", 0)) == obs.outlet_id]
-            if len(sub) == 0:
-                sub = df   # outlet 못 찾으면 전체 (fallback)
-            out[obs.id] = (sub["date"].values, sub[col].values)
+            df = parse_channel_sd_day(
+                run_dir / "channel_sd_day.txt",
+                outlet=obs.outlet_id, sdate=sdate,
+            )
+            if df is None or col not in df.columns:
+                out[obs.id] = (
+                    np.array([], dtype="datetime64[ns]"),
+                    np.array([], dtype=float),
+                )
+            else:
+                out[obs.id] = (df["date"].values, df[col].values)
     else:
         from swat_py.output.reader_swat import parse_output_rch
         df = parse_output_rch(run_dir / "output.rch")

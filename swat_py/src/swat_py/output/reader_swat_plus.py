@@ -37,7 +37,7 @@ def parse_channel_sd_day(
     Parameters
     ----------
     path:    Full path to ``channel_sd_day-{SimType}.txt``.
-    outlet:  GIS reach ID (column 7 in the file, 1-based index 6).
+    outlet:  Channel GIS id (value in the ``gis_id`` column). QSWAT+ 채널 번호.
     sdate:   Simulation start date string ``"YYYY-01-01"`` (before warm-up skip).
     skip:    Header rows to skip (default 3).
 
@@ -67,8 +67,16 @@ def parse_channel_sd_day(
     if df.empty:
         return None
 
-    # Column 7 (0-based index 6) is gis_id
-    df = df[df.iloc[:, 6] == outlet].copy()
+    # Filter on the gis_id column, located dynamically from the header row.
+    # (열 순서: jday mon day yr unit gis_id name ... — gis_id 는 보통 index 5,
+    #  단 하드코딩하지 않고 헤더에서 위치를 찾아 SWAT+ 버전 차이에 견고하게 대응.)
+    try:
+        gis_idx = [c.lower() for c in colnames].index("gis_id")
+    except ValueError:
+        return None
+    if gis_idx >= df.shape[1]:
+        return None
+    df = df[df.iloc[:, gis_idx] == outlet].copy()
     if df.empty:
         return None
 
