@@ -155,6 +155,7 @@ class EnvConfig:
     # ── 디렉토리 ──────────────────────────────────────────────────────────────
     PrjDir: str = ""          # project.root
     DbDir: str = ""           # project.database
+    QswatTxtInOut: str = ""   # project.qswat_txtinout — promote 원본 (QSWAT+ TxtInOut)
     ObsDayDir: str = ""       # project.input.observed_weather
     ObservedDataDir: str = ""  # project.input.observed (★ 신규 — 관측 자료 루트, obs/)
     CcDataDir: str = ""       # project.input.cc_weather
@@ -374,6 +375,7 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
     proj = raw.get("project", {})
     flat["PrjDir"]     = proj.get("root", "")
     flat["DbDir"]      = proj.get("database", "")
+    flat["QswatTxtInOut"] = proj.get("qswat_txtinout", "") or ""
     inp                = proj.get("input", {})
     flat["ObsDayDir"]  = inp.get("observed_weather", "")
     flat["CcDataDir"]  = inp.get("cc_weather", "")
@@ -501,8 +503,17 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
                 obs.obs_column = default_column_name(obs.variable, obs.unit)
             except Exception:
                 pass
-        # obs_file 자동 — obs_root/{variable}/{time_step}/{outlet_name}.csv
-        if not obs.obs_file and obs_root:
+        # obs_file 해석:
+        #   - 디렉토리 포함 경로 → 그대로 사용 (절대·상대)
+        #   - 파일명만 지정 → {obs_root}/{variable}/{time_step}/ 아래로 해석
+        #   - 미지정 → {obs_root}/{variable}/{time_step}/{outlet_name}.csv 자동
+        if obs.obs_file:
+            has_dir = ("/" in obs.obs_file) or ("\\" in obs.obs_file)
+            if not has_dir and obs_root:
+                obs.obs_file = (
+                    f"{obs_root}/{obs.variable}/{obs.time_step}/{obs.obs_file}"
+                )
+        elif obs_root:
             obs.obs_file = (
                 f"{obs_root}/{obs.variable}/{obs.time_step}/{obs.outlet_name}.csv"
             )
