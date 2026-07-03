@@ -3,109 +3,178 @@
 #  Python SWAT/SWAT-Plus 자동화 패키지 — 유역통합관리연구원(IWMI)
 # ══════════════════════════════════════════════════════════════════════════════
 #
-#  [ 경로 참조 문법 ]
-#    $(섹션.키) 형태로 이미 정의된 값을 참조합니다.
+#  [ 경로 참조 ] $(섹션.키) 로 이미 정의된 값 참조. ${env:VAR:기본값} 환경변수 치환.
+#  [ ★ 표시 ] 실제 값으로 수정할 항목.
 #
-#  [ 반드시 수정할 항목 ]
-#    ★ 표시 항목은 실제 값으로 수정해야 합니다.
-#
-#  [ 폴더 구조 참조 ]
+#  [ 폴더 구조 ]
 #    PICASO-Hydro/
-#      0_database/obs/weather/      ← 관측 기상 CSV
-#      0_database/obs/streamflow/   ← 관측 유량·수질 CSV
-#      0_database/cmip6/downscaled/ ← 기후변화 기상 자료
-#      1_acidwg/hindcast/{year}/JFM/   ← hindcast 앙상블 기상 (acidwg_py 출력)
-#      1_acidwg/operational/{year}/JFM/ ← 운용 앙상블 기상
-#      2_qswat/Scenarios/Default/TxtInOut/ ← QSWAT TxtInOut (GIS 기반)
-#      3_swatplus/base_txtinout/    ← 보정 완료 기준 TxtInOut (앙상블 기반)
-#      3_swatplus/calibration/      ← 보정 작업 폴더
-#      3_swatplus/cchange/          ← 기후변화 시나리오 분석 결과
-#      3_swatplus/forecast/hindcast/{year}/  ← hindcast SWAT 결과
+#      0_database/obs/{flow,tn,tp}/daily/   ← 관측 유량·수질 CSV (헤더 date,<col>)
+#      0_database/gsod/daily_std/           ← util_py 표준 관측 기상
+#      0_database/cmip6/downscaled/         ← 기후변화 기상 자료
+#      1_acidwg/hindcast/{year}/JFM/        ← hindcast 앙상블 기상 (acidwg_py 출력)
+#      1_acidwg/operational/{year}/JFM/     ← 운용 앙상블 기상
+#      2_qswat/<area>/Scenarios/Default/TxtInOut/ ← QSWAT+ 산출 (promote 원본)
+#      3_swatplus/default/                  ← 검보정 마스터 (promote 로 동결)
+#      3_swatplus/calibration/              ← 보정 작업 폴더 (runs/·results/)
+#      3_swatplus/cchange/                  ← 기후변화 시나리오 분석 결과
+#      3_swatplus/forecast/hindcast/{year}/    ← hindcast SWAT 결과
 #      3_swatplus/forecast/operational/{year}/ ← 운용 예보 SWAT 결과
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-# ── 1. 프로젝트 디렉토리 ─────────────────────────────────────────────────────
+# ── 1. 프로젝트 ─────────────────────────────────────────────────────────────
 project:
-  root:     "I:/2025-APCC_Cook/PICASO-Hydro"    # ★ 프로젝트 루트 폴더
+  root:     "${env:PICASO_ROOT:I:/2025-APCC_Cook/PICASO-Hydro}"
   database: "$(project.root)/0_database"
-
+  # 승격(promote) 원본 — QSWAT+/SWAT+ Editor 가 생성한 TxtInOut.
+  #  `python -m swat_py.runner.promote` 가 이 폴더를 output.default(동결 마스터)로 복사.
+  qswat_txtinout: "$(project.root)/2_qswat/test-sj/Scenarios/Default/TxtInOut"
   input:
-    observed_weather: "$(project.database)/obs/weather"        # 관측 기상 CSV
-    cc_weather:       "$(project.database)/cmip6/downscaled"   # 기후변화 시나리오 기상
-    # forecast_weather: acidwg_py 앙상블 출력 경로 (ensemble_forecast.ensemble_dir 사용)
-    forecast_weather: "$(project.root)/1_acidwg/operational/2026/JFM"  # ★ 계절 예보 기상
-
-  # output 경로는 model.type 기반 자동 산출:
-  #   swat_plus → $(project.root)/3_swatplus/{base_txtinout|calibration|cchange|forecast}
-  #   swat2012  → $(project.root)/3_swat2012/{base_txtinout|calibration|cchange|forecast}
-  # forecast 만 운영 시즌별 하위 폴더가 필요해 명시.
+    observed:          "$(project.database)/obs"             # ★ 관측 자료 루트 (flow/wq)
+    observed_weather:  "$(project.database)/gsod/daily_std"   # util_py 표준 weather
+    cc_weather:        "$(project.database)/cmip6/downscaled"
+    forecast_weather:  "$(project.root)/1_acidwg/operational/2025"
   output:
-    forecast:       "$(project.root)/3_swatplus/forecast/operational/2026"  # ★ 예보 결과 폴더
-    database:       "$(project.database)/obs/streamflow"        # 관측 유량·수질 DB
+    # 검보정 마스터(동결·읽기전용) — promote 헬퍼가 qswat_txtinout 에서 복사해 채움.
+    # 자동 검보정은 이 폴더를 3_swatplus/calibration/runs/ 로 복제해 반복 구동(원본 불변).
+    default: "$(project.root)/3_swatplus/default"
+    # calibrated/calibration/forecast/climate_change 미명시 → 3_swatplus/ 아래 자동
+  # (그 외 output 경로는 model.type='swat_plus' → 3_swatplus/ 자동 산출)
 
 
-# ── 2. 모델 설정 ─────────────────────────────────────────────────────────────
+# ── 2. 모델 ──────────────────────────────────────────────────────────────────
 model:
-  type:          "swat_plus"      # "swat_plus" 또는 "swat2012"
-  executable:    "SWAT-Plus.exe"  # ★ TxtInOut 내 실행 파일명
-  warm_up_years: 3
-  output_types:
-    - sd   # channel_sd_day.txt (SWAT-Plus)
+  type:        "swat_plus"
+  executable:  "SWAT-Plus.exe"
 
 
-# ── 3. 기상 관측소 ───────────────────────────────────────────────────────────
-#  stations.csv 위치: project.input.observed_weather 폴더
-#  컬럼: Lon, Lat, Elev, ID, Ename, SYear
-# ─────────────────────────────────────────────────────────────────────────────
+# ── 3. 시뮬레이션 기간 ──────────────────────────────────────────────────────
+simulation:
+  start_date:    "2015-01-01"     # warm-up 포함
+  end_date:      "2025-12-31"
+  warm_up_years: 3                # → 분석 출력은 2018-01-01 부터
+  time_step:    "daily"
+
+
+# ── 4. 보정 ─────────────────────────────────────────────────────────────────
+calibration:
+  period:
+    start: "2018-01-01"
+    end:   "2021-12-31"
+  validation:
+    start: "2022-01-01"
+    end:   "2024-12-31"
+
+  # ── 관측 파일 ↔ SWAT+ 채널 매핑 ─────────────────────────────────────────────
+  #  한 줄(항목) = 한 관측지점.  다중 지점이면 항목을 늘리면 가중합 목적함수가
+  #  자동 구성됩니다(각 weight 비중).
+  #
+  #  매핑 규칙:
+  #   outlet_id : ★ SWAT+ 채널 gis_id.  channel_sd_day.txt 의 'gis_id' 열 값 =
+  #               QSWAT+ 유역분할 시 관측지점 outlet 에 부여된 채널번호.
+  #   obs_file  : ★ 관측 CSV.  파일명만 적으면 자동으로
+  #               $(project.input.observed)/{variable}/{time_step}/ 아래로 해석.
+  #               (디렉토리를 포함한 경로를 적으면 그 경로를 그대로 사용)
+  #   variable  : flow | tn | tp    (obs_column 자동: flow_m3s / tn_mgl / tp_mgl)
+  #   CSV 포맷  : 헤더 'date,<obs_column>' (예: date,flow_m3s)
+  #
+  #  ※ outlet_id 는 각 관측소의 QSWAT+ 채널번호로 채워 넣으세요.
+  observations:
+    - id:        "avatiu"
+      outlet_id: 4                    # ★ QSWAT+ 채널번호
+      variable:  "flow"
+      unit:      "m3/s"
+      time_step: "daily"
+      obs_file:  "Avatiu_Flow_obs.csv"
+      weight:    1.0
+      objective: "NSE"
+
+    - id:        "avana"
+      outlet_id: 16                   # ★ QSWAT+ 채널번호
+      variable:  "flow"
+      unit:      "m3/s"
+      time_step: "daily"
+      obs_file:  "Avana_Flow_obs.csv"
+      weight:    1.0
+      objective: "NSE"
+
+    - id:        "matavera"
+      outlet_id: 7                    # ★ QSWAT+ 채널번호
+      variable:  "flow"
+      unit:      "m3/s"
+      time_step: "daily"
+      obs_file:  "Matavera_Flow_obs.csv"
+      weight:    1.0
+      objective: "NSE"
+
+    - id:        "muriavai"
+      outlet_id: 14                   # ★ QSWAT+ 채널번호
+      variable:  "flow"
+      unit:      "m3/s"
+      time_step: "daily"
+      obs_file:  "Muriavai_Flow_obs.csv"
+      weight:    1.0
+      objective: "NSE"
+
+    - id:        "totokoitu"
+      outlet_id: 24                   # ★ QSWAT+ 채널번호
+      variable:  "flow"
+      unit:      "m3/s"
+      time_step: "daily"
+      obs_file:  "Totokoitu_Flow_obs.csv"
+      weight:    1.0
+      objective: "NSE"
+
+  # 보정 후보 인자 (SWAT-Plus 표준 보정 변수)
+  parameters:
+    - file:        "hydrology.hyd"
+      key:         "cn3_swf"
+      range:       [0.5, 1.0]
+      change_type: "absval"
+    - file:        "hydrology.hyd"
+      key:         "esco"
+      range:       [0.1, 1.0]
+      change_type: "absval"
+    - file:        "soils.sol"
+      key:         "awc"            # SWAT+ soils.sol 컬럼 (구 SWAT2012: sol_awc)
+      range:       [-0.04, 0.04]
+      change_type: "abschg"
+    - file:        "parameters.bsn"  # SWAT+ 파일 (구 SWAT2012: basin.bsn)
+      key:         "surq_lag"        # SWAT+ 지표유출 지연 (구: surlag)
+      range:       [0.5, 10.0]
+      change_type: "absval"
+
+  method:
+    name:         "manual"          # 초기: 수동 → 추후 sufi2 등
+    n_iterations: 100
+    seed:         1
+    parallel:
+      enabled:   true
+      n_workers: 4
+
+  output:
+    save_all_runs:          false
+    save_best_n:            5
+    auto_parameter_changes: true
+
+
+# ── 5. 관측소 ────────────────────────────────────────────────────────────────
 stations:
-  metadata_file: "stations.csv"   # ★ 관측소 메타정보 CSV (1_acidwg/config/stations.csv와 공유)
-  ids:
-    - asos235                     # ★ 관측소 ID 목록 (Station-Info.csv의 ID 컬럼)
+  metadata_file: "stations.csv"
+  ids: ["918430"]                   # Rarotonga AP
 
 
-# ── 4. 모니터링 지점 ─────────────────────────────────────────────────────────
+# ── 6. 모니터링 지점 (선택·하위호환) ────────────────────────────────────────
+#  ※ 관측 파일 ↔ 채널 매핑은 이제 §4 calibration.observations[] 에서 직접 지정합니다
+#    (각 항목의 outlet_id + obs_file).  이 블록은 obs_file 을 생략했을 때
+#    outlet_name 을 id→name 으로 역산하는 하위호환 용도로만 남겨둡니다.
 outlets:
   flow:
-    ids:   [1]        # ★ GIS 하천 ID (channel_sd_day.txt의 gis_id)
-    names: [outlet]   # ★ 지점명
-
-  water_quality:
     ids:   [1]
-    names: [outlet]
-
-
-# ── 5. 관측 자료 ─────────────────────────────────────────────────────────────
-#  파일 위치: project.output.database 폴더 기준
-#  flow CSV 컬럼: year, mon, day, inflow_cms
-#  water_quality CSV 컬럼: date(YYYY-MM-DD), ss_mgl, tn_mgl, tp_mgl
-# ─────────────────────────────────────────────────────────────────────────────
-observed:
-  flow:
-    file: "obs_flow.csv"      # ★
+    names: ["Rarotonga_Outlet"]
   water_quality:
-    file: "obs_wq.csv"        # ★
-
-
-# ── 6. 시뮬레이션 기간 및 분석 변수 ─────────────────────────────────────────
-simulation:
-  output_types:
-    - flow    # 유량 (cms)
-    # - sedc  # 부유사 농도 — 수질 분석 시 주석 해제
-    # - tnc
-    # - tpc
-
-  calibration:
-    start_year: 2017    # ★
-    end_year:   2022    # ★
-
-  validation:
-    start_year: 2023    # ★
-    end_year:   2024    # ★
-
-  baseline:
-    start_year: 1981
-    end_year:   2010
+    ids:   []
+    names: []
 
 
 # ── 7. 기후변화 시나리오 분석 ────────────────────────────────────────────────
