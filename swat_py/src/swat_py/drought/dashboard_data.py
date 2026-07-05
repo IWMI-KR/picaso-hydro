@@ -1,10 +1,12 @@
-"""가뭄위험 대시보드 데이터 오케스트레이션 (12 outlet × ①~⑤) → 4_drought_risk/.
+"""가뭄위험 대시보드 데이터 오케스트레이션 (outlet × ①~⑤) → 4_drought_risk/forecast/{period}.
 
 단계
-  0. base 준비: default + 검보정(9-param) + time.sim(예측기간, 관측 선행) → 예측 앙상블용
+  0. base 준비: calibrated(검보정 완료·지역화 포함) + time.sim(예측기간, 관측 선행) → 앙상블용
   1. ① 평년 + ④ FDC : 장기 기후 CSV(channel_daily_YYYY.csv)
   2. ② 관측/모의    : 장기 기후 CSV의 예측 직전월(예 2016 Jan–Mar) 모의(관측기상)
-  3. ③⑤ 예측 앙상블 : ensemble_flow.run_ensemble → 채널별 [member×month] → 평균/분위·단계확률
+  3. ③⑤ 예측 앙상블 : ensemble_flow.run_ensemble → 채널별 [member×month]
+       → SWAT+ 결과는 3_swatplus/forecast/{period}/ensemble_monthly_flow.csv 로 저장
+       → 평균/분위·단계확률은 4_drought_risk/forecast/{period}/{outlet}/ 로 저장
   4. outlet별 series.csv/thresholds.csv/stage_prob.csv/dashboard.json + summary.csv 저장
 
 CLI: python -m swat_py.drought.dashboard_data --forecast 2016_AMJ [--members 100] [--demo N]
@@ -14,13 +16,13 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
 import pandas as pd
 
-from swat_py.calibration.modify import ParameterChange, apply_parameter_set
 from swat_py.drought.climatology import (
     climatology_daily_path, load_daily_flow, outlet_climatology_and_thresholds,
 )
@@ -61,20 +63,17 @@ def _member_dir(cfg, fyear: int, season: str) -> Path:
     return cands[-2] if len(cands) >= 2 else cands[-1]   # 기본: hindcast
 
 
-def _best_changes(cfg) -> List[ParameterChange]:
-    pchg = pd.read_csv(Path(cfg.CalibrationDir) / "results" / "parameter_changes.csv")
-    best = {(r["file"], r["parameter"]): float(r["best_value"]) for _, r in pchg.iterrows()}
-    return [ParameterChange(file=p.file, parameter=p.key, value=best[(p.file, p.key)],
-                            change_type=p.change_type, rows=p.rows)
-            for p in cfg.CalParameters if (p.file, p.key) in best]
-
-
 def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> None:
-    """default + 검보정 + time.sim(전년-2 ~ 예측끝월) → 예측 앙상블 base TxtInOut."""
+    """calibrated(검보정 완료·지역화 포함, 파라미터 baked-in) 복사 + time.sim(웜업 선행 ~
+    예측끝월) → 예측 앙상블 base TxtInOut. default+수동적용이 아닌 calibrated 를 그대로 사용."""
     if base_dir.parent.exists():
-        shutil.rmtree(base_dir.parent)
-    shutil.copytree(Path(cfg.DefaultDir), base_dir)
-    apply_parameter_set(base_dir, _best_changes(cfg), model_type=cfg.ModelType)
+        # Windows: 삭제지연/읽기전용 대응 — 오류 무시 후 소멸 대기
+        shutil.rmtree(base_dir.parent, ignore_errors=True)
+        for _ in range(25):
+            if not base_dir.parent.exists():
+                break
+            time.sleep(0.2)
+    shutil.copytree(Path(cfg.CalibratedDir), base_dir)
     nyskip = int(cfg.CioNYSKIP)                   # 마스터 warm_up_years (단일 관리)
     start_yr = fyear - nyskip                      # 웜업 nyskip년 → 출력 fyear
     last = pd.Timestamp(fyear, months[-1], 1) + pd.offsets.MonthEnd(0)
@@ -116,7 +115,7 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
     # 파일명 자동 산출(하드코딩 없음): {syear+warmup}_{eyear}. climatology_csv 명시 시 우선.
     clim_csv = climatology_daily_path(cfg)
     member_dir = _member_dir(cfg, fyear, season)   # hindcast 또는 operational 자동 선택
-    out_root = root / f"dashboard_{forecast}"
+    out_root = root / "forecast" / forecast         # 4_drought_risk/forecast/{period}
     out_root.mkdir(parents=True, exist_ok=True)
     daily = load_daily_flow(clim_csv)
 
@@ -130,6 +129,19 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
                        fyear=fyear, months=months, exe_name=cfg.Executable,
                        n_members=n_members, n_workers=n_workers,
                        outlets=outlets, station=station)
+
+    # SWAT+ 앙상블 예측 결과(멤버×월 채널유량) → 3_swatplus/forecast/{period}
+    swat_fc = Path(cfg.PrjDir) / "3_swatplus" / "forecast" / forecast
+    swat_fc.mkdir(parents=True, exist_ok=True)
+    long_rows = []
+    for ch_name, mem_df in ens.items():
+        for member, row in mem_df.iterrows():
+            for month in mem_df.columns:
+                long_rows.append({"channel": ch_name, "member": member,
+                                  "month": int(month), "flo_m3s": row[month]})
+    pd.DataFrame(long_rows).to_csv(swat_fc / "ensemble_monthly_flow.csv",
+                                   index=False, encoding="utf-8-sig")
+    print(f"[forecast] SWAT+ 앙상블 결과({len(ens)}채널×{n_members}멤버) → {swat_fc}")
 
     summary_rows = []
     for outlet in outlets.values():
@@ -203,7 +215,7 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
     pd.DataFrame(summary_rows).to_csv(out_root / "summary.csv", index=False,
                                       encoding="utf-8-sig")
     print(f"\n산출물 → {out_root}")
-    return {"out_root": str(out_root), "n_outlets": len(OUTLETS)}
+    return {"out_root": str(out_root), "n_outlets": len(outlets)}
 
 
 def main(argv=None) -> int:
