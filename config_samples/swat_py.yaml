@@ -107,23 +107,63 @@ calibration:
       key:         "surq_lag"         # SWAT+ 지표유출 지연 (구: surlag)
       range:       [0.5, 10.0]
       change_type: "absval"
+
+    # ── 지역보정(regionalization): 위 4개는 전역, 아래는 유역별 rows 적용 ─────────
+    #  전역 항목 뒤에 두어 전역값 적용 후 해당 행만 덮어씀(순서 중요).
+    #  행 인덱스 근거: 6_reports/02_관측소_채널매핑 / scratch mur_objects·mat_objects.json.
+    #  ※ 순서는 results/parameter_changes.csv(14행) 및 최종 보정과 일치해야 함(Option B).
+    # muriavai (누수형 유역): HRU 행 [33,34,35,36,37,38,54], 대수층 행 [8,9,13]
     - file:        "hydrology.hyd"
-      key:         "perco"            # 침루율 ↑ (지표유출→침투로 전환, 유출↓)
+      key:         "perco"            # 침루율 ↑ (지표유출↓)
       range:       [0.5, 1.0]
       change_type: "absval"
+      rows:        [33, 34, 35, 36, 37, 38, 54]
+    - file:        "hydrology.hyd"
+      key:         "cn3_swf"          # CN ↓ (지표유출↓)
+      range:       [0.1, 0.9]
+      change_type: "absval"
+      rows:        [33, 34, 35, 36, 37, 38, 54]
+    - file:        "hydrology.hyd"
+      key:         "esco"             # ET 조절
+      range:       [0.1, 1.0]
+      change_type: "absval"
+      rows:        [33, 34, 35, 36, 37, 38, 54]
     - file:        "aquifer.aqu"
-      key:         "rchg_dp"          # 심부침루 ↑ (얕은대수층 물 유실→기저유출↓)
+      key:         "rchg_dp"          # 심부침루 ↑
       range:       [0.0, 0.9]
       change_type: "absval"
+      rows:        [8, 9, 13]
     - file:        "aquifer.aqu"
       key:         "bf_max"           # 최대 기저유출율 ↓
       range:       [0.01, 1.0]
       change_type: "absval"
-    # ── 지역보정(regionalization) — 위 항목은 모두 유역 전체(전역) 적용 ─────────
-    #  특정 HRU·대수층 행만 보정하려면 항목에 `rows: [행번호...]` (0-based)를 추가.
-    #  코드(calibration.modify.modify_swat_plus_file)가 지원하며, 대상 행 번호는
-    #  사용자가 파일 구조를 보고 직접 확인해 매뉴얼로 지정한다. 전역 항목 뒤에 두면
-    #  전역값이 먼저 적용된 뒤 해당 행만 덮어쓴다(순서 중요).
+      rows:        [8, 9, 13]
+    # matavera (유출률 50%): HRU 행 [23,24,25], 대수층 행 [6]
+    - file:        "hydrology.hyd"
+      key:         "perco"
+      range:       [0.5, 1.0]
+      change_type: "absval"
+      rows:        [23, 24, 25]
+    - file:        "hydrology.hyd"
+      key:         "cn3_swf"
+      range:       [0.1, 0.9]
+      change_type: "absval"
+      rows:        [23, 24, 25]
+    - file:        "hydrology.hyd"
+      key:         "esco"
+      range:       [0.1, 1.0]
+      change_type: "absval"
+      rows:        [23, 24, 25]
+    - file:        "aquifer.aqu"
+      key:         "rchg_dp"
+      range:       [0.0, 0.9]
+      change_type: "absval"
+      rows:        [6]
+    - file:        "aquifer.aqu"
+      key:         "bf_max"           # matavera는 상시하천 — 기저유출 유지(범위 상향)
+      range:       [0.1, 1.5]
+      change_type: "absval"
+      rows:        [6]
 
   method:
     # 자동 보정 알고리즘 설정 — auto.py 가 이 블록을 읽어 DDS(Dynamically Dimensioned Search) 최적화를 구동한다.
