@@ -66,7 +66,6 @@ def _write_nested_yaml(tmp_path: Path) -> Path:
           input:
             observed_weather: "$(project.database)/Observed"
             cc_weather: "$(project.database)/ClimateChange"
-            forecast_weather: "$(project.database)/Forecast"
           output:
             swat_run: "$(project.root)/swat_run/TxtInOut"
             calibration: "$(project.root)/Results/Calibration"
@@ -83,14 +82,6 @@ def _write_nested_yaml(tmp_path: Path) -> Path:
         stations:
           metadata_file: stations.csv
           ids: [asos203, asos232]
-
-        outlets:
-          flow:
-            ids: [23]
-            names: [Outlet_A]
-          water_quality:
-            ids: [23]
-            names: [Outlet_A]
 
         observed:
           flow:
@@ -124,25 +115,6 @@ def _write_nested_yaml(tmp_path: Path) -> Path:
             - start_year: 2071
               end_year: 2100
               label: far_future
-
-        ensemble_forecast:
-          enabled: false
-          ensemble_dir: "$(project.root)/acidwg_output"
-          n_members: 1000
-          parallel:
-            enabled: true
-            n_workers: 8
-          quantiles: [0.10, 0.50, 0.90]
-          forecast_period:
-            start_year: 2024
-            end_year: 2024
-
-        seasonal_forecast:
-          enabled: false
-          forecast_period:
-            start_year: 2024
-            end_year: 2024
-          lookback_years: 3
     """)
     p = tmp_path / "swat_py.yaml"
     p.write_text(content)
@@ -174,13 +146,6 @@ def test_load_nested_stations(tmp_path):
     assert cfg.StnIDs == ["asos203", "asos232"]
 
 
-def test_load_nested_outlets(tmp_path):
-    p = _write_nested_yaml(tmp_path)
-    cfg = load_config(p)
-    assert cfg.OutletFlowIDs == [23]
-    assert cfg.OutletFlowNms == ["Outlet_A"]
-
-
 def test_load_nested_simulation(tmp_path):
     p = _write_nested_yaml(tmp_path)
     cfg = load_config(p)
@@ -201,22 +166,6 @@ def test_load_nested_climate_change(tmp_path):
     assert cfg.Eyear_rcp == [2040, 2100]
     assert len(cfg.FuturePeriods) == 2
     assert cfg.FuturePeriods[0].label == "near_future"
-
-
-def test_load_nested_ensemble(tmp_path):
-    p = _write_nested_yaml(tmp_path)
-    cfg = load_config(p)
-    assert cfg.EnsembleForecastEnabled is False
-    assert cfg.EnsembleNMembers == 1000
-    assert cfg.EnsembleParallel.n_workers == 8
-    assert 0.50 in cfg.EnsembleQuantiles
-
-
-def test_load_nested_seasonal(tmp_path):
-    p = _write_nested_yaml(tmp_path)
-    cfg = load_config(p)
-    assert cfg.SForecastOpt == "off"
-    assert cfg.SeasonalLookbackYears == 3
 
 
 def test_override_nested(tmp_path):
@@ -240,10 +189,6 @@ def _write_legacy_yaml(tmp_path: Path) -> Path:
         CioNYSKIP: 2
         StnFile: stations.csv
         StnIDs: [asos203]
-        OutletFlowIDs: [10]
-        OutletFlowNms: [SiteA]
-        OutletWqIDs: [10]
-        OutletWqNms: [SiteA]
         ObsFlowFile: flow.csv
         ObsWqFile: wq.csv
         OutputTypes: [sd]
@@ -254,9 +199,6 @@ def _write_legacy_yaml(tmp_path: Path) -> Path:
         Eyear_hist: 2010
         Syear_rcp: [2011]
         Eyear_rcp: [2040]
-        SForecastOpt: off
-        Syear_Fcst: 2024
-        Eyear_Fcst: 2024
     """)
     p = tmp_path / "rSWAT.yaml"
     p.write_text(content)
@@ -269,7 +211,6 @@ def test_load_legacy_basic(tmp_path):
     assert isinstance(cfg, EnvConfig)
     assert cfg.CioNYSKIP == 2
     assert cfg.StnIDs == ["asos203"]
-    assert cfg.OutletFlowIDs == [10]
 
 
 def test_load_legacy_refs(tmp_path):
@@ -284,3 +225,56 @@ def test_override_legacy(tmp_path):
     p = _write_legacy_yaml(tmp_path)
     cfg = load_config(p, override={"CioNYSKIP": 5})
     assert cfg.CioNYSKIP == 5
+
+
+# ── 신규 path: 섹션 (swat 전용 경로) ───────────────────────────────────────────
+
+def test_load_path_section(tmp_path):
+    """path: 섹션으로 swat 전용 경로 지정 (qswat/swatplus_txtinout/observed/cc_weather)."""
+    prj = str(tmp_path).replace("\\", "/")
+    content = textwrap.dedent(f"""
+        project:
+          root: "{prj}"
+          database: "{prj}/db"
+        path:
+          qswat_txtinout:    "$(project.root)/2_qswat/TxtInOut"
+          swatplus_txtinout: "$(project.root)/3_swatplus/default"
+          observed:          "$(project.database)/obs"
+          cc_weather:        "$(project.database)/cmip6"
+        stations:
+          metadata_file: stations.csv
+          ids: [918430]
+    """)
+    p = tmp_path / "swat_py.yaml"
+    p.write_text(content)
+    cfg = load_config(p)
+    assert cfg.QswatTxtInOut   == f"{prj}/2_qswat/TxtInOut"
+    assert cfg.DefaultDir      == f"{prj}/3_swatplus/default"
+    assert cfg.ObservedDataDir == f"{prj}/db/obs"
+    assert cfg.CcDataDir       == f"{prj}/db/cmip6"
+
+
+def test_path_section_backward_compat(tmp_path):
+    """path: 미사용 시 구 project.input/output 로도 동일 동작(하위호환)."""
+    prj = str(tmp_path).replace("\\", "/")
+    content = textwrap.dedent(f"""
+        project:
+          root: "{prj}"
+          database: "{prj}/db"
+          qswat_txtinout: "$(project.root)/qs"
+          input:
+            observed:   "$(project.database)/obs"
+            cc_weather: "$(project.database)/cc"
+          output:
+            default: "$(project.root)/3_swatplus/default"
+        stations:
+          metadata_file: stations.csv
+          ids: [1]
+    """)
+    p = tmp_path / "swat_py.yaml"
+    p.write_text(content)
+    cfg = load_config(p)
+    assert cfg.QswatTxtInOut   == f"{prj}/qs"
+    assert cfg.DefaultDir      == f"{prj}/3_swatplus/default"
+    assert cfg.ObservedDataDir == f"{prj}/db/obs"
+    assert cfg.CcDataDir       == f"{prj}/db/cc"

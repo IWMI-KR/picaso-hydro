@@ -104,7 +104,7 @@ class _Observation:
     yaml 에서 obs_file / obs_column / outlet_name 생략 가능 — 컨벤션 기반 자동 산출:
         obs_file   = {obs_root}/{variable}/{time_step}/{outlet_name}.csv
         obs_column = {variable}_{unit_suffix} (예: flow_m3s, tn_mgl)
-        outlet_name = yaml.outlets.flow.names 에서 outlet_id 로 lookup
+        outlet_name = 미명시 시 "outlet_{outlet_id}" 로 산출
     """
     id:         str
     outlet_id:  int
@@ -112,10 +112,36 @@ class _Observation:
     unit:       str           # m3/s, mm/day, mg/L, kg/day 등
     obs_file:   str = ""       # 미명시 시 자동 산출
     obs_column: str = ""       # 미명시 시 자동 산출
-    outlet_name: str = ""      # 미명시 시 outlets.flow.names lookup
+    outlet_name: str = ""      # 미명시 시 "outlet_{outlet_id}" 자동
     time_step:  str = "daily"  # daily | monthly | 10day
     weight:     float = 1.0
     objective:  str = "NSE"    # NSE | KGE | R2 | PBIAS | RMSE
+    # 저수지(댐) 수위 관측 전용 — variable="wlevel" 일 때만 사용.
+    reservoir:  str = ""       # reservoirs: 레지스트리 참조(이름). 지정 시 곡선·datum 상속.
+    #   (곡선 없을 때 fallback) stage(m) = datum_m + shape_factor · V/A
+    shape_factor: float = 1.0  # 1.0=각주형(평균수심), 2.0=쐐기형
+    datum_m:      float = 0.0  # 수위계 기준면 오프셋(m)
+
+
+@dataclass
+class _Reservoir:
+    """yaml.reservoirs.<name> 항목 — 저수지 물성·수위내용적 곡선.
+
+    stage_storage_file 는 로드 후 obs/reservoir/ 하위로 해석된 경로.
+    """
+    name:               str
+    gis_id:             int = 0        # SWAT+ reservoir_con.gis_id (reservoir_day 필터)
+    stage_storage_file: str = ""       # 수위-내용적 CSV 경로
+    obs_datum_offset_ft: float = 0.0   # 관측 staff-gauge → 곡선 datum 보정(보정 자유변수)
+    interp:             str = "pchip"  # linear | pchip
+    crest_ft:           float = float("nan")
+    spillway_ft:        float = float("nan")
+    bottom_ft:          float = float("nan")
+    # 취수(상수도 등) — 저수지 물수지에서 차감. simulate_managed_storage 로 반영.
+    withdrawal_m3s:     float = 0.0            # 상수 취수(m³/s). 예: 1 MGD=0.0438
+    withdrawal_monthly_m3s: Optional[List[float]] = None  # 월별(1~12월) 취수(선택, 상수보다 우선)
+    cap_level_ft:       float = float("nan")  # 월류 임계 수위. 미지정 시 spillway_ft 사용
+    init_level_ft:      float = float("nan")  # 초기 수위. 미지정 시 만수(cap)
 
 
 @dataclass
@@ -125,6 +151,8 @@ class _CalParameter:
     key:         str           # 인자 이름
     range:       List[float]   # [min, max]
     change_type: str = "absval"  # absval | relchg | abschg
+    rows:        Optional[List[int]] = None  # SWAT+ 파일 특정 행(0-based)만 적용
+                                             # None=전체행. 지역화(regionalization)용.
 
 
 @dataclass
@@ -145,6 +173,55 @@ class _CalOutputCfg:
 
 
 @dataclass
+class _TankCfg:
+    """yaml.tank 블록 — 3단 Tank 모형 검보정 설정 (관측소·기간은 calibration 공유).
+
+    기상자료(강수 CSV·관측소 위도)는 SWAT+와 동일한 소스를 쓴다 — 강수 CSV 폴더는
+    ``cfg.ObsDayDir``(공통 obs_weather_std), 관측소 위도는 ``cfg.ObsDayDir/cfg.StnFile``
+    (stations 메타 CSV). 따라서 tank 블록에 별도 weather_dir/station_meta_csv 를 두지 않는다.
+
+    precip_mapping : {"default": "918430", "<obs_id>": "code" | [[code, w], ...]}
+    parameters     : {param_name: [lo, hi]} — 미지정은 model.DEFAULT_BOUNDS.
+    basin_areas    : {obs_id: area_km2} — 없으면 basin_area_csv 에서 로드.
+    """
+    pet_method:      str = "hargreaves"
+    precip_mapping:  Dict[str, Any] = field(default_factory=lambda: {"default": "918430"})
+    basin_areas:     Dict[str, float] = field(default_factory=dict)
+    basin_area_csv:  str = ""
+    basin_area_key:  str = "station"
+    basin_area_col:  str = "subbasin_area_km2"
+    parameters:      Dict[str, Any] = field(default_factory=dict)
+    default_lat:     float = 0.0
+    n_iterations:    int = 300
+    seed:            int = 1
+
+
+@dataclass
+class _DroughtCfg:
+    """yaml.drought 블록 — 가뭄위험 대시보드(①~⑤) 설정.
+
+    outlets : {gis_id(int): name(str)} — 12개 소유역 outlet 채널. 미계측은 outlet_chNN.
+    """
+    outlets:         Dict[int, str] = field(default_factory=dict)
+    forecast:        str = "2016_AMJ"
+    n_members:       int = 100
+    forecast_station: str = ""    # 미지정 시 obs_weather_std/stations-acidwg.csv 로 결정
+    climatology_csv: str = ""
+    climatology_years: List[int] = field(default_factory=lambda: [2003, 2024])
+    # 장기 기후(평년·FDC) 재실행 기간 — acidwg observation(syear/eyear)과 동일 값 사용.
+    # SWAT+ sim=[syear, eyear], 웜업(CioNYSKIP) 제외 후 출력. climatology 파일명에 사용.
+    syear:           int = 0           # 0 이면 climatology_years[0] 로 대체(하위호환)
+    eyear:           int = 0           # 0 이면 climatology_years[-1]
+    ensemble_root:   str = ""          # 미지정 시 1_acidwg/hindcast
+    # ── 4단계 급수단계 경계 (설정 가능) ──────────────────────────────────────
+    #  method: fdc_exceedance | nonexceed_percentile | fixed_flow
+    #  values: [Normal|Watch, Watch|Warning, Warning|Crisis] — method 별 의미 상이(fdc.stage_thresholds).
+    threshold_method: str = "fdc_exceedance"
+    threshold_values: List[float] = field(
+        default_factory=lambda: [70.0, 90.0, 95.0])   # Q70/Q90/Q95 (USDM D0/D2/D3, WMO Q95)
+
+
+@dataclass
 class EnvConfig:
     """swat_py 전체 설정을 담는 데이터클래스.
 
@@ -159,7 +236,6 @@ class EnvConfig:
     ObsDayDir: str = ""       # project.input.observed_weather
     ObservedDataDir: str = ""  # project.input.observed (★ 신규 — 관측 자료 루트, obs/)
     CcDataDir: str = ""       # project.input.cc_weather
-    FcstDataDir: str = ""     # project.input.forecast_weather
     SwatRunDir: str = ""      # 호환 alias — CalibratedDir 와 동일
     SwatObsDir: str = ""      # 호환 alias — CalibrationDir 와 동일
     SwatCcDir: str = ""       # 호환 alias — CchangeDir 와 동일
@@ -182,15 +258,9 @@ class EnvConfig:
     CioNYSKIP: int = 3              # warm_up_years
     OutputTypes: List[str] = field(default_factory=lambda: ["sd"])
 
-    # ── 관측소 ────────────────────────────────────────────────────────────────
-    StnFile: str = ""
+    # ── 관측소 (SWAT+·Tank 공용 기상관측소 메타 — 기본 stations-hydro.csv) ──────
+    StnFile: str = "stations-hydro.csv"
     StnIDs: List[str] = field(default_factory=list)
-
-    # ── 모니터링 지점 ─────────────────────────────────────────────────────────
-    OutletFlowIDs: List[int] = field(default_factory=list)
-    OutletFlowNms: List[str] = field(default_factory=list)
-    OutletWqIDs: List[int] = field(default_factory=list)
-    OutletWqNms: List[str] = field(default_factory=list)
 
     # ── 관측 자료 ─────────────────────────────────────────────────────────────
     ObsFlowFile: str = ""
@@ -215,12 +285,20 @@ class EnvConfig:
     ValPeriodEnd:   str = ""
     # 신규 — observations / parameters / method / output
     Observations:   List[_Observation]  = field(default_factory=list)
+    Reservoirs:     Dict[str, "_Reservoir"] = field(default_factory=dict)
     CalParameters:  List[_CalParameter] = field(default_factory=list)
     CalMethod:      _CalMethodCfg       = field(default_factory=_CalMethodCfg)
     CalOutput:      _CalOutputCfg       = field(default_factory=_CalOutputCfg)
+    # ── Tank 모형 (선택) ──────────────────────────────────────────────────────
+    Tank:           _TankCfg            = field(default_factory=_TankCfg)
+    # ── 가뭄위험 대시보드 (선택) ──────────────────────────────────────────────
+    Drought:        _DroughtCfg         = field(default_factory=_DroughtCfg)
 
     # ── 기후변화 ──────────────────────────────────────────────────────────────
     CChangeOpt: str = "off"         # "on" | "off"
+    # cchange 전용 기상관측소 메타(예: stations-cchange.csv) — CMIP6 상세화 기상작성용.
+    CChangeStnFile: str = "stations-cchange.csv"
+    CChangeStnIDs: List[str] = field(default_factory=list)  # 비우면 파일 내 전체 관측소
     MdlNms: List[str] = field(default_factory=list)
     ScnNms: List[str] = field(default_factory=list)
     Syear_hist: int = 1981
@@ -229,25 +307,7 @@ class EnvConfig:
     Eyear_rcp: List[int] = field(default_factory=list)
     FuturePeriods: List[_FuturePeriod] = field(default_factory=list)
 
-    # ── 앙상블 확률예보 (acidwg_py) ───────────────────────────────────────────
-    EnsembleForecastEnabled: bool = False
-    EnsembleDir: str = ""
-    EnsembleNMembers: int = 1000
-    EnsembleParallel: _EnsembleParallelCfg = field(
-        default_factory=_EnsembleParallelCfg
-    )
-    EnsembleQuantiles: List[float] = field(
-        default_factory=lambda: [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
-    )
-    EnsembleStartYear: int = 0
-    EnsembleEndYear: int = 0
-
-    # ── 계절 예보 ─────────────────────────────────────────────────────────────
-    SForecastOpt: str = "off"       # "on" | "off"
-    Syear_Fcst: int = 0
-    Eyear_Fcst: int = 0
-    SeasonalLookbackYears: int = 3
-    fiyearmode: bool = False        # (하위 호환)
+    # (구 계절/앙상블 예측 파이프라인 제거 — 예측은 swat_py.drought 로 일원화)
 
     # ── 기타 (하위 호환 / 확장) ───────────────────────────────────────────────
     extras: Dict[str, Any] = field(default_factory=dict)
@@ -256,21 +316,40 @@ class EnvConfig:
         self.CioNYSKIP = int(self.CioNYSKIP)
         if isinstance(self.StnIDs, str):
             self.StnIDs = [self.StnIDs]
-        self.OutletFlowIDs = _to_int_list(self.OutletFlowIDs)
-        self.OutletWqIDs   = _to_int_list(self.OutletWqIDs)
         if isinstance(self.Syear_rcp, int):
             self.Syear_rcp = [self.Syear_rcp]
         if isinstance(self.Eyear_rcp, int):
             self.Eyear_rcp = [self.Eyear_rcp]
 
+    # ── outlet 목록 산출 (calibration.observations[] 기반) ─────────────────────
+    def outlets_for(self, *, flow: bool) -> "tuple[List[int], List[str]]":
+        """observations[] 에서 (outlet_id, outlet_name) 목록을 산출합니다.
+
+        구 ``outlets`` (모니터링 지점) 블록을 대체 — 분석/시각화 루프용.
+
+        flow=True  → variable=='flow' 관측점,
+        flow=False → 수질(ss/tn/tp) 관측점.
+        같은 outlet_id 는 첫 등장만 유지(순서 보존)합니다.
+        """
+        wq = ("ss", "tn", "tp")
+        ids: List[int] = []
+        names: List[str] = []
+        seen: set = set()
+        for o in self.Observations:
+            is_flow = o.variable == "flow"
+            if is_flow != flow:
+                continue
+            if not is_flow and o.variable not in wq:
+                continue
+            if o.outlet_id in seen:
+                continue
+            seen.add(o.outlet_id)
+            ids.append(o.outlet_id)
+            names.append(o.outlet_name)
+        return ids, names
+
 
 # ── 내부 유틸 ─────────────────────────────────────────────────────────────────
-
-def _to_int_list(val: Any) -> List[int]:
-    if isinstance(val, (int, str)):
-        return [int(val)]
-    return [int(x) for x in (val or [])]
-
 
 def _get_nested(data: Dict[str, Any], *keys: str, default: Any = None) -> Any:
     """점-경로로 중첩 dict 에서 값을 꺼냅니다.
@@ -344,9 +423,9 @@ def _resolve_node(node: Any, flat: Dict[str, str]) -> Any:
 def _is_nested_format(raw: Dict[str, Any]) -> bool:
     """신규 중첩 형식인지 판별합니다.
 
-    ``project``, ``model``, ``stations`` 중 하나 이상이 dict 이면 신규 형식입니다.
+    ``project``, ``path``, ``model``, ``stations`` 중 하나 이상이 dict 이면 신규 형식입니다.
     """
-    for key in ("project", "model", "stations", "outlets"):
+    for key in ("project", "path", "model", "stations"):
         if isinstance(raw.get(key), dict):
             return True
     return False
@@ -372,26 +451,29 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
     flat["OutputTypes"]  = _as_list(mdl.get("output_types", ["sd"]))
 
     # 2. 디렉토리
+    #    신규: swat 전용 경로는 `path:` 섹션. 구 `project.input/output` 하위호환 유지.
+    #    (root/database/observed_weather 는 공통 picaso-hydro.yaml → project 로 주입)
     proj = raw.get("project", {})
+    pth  = raw.get("path", {}) or {}
+    inp  = proj.get("input", {})
+    out  = proj.get("output", {})
     flat["PrjDir"]     = proj.get("root", "")
     flat["DbDir"]      = proj.get("database", "")
-    flat["QswatTxtInOut"] = proj.get("qswat_txtinout", "") or ""
-    inp                = proj.get("input", {})
+    flat["QswatTxtInOut"] = pth.get("qswat_txtinout") or proj.get("qswat_txtinout") or ""
     flat["ObsDayDir"]  = inp.get("observed_weather", "")
-    flat["CcDataDir"]  = inp.get("cc_weather", "")
-    flat["FcstDataDir"]= inp.get("forecast_weather", "")
+    flat["CcDataDir"]  = pth.get("cc_weather") or inp.get("cc_weather", "")
     # 관측 자료 루트 — 미명시 시 $(project.database)/obs 자동
-    flat["ObservedDataDir"] = inp.get("observed") or (
+    flat["ObservedDataDir"] = pth.get("observed") or inp.get("observed") or (
         f"{flat['DbDir']}/obs" if flat.get("DbDir") else ""
     )
 
     # output 경로 — model.type 기반 자동 산출 (사용자 명시 시 그게 우선)
     # 옵션 C 구조: 마스터 2개 (default/calibrated) + 작업 폴더 3개 (calibration/forecast/cchange)
     auto_root = _auto_output_root(flat["PrjDir"], model_type)
-    out = proj.get("output", {})
 
     # 옵션 C 신규 키 (yaml 에서 명시 가능, 미명시 시 자동)
-    flat["DefaultDir"]     = out.get("default")     or (f"{auto_root}/default"     if auto_root else "")
+    # DefaultDir(=SWAT+ TxtInOut 마스터): 신규 path.swatplus_txtinout / 구 output.default
+    flat["DefaultDir"]     = pth.get("swatplus_txtinout") or out.get("default") or (f"{auto_root}/default" if auto_root else "")
     flat["CalibratedDir"]  = out.get("calibrated")  or (f"{auto_root}/calibrated"  if auto_root else "")
     flat["CalibrationDir"] = out.get("calibration") or (f"{auto_root}/calibration" if auto_root else "")
     flat["ForecastDir"]    = out.get("forecast")    or (f"{auto_root}/forecast"    if auto_root else "")
@@ -415,18 +497,10 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
         _warn_if_version_mismatch(name, str(path), model_type)
 
     # 3. 관측소
+    # stations 섹션은 선택 — 미지정 시 SWAT+·Tank 공용 stations-hydro.csv 기본.
     stns = raw.get("stations", {})
-    flat["StnFile"] = stns.get("metadata_file", "")
+    flat["StnFile"] = stns.get("metadata_file") or "stations-hydro.csv"
     flat["StnIDs"]  = _as_list(stns.get("ids", []))
-
-    # 4. 모니터링 지점
-    outlets  = raw.get("outlets", {})
-    flow_out = outlets.get("flow", {})
-    wq_out   = outlets.get("water_quality", {})
-    flat["OutletFlowIDs"] = _as_list(flow_out.get("ids", []))
-    flat["OutletFlowNms"] = _as_list(flow_out.get("names", []))
-    flat["OutletWqIDs"]   = _as_list(wq_out.get("ids", []))
-    flat["OutletWqNms"]   = _as_list(wq_out.get("names", []))
 
     # 5. 관측 자료
     obs      = raw.get("observed", {})
@@ -474,28 +548,19 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
             time_step=   str(o.get("time_step", "daily")),
             weight=      float(o.get("weight", 1.0)),
             objective=   str(o.get("objective", "NSE")).upper(),
+            reservoir=   str(o.get("reservoir", "") or ""),
+            shape_factor=float(o.get("shape_factor", 1.0)),
+            datum_m=     float(o.get("datum_m", 0.0)),
         )
         for i, o in enumerate(obs_list_raw)
     ]
     # 관측 자료 obs_file/obs_column/outlet_name 자동 산출
     # (yaml 에 명시되어 있으면 그게 우선)
-    flow_ids   = _as_list(outlets.get("flow",          {}).get("ids", []))
-    flow_names = _as_list(outlets.get("flow",          {}).get("names", []))
-    wq_ids     = _as_list(outlets.get("water_quality", {}).get("ids", []))
-    wq_names   = _as_list(outlets.get("water_quality", {}).get("names", []))
-    id_to_name: Dict[int, str] = {}
-    for ids, names in ((flow_ids, flow_names), (wq_ids, wq_names)):
-        for i, oid in enumerate(ids):
-            try:
-                id_to_name[int(oid)] = str(names[i]) if i < len(names) else ""
-            except (TypeError, ValueError):
-                continue
-
     obs_root = flat["ObservedDataDir"]
     for obs in observations:
-        # outlet_name 자동
+        # outlet_name 미명시 시 outlet_{id} 로 산출 (명시값 우선)
         if not obs.outlet_name:
-            obs.outlet_name = id_to_name.get(obs.outlet_id, f"outlet_{obs.outlet_id}")
+            obs.outlet_name = f"outlet_{obs.outlet_id}"
         # obs_column 자동
         if not obs.obs_column:
             try:
@@ -519,6 +584,37 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
             )
     flat["Observations"] = observations
 
+    # 저수지 레지스트리 (reservoirs:) — 수위-내용적 곡선·물성
+    reservoirs_raw = raw.get("reservoirs", {}) or {}
+    reservoirs: Dict[str, _Reservoir] = {}
+    for rname, rv in reservoirs_raw.items():
+        rv = rv or {}
+        ssf = str(rv.get("stage_storage_file", "") or "")
+        # stage_storage_file 해석: 디렉토리 포함 → 그대로 / 파일명만 → obs/reservoir/
+        if ssf and not (("/" in ssf) or ("\\" in ssf)) and obs_root:
+            ssf = f"{obs_root}/reservoir/{ssf}"
+        wmon = rv.get("withdrawal_monthly_m3s", None)
+        reservoirs[str(rname)] = _Reservoir(
+            name=               str(rname),
+            gis_id=             int(rv.get("gis_id", 0) or 0),
+            stage_storage_file= ssf,
+            obs_datum_offset_ft=float(rv.get("obs_datum_offset_ft", 0.0) or 0.0),
+            interp=             str(rv.get("interp", "pchip") or "pchip"),
+            crest_ft=           float(rv.get("crest_ft", float("nan"))),
+            spillway_ft=        float(rv.get("spillway_ft", float("nan"))),
+            bottom_ft=          float(rv.get("bottom_ft", float("nan"))),
+            withdrawal_m3s=     float(rv.get("withdrawal_m3s", 0.0) or 0.0),
+            withdrawal_monthly_m3s=([float(x) for x in wmon] if wmon else None),
+            cap_level_ft=       float(rv.get("cap_level_ft", float("nan"))),
+            init_level_ft=      float(rv.get("init_level_ft", float("nan"))),
+        )
+    flat["Reservoirs"] = reservoirs
+
+    # observation.reservoir 링크 시 outlet_id 미지정(0)이면 저수지 gis_id 상속
+    for obs in observations:
+        if obs.reservoir and obs.reservoir in reservoirs and not obs.outlet_id:
+            obs.outlet_id = reservoirs[obs.reservoir].gis_id
+
     param_list_raw = cal_new.get("parameters", []) or []
     flat["CalParameters"] = [
         _CalParameter(
@@ -526,6 +622,8 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
             key=          str(p.get("key", "")),
             range=        [float(x) for x in (p.get("range") or [0.0, 1.0])],
             change_type=  str(p.get("change_type", "absval")),
+            rows=         ([int(r) for r in p.get("rows")]
+                          if p.get("rows") is not None else None),
         )
         for p in param_list_raw
     ]
@@ -549,9 +647,48 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
         auto_parameter_changes= bool(cal_out.get("auto_parameter_changes", True)),
     )
 
+    # 6c. tank — 3단 Tank 모형 (선택). 미지정 시 기본값(_TankCfg) 사용.
+    tk = raw.get("tank", {}) or {}
+    tk_mth = tk.get("method", {}) or {}
+    flat["Tank"] = _TankCfg(
+        pet_method=      str(tk.get("pet_method", "hargreaves") or "hargreaves"),
+        precip_mapping=  dict(tk.get("precip_mapping", {"default": "918430"}) or {"default": "918430"}),
+        basin_areas=     {str(k): float(v) for k, v in (tk.get("basin_areas", {}) or {}).items()},
+        basin_area_csv=  str(tk.get("basin_area_csv", "") or ""),
+        basin_area_key=  str(tk.get("basin_area_key", "station") or "station"),
+        basin_area_col=  str(tk.get("basin_area_col", "subbasin_area_km2") or "subbasin_area_km2"),
+        parameters=      {str(k): [float(x) for x in v]
+                          for k, v in (tk.get("parameters", {}) or {}).items()},
+        default_lat=     float(tk.get("default_lat", 0.0) or 0.0),
+        n_iterations=    int(tk_mth.get("n_iterations", 300) or 300),
+        seed=            int(tk_mth.get("seed", 1) or 1),
+    )
+
+    # 6d. drought — 가뭄위험 대시보드 (선택). 미지정 시 기본값(_DroughtCfg).
+    dr = raw.get("drought", {}) or {}
+    dr_ens = dr.get("ensemble", {}) or {}
+    dr_thr = dr.get("thresholds", {}) or {}
+    flat["Drought"] = _DroughtCfg(
+        outlets=          {int(k): str(v) for k, v in (dr.get("outlets", {}) or {}).items()},
+        forecast=         str(dr.get("forecast", "2016_AMJ") or "2016_AMJ"),
+        n_members=        int(dr_ens.get("n_members", 100) or 100),
+        forecast_station= str(dr.get("forecast_station", "") or ""),
+        climatology_csv=  str(dr.get("climatology_csv", "") or ""),
+        climatology_years=[int(x) for x in (dr.get("climatology_years", [2003, 2024]) or [2003, 2024])],
+        syear=            int(dr.get("syear", 0) or 0),
+        eyear=            int(dr.get("eyear", 0) or 0),
+        ensemble_root=    str(dr_ens.get("root", "") or ""),
+        threshold_method= str(dr_thr.get("method", "fdc_exceedance") or "fdc_exceedance"),
+        threshold_values= [float(x) for x in (dr_thr.get("values", [50.685, 75.342, 97.260])
+                                              or [50.685, 75.342, 97.260])],
+    )
+
     # 7. 기후변화
     cc = raw.get("climate_change", {})
     flat["CChangeOpt"] = "on" if cc.get("enabled", False) else "off"
+    # cchange 전용 관측소 메타/ids (CMIP6 상세화 기상작성). 미지정 시 stations-cchange.csv.
+    flat["CChangeStnFile"] = cc.get("metadata_file") or "stations-cchange.csv"
+    flat["CChangeStnIDs"]  = _as_list(cc.get("ids", []))
     flat["MdlNms"]     = _as_list(cc.get("models", []))
     flat["ScnNms"]     = _as_list(cc.get("scenarios", []))
     hist_p = cc.get("historical_period", {})
@@ -569,30 +706,7 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
         for p in future_periods_raw
     ]
 
-    # 8. 앙상블 확률예보
-    ens = raw.get("ensemble_forecast", {})
-    flat["EnsembleForecastEnabled"] = bool(ens.get("enabled", False))
-    flat["EnsembleDir"]             = str(ens.get("ensemble_dir", ""))
-    flat["EnsembleNMembers"]        = int(ens.get("n_members", 1000) or 1000)
-    par = ens.get("parallel", {})
-    flat["EnsembleParallel"] = _EnsembleParallelCfg(
-        enabled=bool(par.get("enabled", True)),
-        n_workers=int(par.get("n_workers", 4) or 4),
-    )
-    flat["EnsembleQuantiles"] = _as_list(
-        ens.get("quantiles", [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95])
-    )
-    fcst_p = ens.get("forecast_period", {})
-    flat["EnsembleStartYear"] = int(fcst_p.get("start_year", 0) or 0)
-    flat["EnsembleEndYear"]   = int(fcst_p.get("end_year",   0) or 0)
-
-    # 9. 계절 예보
-    sf = raw.get("seasonal_forecast", {})
-    flat["SForecastOpt"] = "on" if sf.get("enabled", False) else "off"
-    sf_p = sf.get("forecast_period", {})
-    flat["Syear_Fcst"]         = int(sf_p.get("start_year", 0) or 0)
-    flat["Eyear_Fcst"]         = int(sf_p.get("end_year",   0) or 0)
-    flat["SeasonalLookbackYears"] = int(sf.get("lookback_years", 3) or 3)
+    # 8~9. (구 앙상블/계절 예측 설정 제거 — 예측은 swat_py.drought 로 일원화)
 
     return flat
 
@@ -633,14 +747,6 @@ def _normalize_legacy(raw: Dict[str, Any]) -> Dict[str, Any]:
 
     flat.setdefault("Executable",  "SWAT-Plus.exe")
     flat.setdefault("SimOutputTypes", flat.get("OutputTypes", ["flow"]))
-    flat.setdefault("EnsembleForecastEnabled", False)
-    flat.setdefault("EnsembleDir", "")
-    flat.setdefault("EnsembleNMembers", 1000)
-    flat.setdefault("EnsembleParallel", _EnsembleParallelCfg())
-    flat.setdefault("EnsembleQuantiles", [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95])
-    flat.setdefault("EnsembleStartYear", 0)
-    flat.setdefault("EnsembleEndYear", 0)
-    flat.setdefault("SeasonalLookbackYears", 3)
     flat.setdefault("CalibrationStartYear", 0)
     flat.setdefault("CalibrationEndYear", 0)
     flat.setdefault("ValidationStartYear", 0)
@@ -689,9 +795,47 @@ def _ensure_dirs(cfg: EnvConfig) -> None:
 #  공개 API
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _load_shared_yaml(envfile: Union[str, Path],
+                      shared_file: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
+    """같은 config 폴더(또는 지정 경로)의 공통 picaso-hydro.yaml 로드(없으면 {})."""
+    p = Path(shared_file) if shared_file else Path(envfile).parent / "picaso-hydro.yaml"
+    if not p.is_file():
+        return {}
+    with p.open("r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
+
+
+def _merge_shared_swat(shared: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+    """공통(중립) 키를 swat 설정 구조로 주입. tool(swat_py.yaml) 값이 있으면 우선."""
+    if not shared:
+        return raw
+    # project: 공통 root/database/obs_weather_std + swat 전용(qswat_txtinout/input/output)
+    raw["project"] = {**(shared.get("project") or {}), **(raw.get("project") or {})}
+    # 공통 관측기상 경로(project.obs_weather_std) → project.input.observed_weather (ObsDayDir)
+    ows = (shared.get("project") or {}).get("obs_weather_std")
+    if ows is not None:
+        raw["project"].setdefault("input", {}).setdefault("observed_weather", ows)
+    wu = (shared.get("simulation") or {}).get("warm_up_years")
+    if wu is not None:                          # warm-up → model.warm_up_years (env 가 읽는 위치)
+        raw.setdefault("model", {}).setdefault("warm_up_years", wu)
+    f = shared.get("forecast") or {}
+    d = raw.setdefault("drought", {})
+    if f.get("period") is not None:
+        d.setdefault("forecast", f["period"])
+    # forecast_station 은 obs_weather_std/stations-acidwg.csv 에서 런타임 결정(설정에 두지 않음)
+    de = d.setdefault("ensemble", {})
+    nm = (shared.get("ensemble") or {}).get("n_members")
+    if nm is not None:
+        de.setdefault("n_members", nm)
+    # ensemble.root(멤버 루트)는 공통에서 제거됨 → swat 은 dashboard_data 의 기본경로
+    # (PrjDir/1_acidwg/hindcast) 로 자동 해석(acidwg output_root/hindcast 와 동일).
+    return raw
+
+
 def load_config(
     envfile: Union[str, Path],
     override: Optional[Dict[str, Any]] = None,
+    shared_file: Optional[Union[str, Path]] = None,
 ) -> EnvConfig:
     """swat_py YAML 설정 파일을 읽어 :class:`EnvConfig` 를 반환합니다.
 
@@ -708,6 +852,9 @@ def load_config(
     envfile = Path(envfile)
     with envfile.open("r", encoding="utf-8") as fh:
         raw: Dict[str, Any] = yaml.safe_load(fh) or {}
+
+    # 공통 picaso-hydro.yaml 병합 (공통값을 swat 구조로 주입)
+    raw = _merge_shared_swat(_load_shared_yaml(envfile, shared_file), raw)
 
     # $(참조) 해석
     raw = _resolve_refs(raw)

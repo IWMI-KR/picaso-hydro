@@ -93,7 +93,7 @@ if cfg.EnsembleForecastEnabled:
     )
     plot_ensemble_forecast(
         results=results,
-        outlet_nm=cfg.OutletFlowNms[0] if cfg.OutletFlowNms else "",
+        outlet_nm=(cfg.outlets_for(flow=True)[1] or [""])[0],
     )
 
 # ── 7. 계절 예보 (단일 멤버) ──────────────────────────────────────────────────

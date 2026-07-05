@@ -30,14 +30,9 @@ StnIDs:
   - asos232
 
 # ── Monitoring outlets ────────────────────────────────────────────────────────
-OutletFlowIDs:
-  - 23
-OutletFlowNms:
-  - Outlet_A
-OutletWqIDs:
-  - 23
-OutletWqNms:
-  - Outlet_A
+# NOTE: 구 OutletFlow*/OutletWq* 키는 제거됨. outlet↔채널 매핑은 이제 중첩(nested)
+#       포맷의 calibration.observations[] 에서만 지정한다(swat_py.yaml 참조).
+#       이 레거시 flat 포맷은 관측점 매핑을 지원하지 않으므로 분석 기능은 제한적이다.
 
 # ── Observed data files (relative to SwatDbDir) ───────────────────────────────
 # Flow CSV columns: year, mon, day, inflow_cms

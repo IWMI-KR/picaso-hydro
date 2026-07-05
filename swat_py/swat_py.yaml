@@ -66,14 +66,14 @@ calibration:
   #     obs_file / obs_column 명시 시 자동 산출보다 우선.
   observations:
     - id:        "outlet1_flow"
-      outlet_id: 1                        # ★ SWAT 채널 GIS ID (outlets.flow.ids 와 일치)
+      outlet_id: 1                        # ★ SWAT 채널 GIS ID (channel_sd_day.txt gis_id)
       variable:  "flow"
       unit:      "m3/s"
       time_step: "daily"
       weight:    1.0                      # 다중 변수 결합 시 가중치
       objective: "NSE"                    # NSE | KGE | R2 | PBIAS | RMSE
       # obs_file / obs_column 자동 산출 (생략 가능)
-      # outlet_name 도 outlets.flow.names lookup 자동
+      # outlet_name 미명시 시 "outlet_{outlet_id}" 자동
 
     # 같은 outlet 에 다른 변수 추가
     # - id:        "outlet1_tn"
@@ -139,16 +139,6 @@ calibration:
 stations:
   metadata_file: "stations.csv"     # ★
   ids: []                            # ★ 사용할 관측소 ID 목록
-
-
-# ── 6. 모니터링 지점 (outlets — observations 에서 outlet_id 로 참조) ─────────
-outlets:
-  flow:
-    ids:   []                       # ★
-    names: []
-  water_quality:
-    ids:   []
-    names: []
 
 
 # ── 7. 기후변화 시나리오 (선택) ─────────────────────────────────────────────

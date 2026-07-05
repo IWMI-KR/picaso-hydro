@@ -57,6 +57,11 @@ class CalibrationContext:
     keep_run_dirs:     bool = False                   # True 면 runs/run_NNN/ 보존
     sim_evaluator:     Optional[Callable] = None      # mock or real SWAT
     exe_path:          Optional[Path] = None          # SWAT.exe 경로
+    # 분할표본(split-sample) 기간 — (start, end) Timestamp 쌍. None 이면 전체 기간.
+    #   cal_period: DDS 목적함수가 이 구간의 관측치만으로 평가(보정).
+    #   val_period: 보정 완료 후 최적 파라미터를 이 구간으로 독립 검증.
+    cal_period:        Optional[Tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]] = None
+    val_period:        Optional[Tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]] = None
 
     history_full: List[dict] = field(default_factory=list)
 
@@ -109,6 +114,7 @@ def _build_changes(param_defs, x: np.ndarray) -> List[ParameterChange]:
         ParameterChange(
             file=p.file, parameter=p.key, value=float(x[i]),
             change_type=p.change_type,
+            rows=getattr(p, "rows", None),   # 지역화: 특정 행만 적용(None=전체)
         )
         for i, p in enumerate(param_defs)
     ]
@@ -156,6 +162,7 @@ def _evaluate_run(
         m = _compute_metrics_paired(
             obs_df["date"].values, obs_df[obs.obs_column].values,
             sim_dates, sim_values,
+            period=ctx.cal_period,          # ★ 보정기간만으로 목적함수 평가
         )
         per_obs_metrics.append(m)
 
@@ -201,24 +208,41 @@ def _extract_obs_from_swat_output(run_dir: Path, ctx: CalibrationContext) -> Dic
         "tn":   "no3_out",     # kg/day (단순화 — 실제는 no3 + org_n + nh4 + no2)
         "tp":   "solp_out",
     }
+    # 저수지(댐) 변수 — reservoir_day.txt + 곡선/취수/datum 로 수위(wlevel) 산출
+    reservoir_vars = {"wlevel", "resstor", "resflow"}
+    reservoirs = getattr(ctx.cfg, "Reservoirs", {}) or {}
+
     out: Dict = {}
     if ctx.cfg.ModelType == "swat_plus":
-        from swat_py.output.reader_swat_plus import parse_channel_sd_day
+        from swat_py.output.reader_swat_plus import (
+            parse_channel_sd_day, parse_reservoir_day,
+        )
+        from swat_py.calibration.analysis_swat_plus import (
+            build_reservoir_sim, _VARIABLE_ROUTE, _SIM_COL,
+        )
         # 출력 첫 행에 부여할 시작일 — simulation.start_date 기준.
         sdate = ctx.cfg.SimStartDate or "2015-01-01"
+        _empty = (np.array([], dtype="datetime64[ns]"), np.array([], dtype=float))
         for obs in ctx.observations:
-            col = var_column_map_plus.get(obs.variable, "flo_out")
-            df = parse_channel_sd_day(
-                run_dir / "channel_sd_day.txt",
-                outlet=obs.outlet_id, sdate=sdate,
-            )
-            if df is None or col not in df.columns:
-                out[obs.id] = (
-                    np.array([], dtype="datetime64[ns]"),
-                    np.array([], dtype=float),
+            if obs.variable in reservoir_vars:
+                outtype = _VARIABLE_ROUTE[obs.variable][1]
+                raw = parse_reservoir_day(
+                    run_dir / "reservoir_day.txt", outlet=obs.outlet_id, sdate=sdate,
                 )
+                if raw is None:
+                    out[obs.id] = _empty
+                    continue
+                sim = build_reservoir_sim(raw, obs, outtype, reservoirs)
+                sim_col = _SIM_COL[outtype]
+                out[obs.id] = (sim["date"].values, sim[sim_col].values)
             else:
-                out[obs.id] = (df["date"].values, df[col].values)
+                col = var_column_map_plus.get(obs.variable, "flo_out")
+                df = parse_channel_sd_day(
+                    run_dir / "channel_sd_day.txt",
+                    outlet=obs.outlet_id, sdate=sdate,
+                )
+                out[obs.id] = _empty if (df is None or col not in df.columns) \
+                    else (df["date"].values, df[col].values)
     else:
         from swat_py.output.reader_swat import parse_output_rch
         df = parse_output_rch(run_dir / "output.rch")
@@ -228,14 +252,26 @@ def _extract_obs_from_swat_output(run_dir: Path, ctx: CalibrationContext) -> Dic
     return out
 
 
-def _compute_metrics_paired(obs_dates, obs_values, sim_dates, sim_values):
-    """관측·모의 같은 날짜로 매칭 후 메트릭 계산."""
+def _compute_metrics_paired(obs_dates, obs_values, sim_dates, sim_values,
+                            period=None):
+    """관측·모의 같은 날짜로 매칭 후 메트릭 계산.
+
+    period : (start, end) Timestamp 쌍(각 None 허용) 또는 None.
+             지정 시 병합된 관측·모의 쌍을 해당 날짜 구간으로 필터(분할표본).
+             None 이면 전체 기간(sim∩obs) 평가 — 기존 동작과 동일(하위호환).
+    """
     obs = pd.DataFrame({"date": pd.to_datetime(obs_dates),
                         "obs":  np.asarray(obs_values, dtype=float)})
     sim = pd.DataFrame({"date": pd.to_datetime(sim_dates),
                         "sim":  np.asarray(sim_values, dtype=float)})
     obs.loc[(obs["obs"] < -50), "obs"] = np.nan
     paired = obs.merge(sim, on="date", how="inner").dropna()
+    if period is not None:
+        start, end = period
+        if start is not None:
+            paired = paired[paired["date"] >= pd.Timestamp(start)]
+        if end is not None:
+            paired = paired[paired["date"] <= pd.Timestamp(end)]
     if len(paired) < 5:
         return {"nse": -999.0, "kge": -999.0, "r2": 0.0,
                 "pbias": 999.0, "rmse": 999.0, "n": len(paired)}
@@ -247,7 +283,67 @@ def _compute_metrics_paired(obs_dates, obs_values, sim_dates, sim_values):
             out[k.lower()] = -999.0 if k.lower() in ("nse","kge","r2") else 999.0
         else:
             out[k.lower()] = v
+    out["n"] = len(paired)           # 표본 수(기간 필터 후) — 분할표본 요약에 사용
     return out
+
+
+def _parse_period(start, end):
+    """(start, end) 문자열 → (Timestamp|None, Timestamp|None) 또는 None.
+
+    둘 다 비어 있으면 None(전체 기간 평가). 한쪽만 있으면 그쪽만 경계 적용.
+    """
+    def _ts(v):
+        v = str(v or "").strip()
+        return pd.Timestamp(v) if v else None
+    s, e = _ts(start), _ts(end)
+    if s is None and e is None:
+        return None
+    return (s, e)
+
+
+def _write_split_sample_summary(
+    best_record, observations, obs_dfs, cal_period, val_period, out_path,
+):
+    """최적 파라미터의 보정·검증 기간별 관측소 메트릭을 CSV 로 기록.
+
+    best_record : history_full 중 best (sim_by_obs 포함)
+    반환: 기록된 DataFrame (콘솔 출력용)
+    """
+    def _fmt(p):
+        if p is None:
+            return "전체(sim∩obs)"
+        s, e = p
+        return f"{s.date() if s is not None else '…'} ~ {e.date() if e is not None else '…'}"
+
+    rows = []
+    sim_by_obs = best_record.get("sim_by_obs", {})
+    for obs in observations:
+        if obs.id not in sim_by_obs:
+            continue
+        sim_dates, sim_values = sim_by_obs[obs.id]
+        obs_df = obs_dfs[obs.id]
+        for label, period in (("calibration", cal_period),
+                              ("validation",  val_period)):
+            m = _compute_metrics_paired(
+                obs_df["date"].values, obs_df[obs.obs_column].values,
+                sim_dates, sim_values, period=period,
+            )
+            rows.append({
+                "obs_id":    obs.id,
+                "outlet_id": obs.outlet_id,
+                "phase":     label,
+                "period":    _fmt(period),
+                "objective": obs.objective,
+                "n":         m.get("n", 0),
+                "nse":       round(m.get("nse", float("nan")), 4),
+                "kge":       round(m.get("kge", float("nan")), 4),
+                "r2":        round(m.get("r2", float("nan")), 4),
+                "pbias":     round(m.get("pbias", float("nan")), 2),
+                "rmse":      round(m.get("rmse", float("nan")), 4),
+            })
+    df = pd.DataFrame(rows)
+    df.to_csv(out_path, index=False, encoding="utf-8-sig")
+    return df
 
 
 # ── 통합 함수 ──────────────────────────────────────────────────────────────
@@ -289,12 +385,15 @@ def run_auto_calibration(
     if not cfg.Observations:
         raise RuntimeError("yaml.calibration.observations 가 비어 있습니다.")
 
-    # 모든 obs 의 자료 로드
+    # 모든 obs 의 자료 로드 (obs_file 상대경로는 관측 루트 기준으로 해석)
+    from swat_py.calibration.analysis_swat_plus import _resolve_obs_path
+    obs_root = getattr(cfg, "ObservedDataDir", "") or getattr(cfg, "SwatDbDir", "")
     obs_dfs: Dict[str, pd.DataFrame] = {}
     for obs in cfg.Observations:
-        df = pd.read_csv(obs.obs_file)
+        obs_path = _resolve_obs_path(obs.obs_file, obs_root)
+        df = pd.read_csv(obs_path, encoding="utf-8-sig")
         if "date" not in df.columns:
-            raise RuntimeError(f"관측 자료 'date' 컬럼 없음: {obs.obs_file}")
+            raise RuntimeError(f"관측 자료 'date' 컬럼 없음: {obs_path}")
         if obs.obs_column not in df.columns:
             raise RuntimeError(
                 f"관측 자료 '{obs.id}' 에 '{obs.obs_column}' 컬럼 없음 "
@@ -307,6 +406,13 @@ def run_auto_calibration(
     if sim_evaluator is None:
         exe_path = ensure_swat_exe(default_dir, cfg.ModelType, cfg.Executable)
 
+    # 분할표본 기간 파싱 (yaml calibration.period / validation).
+    #   값이 없으면 None → 전체 sim∩obs 평가(하위호환).
+    cal_period = _parse_period(getattr(cfg, "CalPeriodStart", ""),
+                               getattr(cfg, "CalPeriodEnd", ""))
+    val_period = _parse_period(getattr(cfg, "ValPeriodStart", ""),
+                               getattr(cfg, "ValPeriodEnd", ""))
+
     ctx = CalibrationContext(
         cfg=cfg, default_dir=default_dir, runs_dir=runs_dir,
         param_defs=cfg.CalParameters,
@@ -317,6 +423,8 @@ def run_auto_calibration(
         keep_run_dirs=keep_run_dirs,
         sim_evaluator=sim_evaluator,
         exe_path=exe_path,
+        cal_period=cal_period,
+        val_period=val_period,
     )
 
     # 결합 가중 합은 항상 큰 값이 좋음 (정규화 후 max 방향)
@@ -393,6 +501,18 @@ def run_auto_calibration(
     sorted_hist = sorted(history_full, key=lambda h: h["f"], reverse=ctx_maximize)
     top_records = sorted_hist[:top_n]
 
+    # ── 분할표본 요약: 최적 파라미터의 보정·검증 기간별 관측소 메트릭 ──
+    split_csv = results_dir / "cal_val_summary.csv"
+    split_df = _write_split_sample_summary(
+        sorted_hist[0], ctx.observations, ctx.obs_dfs,
+        ctx.cal_period, ctx.val_period, split_csv,
+    )
+    print()
+    print("  ── 분할표본(Split-sample) 관측소별 성능 ──")
+    if not split_df.empty:
+        print(split_df.to_string(index=False))
+    print(f"  → {split_csv}")
+
     obs_figures: List[Path] = []
     for obs in ctx.observations:
         # 각 obs 의 sim_dict 구성
@@ -450,6 +570,7 @@ def run_auto_calibration(
             "all_runs":          all_csv,
             "top_runs":          top_csv,
             "parameter_changes": pchg_csv,
+            "cal_val_summary":   split_csv,
             "figures":           fig_dir,
         },
         "obs_figures": obs_figures,

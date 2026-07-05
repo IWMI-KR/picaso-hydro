@@ -1,0 +1,221 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  swat_py 설정 — **swat 서브패키지 전용**
+#  공통 변수(project.root/database·예측연월·앙상블수·warm-up·관측기상 경로)는
+#  config/picaso-hydro.yaml. (로더가 같은 폴더의 picaso-hydro.yaml 을 자동 병합)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ── 1. 프로젝트 (swat 전용 경로 — root/database 는 공통 파일) ─────────────────
+# qswat_txtinout: QSWAT+에서 생성한 TxtInOut 폴더
+# swatplus_txtinout: qswat_txtinout 에서 복사해 채움. 자동 검보정은 이 폴더를 /runs 폴더에 복제해 반복 구동
+# observed: 관측자료 루트 (weather/flow/wq)
+path:
+  qswat_txtinout: "$(project.root)/2_qswat/test-sj/Scenarios/Default/TxtInOut"
+  swatplus_txtinout: "$(project.root)/3_swatplus/default"
+  observed:          "$(project.database)/obs"
+  cc_weather:        "$(project.database)/cmip6/downscaled"
+
+# ── 2. 시뮬레이션 기간 ──────────────────────────────────────────────────────
+simulation:
+  start_date:    "2012-01-01"     # warm-up 포함 (warm_up_years 는 공통 파일에서 관리)
+  end_date:      "2020-12-31"
+  time_step:    "daily"
+
+
+# ── 3. 보정 ─────────────────────────────────────────────────────────────────
+calibration:
+  #   자동보정 및 검정(auto.py) 목적함수(DDS)는 위 period 구간의
+  #   관측치만으로 평가하고, 보정 완료 후 validation 구간으로 독립 검증하여
+  #   results/cal_val_summary.csv 로 관측소별 성능(NSE/KGE/PBIAS 등)을 출력함.
+  #   period 를 비우면 전체 기간(sim∩obs) 평가로 자동 복귀(하위호환).
+  # ── 관측 파일 ↔ SWAT+ 채널 매핑 ─────────────────────────────────────────────
+  #   outlet_id : WAT+ 채널 gis_id.  channel_sd_day.txt 의 'gis_id' 열 값 =
+  #               QSWAT+ 유역분할 시 관측지점 outlet 에 부여된 채널번호.
+  #               소유역(subbasin) 번호와 다름!
+  #   obs_file  : 관측 CSV.  파일명만 적으면 자동으로
+  #               $(project.input.observed)/{variable}/{time_step}/ 아래로 해석.
+  #               (디렉토리를 포함한 경로를 적으면 그 경로를 그대로 사용)
+  #   variable  : flow | tn | tp    (obs_column 자동: flow_m3s / tn_mgl / tp_mgl)
+  #   CSV 포맷  : 헤더 'date,<obs_column>' (예: date,flow_m3s)
+  period:
+    start: "2015-01-01"
+    end:   "2017-12-31"
+  validation:
+    start: "2018-01-01"
+    end:   "2020-12-31"
+  observations:
+    - id:        "avatiu"
+      outlet_id: 13
+      variable:  "flow"
+      unit:      "m3/s"
+      time_step: "daily"
+      obs_file:  "Avatiu_Flow_obs.csv"
+      weight:    1.0
+      objective: "NSE"
+
+    - id:        "avana"
+      outlet_id: 3
+      variable:  "flow"
+      unit:      "m3/s"
+      time_step: "daily"
+      obs_file:  "Avana_Flow_obs.csv"
+      weight:    2.5
+      objective: "NSE"
+
+    - id:        "matavera"
+      outlet_id: 8
+      variable:  "flow"
+      unit:      "m3/s"
+      time_step: "daily"
+      obs_file:  "Matavera_Flow_obs.csv"
+      weight:    1.0
+      objective: "NSE"
+
+    - id:        "muriavai"
+      outlet_id: 10
+      variable:  "flow"
+      unit:      "m3/s"
+      time_step: "daily"
+      obs_file:  "Muriavai_Flow_obs.csv"
+      weight:    1.0
+      objective: "NSE"
+
+    - id:        "totokoitu"
+      outlet_id: 25
+      variable:  "flow"
+      unit:      "m3/s"
+      time_step: "daily"
+      obs_file:  "Totokoitu_Flow_obs.csv"
+      weight:    1.0
+      objective: "NSE"
+
+  # 보정 후보 인자 (SWAT-Plus 표준 보정 변수)
+  parameters:
+    - file:        "hydrology.hyd"
+      key:         "cn3_swf"          # CN 토양수분계수 ↓ (지표유출 감소)
+      range:       [0.5, 1.0]
+      change_type: "absval"
+    - file:        "hydrology.hyd"
+      key:         "esco"             # 토양증발보상 (ET 손실 조절)
+      range:       [0.1, 1.0]
+      change_type: "absval"
+    - file:        "soils.sol"
+      key:         "awc"              # SWAT+ soils.sol 컬럼 (구: sol_awc)
+      range:       [-0.04, 0.04]
+      change_type: "abschg"
+    - file:        "parameters.bsn"
+      key:         "surq_lag"         # SWAT+ 지표유출 지연 (구: surlag)
+      range:       [0.5, 10.0]
+      change_type: "absval"
+    - file:        "hydrology.hyd"
+      key:         "perco"            # 침루율 ↑ (지표유출→침투로 전환, 유출↓)
+      range:       [0.5, 1.0]
+      change_type: "absval"
+    - file:        "aquifer.aqu"
+      key:         "rchg_dp"          # 심부침루 ↑ (얕은대수층 물 유실→기저유출↓)
+      range:       [0.0, 0.9]
+      change_type: "absval"
+    - file:        "aquifer.aqu"
+      key:         "bf_max"           # 최대 기저유출율 ↓
+      range:       [0.01, 1.0]
+      change_type: "absval"
+    # ── 지역보정(regionalization) — 위 항목은 모두 유역 전체(전역) 적용 ─────────
+    #  특정 HRU·대수층 행만 보정하려면 항목에 `rows: [행번호...]` (0-based)를 추가.
+    #  코드(calibration.modify.modify_swat_plus_file)가 지원하며, 대상 행 번호는
+    #  사용자가 파일 구조를 보고 직접 확인해 매뉴얼로 지정한다. 전역 항목 뒤에 두면
+    #  전역값이 먼저 적용된 뒤 해당 행만 덮어쓴다(순서 중요).
+
+  method:
+    # 자동 보정 알고리즘 설정 — auto.py 가 이 블록을 읽어 DDS(Dynamically Dimensioned Search) 최적화를 구동한다.
+    name:         "manual"   # 알고리즘 선택. 현재 DDS 만 구현 → 값과 무관하게 DDS 구동
+                             # (sufi2/pso/de/sce-ua 는 향후 확장용 예약값, 현재 미사용).
+    n_iterations: 100        # DDS 평가(=모델 1회 실행) 횟수. 권장 200~500 (클수록 탐색↑·시간↑).
+    seed:         1          # 난수 시드 — 초기해·perturbation 재현(동일 시드=동일 결과).
+    parallel:                # 현재 미사용 (DDS 는 순차 평가). 향후 병렬 평가용 예약 블록.
+      enabled:   true        # 병렬 실행 여부 (예약)
+      n_workers: 4           # 동시 실행 워커 수 (예약)
+
+  output:
+    save_all_runs:          false
+    save_best_n:            5
+    auto_parameter_changes: true
+
+
+# ── 3. Tank 모형 (3단 직렬 Sugawara) ───────────────────────────────────────
+#  SWAT+와 동일한 관측소·검보정기간·유량자료·기상자료를 공유하며,
+#  독립적인 집중형 Tank 모형을 관측소별로 검보정한다(swat_py.tank).
+#  기상(강수 CSV·관측소 위도)은 공통 obs/weather 폴더와 기본 관측소 메타
+#  obs/weather/stations-hydro.csv(StnFile 기본값)를 그대로 사용 — tank 전용 경로 없음.
+#  결과는 3_swatplus/calibration-tank/ 에 저장. 타 유역 적용 시 아래 값
+#  (강수매핑·유역면적·위도)만 교체하면 된다.
+tank:
+  pet_method: "hargreaves"          # hargreaves | hamon | priestley_taylor
+  default_lat: -21.2027             # stations 메타에 위도 없을 때 대체 위도
+  # 유역별 강수 입력 스테이션 (obs/weather/{code}.csv).
+  # default: 기준 관측소(전 유역 공통)
+  # 유역별 지정 예) avatiu: "471301"
+  # 가중 다중 예) avana: [["427608", 0.7], ["918430", 0.3]]
+  precip_mapping:
+    default:   "918430"            # 기준(전 유역 공통 fallback)
+    avatiu:    "471301"            # Avatiu 우량계
+    avana:     "427608"            # Avana 우량계
+    matavera:  "441306"            # Matavera 우량계
+    muriavai:  "461417"            # Muriavai 우량계
+    totokoitu: "461412"            # Totokoitu 우량계
+  # 유역(gauge 배수)면적 km²
+  basin_areas:
+    avatiu:    1.235
+    avana:     2.283
+    matavera:  0.910
+    muriavai:  1.485
+    totokoitu: 0.794
+  # 자동 검보정 파라미터 범위 (미지정 항목은 tank.model.DEFAULT_BOUNDS)
+  parameters:
+    a1:  [0.05, 0.6]                # 1단 상단 유출계수
+    a2:  [0.02, 0.4]                # 1단 하단 유출계수
+    ha1: [10.0, 80.0]               # 1단 상단 유출높이(mm)
+    ha2: [0.0, 40.0]                # 1단 하단 유출높이(mm)
+    b1:  [0.05, 0.6]                # 1단 침투계수
+    a3:  [0.01, 0.2]                # 2단 유출계수
+    hb1: [0.0, 30.0]                # 2단 유출높이(mm)
+    b2:  [0.01, 0.3]                # 2단 침투계수
+    a4:  [0.001, 0.1]               # 3단 유출계수(기저)
+  method:
+    n_iterations: 300
+    seed: 1
+
+
+# ── 4. 가뭄위험 대시보드 ───────────────────────────────────────────────────
+#  공통값(forecast 예측연월·ensemble.n_members·ensemble.root)은 config/picaso-hydro.yaml
+#  이 단일 관리하며 로더가 자동 주입한다.
+drought:
+  # 장기 기후(평년·FDC) 재실행 기간 — acidwg_py.yaml observation(syear/eyear)과 동일 값.
+  # SWAT+ 웜업(공통 warm_up_years) 제외 후 출력. climatology 파일명은 syear+warmup~eyear
+  # 로 자동 산출된다(channel_daily/monthly/monthly_avg_{syear+warmup}_{eyear}.csv). 하드코딩 없음.
+  syear: 1982
+  eyear: 2024
+  # 급수 4단계 경계 (Normal|Watch, Watch|Warning, Warning|Crisis) — 사용자 변경 가능.
+  # fdc_exceedance : 초과확률(%). 권장 Q70/Q90/Q95
+  thresholds:
+    method: "fdc_exceedance"
+    values: [70, 90, 95]               # [Normal|Watch, Watch|Warning, Warning|Crisis]
+  outlets:                             # 12개 소유역 outlet 채널 (gis_id: 이름)
+    13: "avatiu"
+    3:  "avana"
+    8:  "matavera"
+    10: "muriavai"
+    25: "totokoitu"
+    1:  "papua"
+    5:  "takuvaine"
+    12: "turangi"
+    14: "tupapa"
+    15: "tipara"
+    16: "rutaki"
+    29: "ngatoe"
+
+
+# ── 5. 기후변화 (선택) ───────────────────────────────────────────────────────
+#  metadata_file: cchange(CMIP6 상세화) 기상작성 전용 관측소 메타. ids 미지정 시 파일 전체.
+climate_change:
+  enabled: false
+  metadata_file: "stations-cchange.csv"

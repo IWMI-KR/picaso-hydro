@@ -1,0 +1,54 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  acidwg_py 설정 — **acidwg 서브패키지 전용**
+#
+#  공통 변수(project.root·예측연월·앙상블 수·관측기상 경로)는 config/picaso-hydro.yaml
+#  이 관리하며 로더가 자동 병합해 아래로 주입한다: paths.base_dir·obs_dir, ensemble.n_members.
+#    station_csv 는 obs_dir(=obs_weather_std)/stations-acidwg.csv 로 자동 해석.
+#  통합 파이프라인(swat_py.drought.run)에서는 예측연월·앙상블 수를 마스터가 인자로 주입.
+#  아래 operational/hindcast/ensemble.n_members 는 **acidwg 단독 실행 시 기본값**.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── 경로 (acidwg 전용; base_dir·obs_dir·station_csv 는 picaso-hydro.yaml 이 주입) ─
+paths:
+  acidwg_root:               "$(paths.base_dir)/1_acidwg"             # acidwg 루트
+  picaso_dir:                "$(paths.base_dir)/1_acidwg/picaso"      # 계절 tercile 예측 CSV
+  ensemble_root:             "$(paths.base_dir)/1_acidwg/hindcast"    # 앙상블 멤버 루트 — hindcast(과거·검증 연도)
+  ensemble_root_operational: "$(paths.base_dir)/1_acidwg/operational" # 앙상블 멤버 루트 — operational(hindcast 이후 연도)
+  model_file:                "$(paths.base_dir)/1_acidwg/cache/acidwg_model.pkl"   # WGEN 캐시
+
+# ── 관측 기간 (WGEN 모델 적합용) ─────────────────────────────────────────────
+observation:
+  syear: 1985
+  eyear: 2024
+
+# ── 모델 ─────────────────────────────────────────────────────────────────────
+model:
+  # retrieve: WGEN 적합 모델 캐시(model_file, pickle) 재사용 여부.
+  #   true  = 캐시가 있으면 재사용(재적합 생략, 빠름)
+  #   false = 항상 재적합 후 캐시 갱신
+  #   (hindcast + observation_eyear_cap=true 시에는 누출 방지를 위해 자동 false)
+  retrieve: true
+
+# ── 출력 ─────────────────────────────────────────────────────────────────────
+output:
+  overwrite: false             # true 면 기존 멤버 폴더를 덮어씀
+  variables: [prcp, tmax, tmin]
+
+# ── 고급 (선택) ──────────────────────────────────────────────────────────────
+advanced:
+  max_retry_factor: 5          # 멤버 생성 재시도 상한 배수(제약·검증 실패 시 재생성 한도)
+  n_cores:          1          # 앙상블 생성 병렬 코어 수(1=순차)
+  validate_after:   false      # true 면 생성 후 tercile 재현 등 사후 검증 수행
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ▼ acidwg 단독 실행(`acidwg-run`) 전용 기본값 (통합 파이프라인에선 마스터가 주입).
+# ══════════════════════════════════════════════════════════════════════════════
+operational:
+  year:   2025
+  season: "JFM"
+hindcast:
+  years:   [2013, 2024]
+  seasons: "all"
+  observation_eyear_cap: true
+ensemble:
+  random_seed: 1               # n_members 는 공통 파일(picaso-hydro.yaml ensemble.n_members)

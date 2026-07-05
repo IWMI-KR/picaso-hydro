@@ -29,8 +29,7 @@ def analyse_cchange_rch(
     )
 
     for outtype in out_types:
-        outlets = cfg.OutletFlowIDs if outtype in ("flow", "flowd") else cfg.OutletWqIDs
-        outlet_nms = cfg.OutletFlowNms if outtype in ("flow", "flowd") else cfg.OutletWqNms
+        outlets, outlet_nms = cfg.outlets_for(flow=(outtype in ("flow", "flowd")))
 
         for outlet, outlet_nm in zip(outlets, outlet_nms):
             for mdl_nm in cfg.MdlNms:

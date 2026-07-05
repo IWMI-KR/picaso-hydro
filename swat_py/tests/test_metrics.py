@@ -34,11 +34,23 @@ def test_r2_perfect():
     assert r2(obs, obs) == pytest.approx(1.0)
 
 
+def test_kge_perfect():
+    from swat_py.metrics.performance import kge
+    obs = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    assert kge(obs, obs) == pytest.approx(1.0)
+
+
+def test_kge_below_one_when_biased():
+    from swat_py.metrics.performance import kge
+    obs = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    assert kge(obs, obs * 0.5) < 1.0   # 크기 편의 → KGE 저하
+
+
 def test_calc_all_keys():
     obs = np.array([1.0, 2.0, 3.0, 4.0])
     sim = np.array([1.1, 2.1, 2.9, 4.2])
     result = calc_all(obs, sim)
-    assert set(result.keys()) == {"nse", "rmse", "rsr", "pbias", "r2", "mae", "nof"}
+    assert set(result.keys()) == {"nse", "kge", "rmse", "rsr", "pbias", "r2", "mae", "nof"}
 
 
 def test_empty_returns_nan():

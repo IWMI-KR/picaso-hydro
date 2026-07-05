@@ -35,8 +35,7 @@ def analyse_cchange_cha_plus(
     )
 
     for outtype in out_types:
-        outlets = cfg.OutletFlowIDs if outtype == "flow" else cfg.OutletWqIDs
-        outlet_nms = cfg.OutletFlowNms if outtype == "flow" else cfg.OutletWqNms
+        outlets, outlet_nms = cfg.outlets_for(flow=(outtype == "flow"))
 
         for outlet, outlet_nm in zip(outlets, outlet_nms):
             for mdl_nm in cfg.MdlNms:

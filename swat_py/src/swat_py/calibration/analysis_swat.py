@@ -102,8 +102,7 @@ def run_calibration_analysis(
         obs_col: str = meta["obs_col"]
         sim_col: str = meta["sim_col"]
 
-        outlets = cfg.OutletFlowIDs if use_flow_obs else cfg.OutletWqIDs
-        outlet_nms = cfg.OutletFlowNms if use_flow_obs else cfg.OutletWqNms
+        outlets, outlet_nms = cfg.outlets_for(flow=use_flow_obs)
         obs_file = cfg.ObsFlowFile if use_flow_obs else cfg.ObsWqFile
 
         obs_df = pd.read_csv(

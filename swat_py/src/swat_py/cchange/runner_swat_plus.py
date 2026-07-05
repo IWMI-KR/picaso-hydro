@@ -50,10 +50,11 @@ def run_cchange_plus(
         for scn_nm in cfg.ScnNms:
             wthr_dir = Path(cfg.CcDataDir) / mdl_nm
 
-            # Load stations (station file is in ObsDayDir)
+            # cchange 전용 관측소 메타(climate_change.metadata_file, 예: stations-cchange.csv).
+            # ids 미지정 시 파일 내 전체 관측소.
             stations = load_station_csv(
-                Path(cfg.ObsDayDir) / cfg.StnFile,
-                cfg.StnIDs,
+                Path(cfg.ObsDayDir) / cfg.CChangeStnFile,
+                cfg.CChangeStnIDs,
             )
             write_all_weather_plus(
                 stations=stations,

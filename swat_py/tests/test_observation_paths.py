@@ -53,13 +53,6 @@ project:
     observed: "/proj/data/obs"
 model:
   type: "swat_plus"
-outlets:
-  flow:
-    ids:   [1, 5]
-    names: ["Rarotonga_Outlet", "Aitutaki_Outlet"]
-  water_quality:
-    ids:   [1]
-    names: ["Rarotonga_Outlet"]
 """)
 
 
@@ -76,9 +69,9 @@ def test_obs_file_auto_generated(tmp_path) -> None:
     """))
     cfg = load_config(p)
     obs = cfg.Observations[0]
-    assert obs.outlet_name == "Rarotonga_Outlet"
+    assert obs.outlet_name == "outlet_1"
     assert obs.obs_column == "flow_m3s"
-    assert Path(obs.obs_file) == Path("/proj/data/obs/flow/daily/Rarotonga_Outlet.csv")
+    assert Path(obs.obs_file) == Path("/proj/data/obs/flow/daily/outlet_1.csv")
 
 
 def test_obs_file_user_override_wins(tmp_path) -> None:
@@ -114,7 +107,7 @@ def test_obs_file_monthly_wq(tmp_path) -> None:
     cfg = load_config(p)
     obs = cfg.Observations[0]
     assert obs.obs_column == "tn_mgl"
-    assert Path(obs.obs_file) == Path("/proj/data/obs/tn/monthly/Rarotonga_Outlet.csv")
+    assert Path(obs.obs_file) == Path("/proj/data/obs/tn/monthly/outlet_1.csv")
 
 
 def test_observed_root_auto_from_database(tmp_path) -> None:
@@ -125,8 +118,6 @@ def test_observed_root_auto_from_database(tmp_path) -> None:
           database: "/proj/data"
         model:
           type: "swat_plus"
-        outlets:
-          flow: { ids: [1], names: ["A"] }
         calibration:
           observations:
             - id: "a_flow"
@@ -138,16 +129,14 @@ def test_observed_root_auto_from_database(tmp_path) -> None:
     cfg = load_config(p)
     assert Path(cfg.ObservedDataDir) == Path("/proj/data/obs")
     obs = cfg.Observations[0]
-    assert Path(obs.obs_file) == Path("/proj/data/obs/flow/daily/A.csv")
+    assert Path(obs.obs_file) == Path("/proj/data/obs/flow/daily/outlet_1.csv")
 
 
-def test_outlet_name_fallback_when_not_in_outlets(tmp_path) -> None:
-    """outlet_id 가 outlets.flow.ids 에 없으면 'outlet_{id}' 로 fallback."""
+def test_outlet_name_default_from_id(tmp_path) -> None:
+    """outlet_name 미명시 시 'outlet_{id}' 로 자동 산출."""
     p = _write_yaml(tmp_path, dedent("""
         project: { root: "/proj", database: "/proj/data" }
         model:   { type: "swat_plus" }
-        outlets:
-          flow: { ids: [1], names: ["A"] }
         calibration:
           observations:
             - id: "unknown"

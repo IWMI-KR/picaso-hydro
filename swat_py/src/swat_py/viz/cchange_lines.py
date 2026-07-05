@@ -70,8 +70,7 @@ def plot_cchange_lines(
     )
 
     for outtype in out_types:
-        outlets = cfg.OutletFlowIDs if outtype == "flow" else cfg.OutletWqIDs
-        outlet_nms = cfg.OutletFlowNms if outtype == "flow" else cfg.OutletWqNms
+        outlets, outlet_nms = cfg.outlets_for(flow=(outtype == "flow"))
         ylabel = _YLABEL_MAP.get(outtype, outtype)
 
         for outlet, outlet_nm in zip(outlets, outlet_nms):

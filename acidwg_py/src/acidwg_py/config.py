@@ -129,12 +129,42 @@ def _expand_seasons(spec: Any) -> List[str]:
     return out
 
 
+def _load_shared_yaml(config_file: str) -> Dict[str, Any]:
+    """같은 config 폴더의 공통 picaso-hydro.yaml 로드(없으면 {})."""
+    p = Path(config_file).parent / "picaso-hydro.yaml"
+    if not p.is_file():
+        return {}
+    with open(p, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _merge_shared_acidwg(shared: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+    """공통(중립) 키를 acidwg 설정 구조로 주입. acidwg_py.yaml 값이 있으면 우선."""
+    if not shared:
+        return raw
+    proj = shared.get("project") or {}
+    # 참조 해석용 project 주입
+    raw.setdefault("project", {})
+    for k, v in proj.items():
+        raw["project"].setdefault(k, v)
+    paths = raw.setdefault("paths", {})
+    paths.setdefault("base_dir", proj.get("root"))
+    paths.setdefault("obs_dir", proj.get("obs_weather_std"))    # 공통 관측기상
+    # station_csv 는 obs_dir(=obs_weather_std)/stations-acidwg.csv 로 자동 해석
+    paths.setdefault("station_csv", "$(paths.obs_dir)/stations-acidwg.csv")
+    # picaso_dir·output_root 는 acidwg_py.yaml 에서 관리(공통 주입 안 함)
+    nm = (shared.get("ensemble") or {}).get("n_members")
+    if nm is not None:
+        raw.setdefault("ensemble", {}).setdefault("n_members", nm)
+    return raw
+
+
 def load_config(config_file: str) -> Dict[str, Any]:
     """acidwg_py.yaml을 읽어 파싱된 설정 딕셔너리 반환.
 
     YAML 섹션
     ---------
-    paths        : station_csv, obs_dir, picaso_dir, output_root, model_file
+    paths        : station_csv, obs_dir, picaso_dir, acidwg_root, ensemble_root[_operational], model_file
     observation  : syear, eyear
     operational  : year, season(또는 months)            # 단일 — acidwg-run 기본
     hindcast     : years, seasons, observation_eyear_cap  # 일괄 — acidwg-run --hindcast
@@ -161,12 +191,18 @@ def load_config(config_file: str) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"YAML 최상위는 매핑이어야 합니다: {config_file}")
 
+    # ── 공통 picaso-hydro.yaml 병합 (경로·앙상블수 등 공통값 주입) ────────────
+    raw = _merge_shared_acidwg(_load_shared_yaml(config_file), raw)
+
     # ── 교차참조 + 환경변수 해석 ──────────────────────────────────────────────
     resolved = _resolve_tree(raw, raw)
 
     # ── 경로 ──────────────────────────────────────────────────────────────────
     paths = resolved.get("paths") or {}
-    _required = ["station_csv", "obs_dir", "picaso_dir", "output_root"]
+    # acidwg_root(신) ↔ output_root(구) 호환
+    if "acidwg_root" not in paths and "output_root" in paths:
+        paths["acidwg_root"] = paths["output_root"]
+    _required = ["station_csv", "obs_dir", "picaso_dir", "acidwg_root"]
     for key in _required:
         if key not in paths:
             raise ValueError(
@@ -255,7 +291,7 @@ def load_config(config_file: str) -> Dict[str, Any]:
         / f"{forecast_year}_{_season_label(sim_period)}_picaso.csv"
     )
     output_dir_op = (
-        Path(paths["output_root"]) / "operational" / str(forecast_year)
+        Path(paths["acidwg_root"]) / "operational" / str(forecast_year)
     )
 
     return {
@@ -263,7 +299,10 @@ def load_config(config_file: str) -> Dict[str, Any]:
         "station_csv":       paths["station_csv"],
         "obs_dir":           paths["obs_dir"],
         "picaso_dir":        paths["picaso_dir"],
-        "output_root":       paths["output_root"],
+        "acidwg_root":       paths["acidwg_root"],
+        "output_root":       paths["acidwg_root"],   # 호환 별칭(구 이름)
+        "ensemble_root":             paths.get("ensemble_root"),
+        "ensemble_root_operational": paths.get("ensemble_root_operational"),
         "model_file":        paths.get("model_file"),
         # 관측 기간
         "syear_obs":         syear_obs,
@@ -301,16 +340,25 @@ def find_config(start: Optional[Path] = None) -> Optional[Path]:
     탐색 순서
     ---------
     1. 환경변수 ``ACIDWG_PY_CONFIG``
-    2. 현재 디렉토리 → 상위로 올라가며 ``acidwg_py.yaml``
-    3. ``$PICASO_ROOT/1_acidwg/config/acidwg_py.yaml`` (권장 위치)
-    4. ``$PICASO_ROOT/acidwg_py.yaml`` (대안 — 루트 직속)
+    2. ``$PICASO_ROOT/config/acidwg_py.yaml`` (★ 권장 — 공통 picaso-hydro.yaml 과 동거)
+    3. 현재 디렉토리 → 상위로 올라가며 ``acidwg_py.yaml``
+    4. ``$PICASO_ROOT/1_acidwg/config/acidwg_py.yaml`` (구 위치 — 하위호환)
+    5. ``$PICASO_ROOT/acidwg_py.yaml`` (대안 — 루트 직속)
     """
     if env := os.environ.get("ACIDWG_PY_CONFIG"):
         p = Path(env)
         return p if p.is_file() else None
 
+    if picaso := os.environ.get("PICASO_ROOT"):
+        preferred = Path(picaso) / "config" / "acidwg_py.yaml"
+        if preferred.is_file():
+            return preferred
+
     cwd = (start or Path.cwd()).resolve()
     for parent in [cwd, *cwd.parents]:
+        candidate = parent / "config" / "acidwg_py.yaml"
+        if candidate.is_file():
+            return candidate
         candidate = parent / "acidwg_py.yaml"
         if candidate.is_file():
             return candidate

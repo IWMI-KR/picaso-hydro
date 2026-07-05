@@ -2,7 +2,8 @@
 swat_py - Python interface for SWAT and SWAT-Plus hydrological models.
 
 Provides automated weather input generation, model execution, output parsing,
-performance metrics, climate change analysis, and probabilistic ensemble forecasting.
+performance metrics, calibration (DDS), climate change analysis, and drought-risk
+forecasting (swat_py.drought).
 """
 
 __version__ = "0.1.0"

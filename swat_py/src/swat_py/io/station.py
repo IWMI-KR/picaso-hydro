@@ -35,15 +35,23 @@ def load_station_csv(path: Path, ids: List[str]) -> List[StationInfo]:
     lon_col = col_map.get("lon", "Lon")
     elev_col = col_map.get("elev", "Elev")
 
+    # ids 미지정(빈 리스트/None) → 파일 내 전체 관측소
+    if not ids:
+        ids = df[id_col].astype(str).tolist()
+
     stations: List[StationInfo] = []
     for stn_id in ids:
         row = df[df[id_col].astype(str) == str(stn_id)]
         if row.empty:
             raise ValueError(f"Station '{stn_id}' not found in {path}")
         r = row.iloc[0]
+        # 정수 ID 는 행(Series) 접근 시 float 로 승격(918430→918430.0)되므로 .0 제거
+        _id = str(r[id_col])
+        if _id.endswith(".0"):
+            _id = _id[:-2]
         stations.append(
             StationInfo(
-                id=str(r[id_col]),
+                id=_id,
                 lat=float(r[lat_col]),
                 lon=float(r[lon_col]),
                 elev=float(r[elev_col]),

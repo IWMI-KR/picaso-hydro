@@ -30,10 +30,14 @@ _BASE_UNIT = {
 }
 
 _ALLOWED_UNITS = {
-    "flow": {"m3/s", "mm/day", "l/s", "m3/day"},
-    "ss":   {"t/day", "mg/L"},
-    "tn":   {"kg/day", "mg/L", "t/day"},
-    "tp":   {"kg/day", "mg/L", "t/day"},
+    "flow":   {"m3/s", "mm/day", "l/s", "m3/day"},
+    "ss":     {"t/day", "mg/L"},
+    "tn":     {"kg/day", "mg/L", "t/day"},
+    "tp":     {"kg/day", "mg/L", "t/day"},
+    # 저수지(댐) 관측 — 수위(stage) 및 저류/방류
+    "wlevel": {"ft", "m"},          # 댐 수위 (reservoir_day.txt flo_stor/area 로 추정)
+    "resstor": {"m3", "1e4m3"},     # 저수지 저류량
+    "resflow": {"m3/s", "m3/day"},  # 저수지 방류량
 }
 
 # 단위 → 파일·컬럼 접미사 매핑 (관측 CSV 컬럼명 컨벤션)
@@ -46,6 +50,10 @@ _UNIT_SUFFIX = {
     "kg/day": "kgd",
     "t/day":  "td",
     "mg/L":   "mgl",
+    "ft":     "ft",
+    "m":      "m",
+    "m3":     "m3",
+    "1e4m3":  "1e4m3",
 }
 
 

@@ -110,16 +110,38 @@ def nof(obs: ArrayLike, sim: ArrayLike) -> float:
     return float(np.sqrt(np.sum((o - s) ** 2)) / denom)
 
 
+def kge(obs: ArrayLike, sim: ArrayLike) -> float:
+    """Kling-Gupta Efficiency (2009).
+
+    KGE = 1 - √((r-1)² + (α-1)² + (β-1)²)
+      r = 상관계수, α = std(sim)/std(obs), β = mean(sim)/mean(obs).
+    1.0 이 최선. 관측 표준편차/평균이 0 이면 NaN.
+    """
+    o, s = _clean(obs, sim)
+    if len(o) < 2:
+        return float("nan")
+    std_o = np.std(o, ddof=0)
+    mean_o = o.mean()
+    if std_o == 0 or mean_o == 0:
+        return float("nan")
+    r_mat = np.corrcoef(o, s)
+    r = float(r_mat[0, 1])
+    alpha = float(np.std(s, ddof=0) / std_o)
+    beta = float(s.mean() / mean_o)
+    return float(1.0 - np.sqrt((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2))
+
+
 def calc_all(obs: ArrayLike, sim: ArrayLike) -> Dict[str, float]:
     """Compute all performance metrics at once.
 
     Returns
     -------
-    dict with keys: ``nse``, ``rmse``, ``rsr``, ``pbias``, ``r2``,
+    dict with keys: ``nse``, ``kge``, ``rmse``, ``rsr``, ``pbias``, ``r2``,
     ``mae``, ``nof``.
     """
     return {
         "nse":   nse(obs, sim),
+        "kge":   kge(obs, sim),
         "rmse":  rmse(obs, sim),
         "rsr":   rsr(obs, sim),
         "pbias": pbias(obs, sim),

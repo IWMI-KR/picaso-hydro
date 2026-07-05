@@ -98,3 +98,57 @@ def patch_print_prt(wdir: Path, nbyr: int, iyr: int, nyskip: int) -> None:
             new_lines.append(line)
 
     path.write_text("".join(new_lines), encoding="utf-8")
+
+
+def set_print_object(
+    wdir: Path,
+    obj: str,
+    *,
+    daily: bool = True,
+    monthly: bool = False,
+    yearly: bool = False,
+    avann: bool = False,
+) -> bool:
+    """print.prt 의 객체별 출력 플래그(daily/monthly/yearly/avann) 설정.
+
+    print.prt 하단 객체 출력 섹션의 각 줄은
+    ``{object}  {daily} {monthly} {yearly} {avann}`` (y/n) 형식이다.
+    예: 저수지 일 출력 활성화 → ``set_print_object(wdir, "reservoir", daily=True)``
+    → ``reservoir_day.txt`` 생성.
+
+    Parameters
+    ----------
+    wdir:  print.prt 가 있는 폴더.
+    obj:   객체 이름(첫 열, 예: ``"reservoir"``, ``"channel_sd"``, ``"basin_wb"``).
+    daily/monthly/yearly/avann:  각 출력 주기 on/off.
+
+    Returns
+    -------
+    True 면 해당 객체 줄을 찾아 갱신, False 면 미발견.
+    """
+    path = Path(wdir) / "print.prt"
+    if not path.exists():
+        raise FileNotFoundError(f"print.prt not found in {wdir}")
+
+    def yn(b: bool) -> str:
+        return "y" if b else "n"
+
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    found = False
+    for idx, line in enumerate(lines):
+        parts = line.split()
+        # 객체 출력 줄: 첫 토큰이 obj, 뒤 4개가 y/n
+        if len(parts) >= 5 and parts[0] == obj and all(
+            p.lower() in ("y", "n") for p in parts[1:5]
+        ):
+            newline = (
+                f"{parts[0]:<28s} {yn(daily):<13s} {yn(monthly):<13s} "
+                f"{yn(yearly):<13s} {yn(avann):<13s}\n"
+            )
+            lines[idx] = newline
+            found = True
+            break
+
+    if found:
+        path.write_text("".join(lines), encoding="utf-8")
+    return found
