@@ -27,17 +27,25 @@ def climatology_tag(cfg) -> str:
     return f"{int(syear) + warmup}_{int(eyear)}"
 
 
-def climatology_daily_path(cfg):
-    """장기 기후 일유량 CSV 경로 (drought.climatology_csv 명시 시 그 값 우선)."""
+def climatology_flow_path(cfg):
+    """장기 기후 유량 CSV 경로 — **월유량 시계열**(channel_monthly_{tag}.csv).
+
+    climatology_run 이 시간 절약을 위해 월단위만 생산하므로 일유량 파일은 없다. 가뭄단계
+    경계(fdc_exceedance)는 이 월유량 분포에서 산정된다. drought.climatology_csv 명시 시 그 값 우선.
+    """
     dc = cfg.Drought
     if dc.climatology_csv:
         return Path(dc.climatology_csv)
     return (Path(cfg.PrjDir) / "4_drought_risk" / "climatology"
-            / f"channel_daily_{climatology_tag(cfg)}.csv")
+            / f"channel_monthly_{climatology_tag(cfg)}.csv")
+
+
+# 하위호환 별칭 — 기존 호출부(dashboard_data·reclassify·run)는 이제 월유량 파일을 받는다.
+climatology_daily_path = climatology_flow_path
 
 
 def load_daily_flow(csv_path) -> pd.DataFrame:
-    """wide 일유량 CSV 로드 (date 파싱). 컬럼 = outlet 이름."""
+    """wide 유량 CSV 로드 (date 파싱). 컬럼 = outlet 이름. (월단위 시계열)."""
     return pd.read_csv(csv_path, parse_dates=["date"])
 
 

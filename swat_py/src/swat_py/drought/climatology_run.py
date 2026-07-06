@@ -1,13 +1,18 @@
-"""장기 기후 SWAT+ 재실행 — 대시보드 ①평년·④FDC용 채널 유량(일/월/월평년) 생산.
+"""장기 기후 SWAT+ 재실행 — 대시보드 ①평년·임계값용 채널 **월유량** 생산.
 
 검보정 완료 master(`CalibratedDir`; 지역화 포함 최적 파라미터 baked-in)를 그대로 복사하고,
 기상은 stations-acidwg.csv(장기기록) 단일 관측소로 전 유역 재배정한 뒤 time.sim 을
 drought.syear~eyear(= acidwg observation, 웜업 `CioNYSKIP` 제외 후 출력)로 확장해 1회 실행한다.
-drought.outlets 채널 유량을 `4_drought_risk/climatology/` 에 3종 저장:
-  - channel_daily_{tag}.csv        (일유량, wide: date + 채널)
-  - channel_monthly_{tag}.csv      (월평균 시계열)
+시간 절약을 위해 SWAT+ print.prt 를 **월단위(channel_sd_mon.txt)** 로만 출력하도록 설정하여
+대용량 일자료(channel_sd_day.txt ~수백MB)를 만들지 않는다. drought.outlets 채널 유량을
+`4_drought_risk/climatology/` 에 2종 저장:
+  - channel_monthly_{tag}.csv      (월유량 시계열, wide: date + 채널)
   - channel_monthly_avg_{tag}.csv  (월 평년 1~12)
   (tag = climatology_tag(cfg) = {syear+warmup}_{eyear})
+
+가뭄단계 경계(fdc_exceedance Q70/Q90/Q95 = stage_thresholds)는 예보와 동일한 **월유량 분포**
+에서 산정되므로 월단위 자료로 충분하다. (일유량 유황 대표유량 Q95d·Q355d 등 day-count
+참고값만 미제공.)
 
 경로는 모두 `cfg.PrjDir`(project.root) 기준으로 산출되어 OS·설치 위치에 무관하다.
 
@@ -124,14 +129,14 @@ def setup_acidwg_weather(cfg, work: Path) -> str:
 
 def run_climatology(cfg, *, workdir: Optional[Path] = None,
                     timeout: int = 7200) -> Dict[str, str]:
-    """장기 기후 SWAT+ 를 1회 실행하고 채널유량 3종 CSV(일/월/월평년)를 저장한다.
+    """장기 기후 SWAT+ 를 1회 실행하고 채널 **월유량** 2종 CSV(월/월평년)를 저장한다.
 
-    반환: {"daily": ..., "monthly": ..., "monthly_avg": ..., "n_outlets": N} 경로 dict.
+    반환: {"monthly": ..., "monthly_avg": ..., "n_outlets": N} 경로 dict.
     """
     prj = Path(cfg.PrjDir)
     master_dir = Path(cfg.CalibratedDir)      # 검보정 완료 master(지역화 baked-in)
-    # ★ SWAT 구동은 로컬 임시(예: /tmp, C:\Temp)에서 — 프로젝트 루트가 네트워크 공유일 때
-    #   거대 channel_sd_day.txt(~1.2GB) 순차쓰기가 정체(hang)한다. 최종 CSV만 climatology 에 저장.
+    # ★ SWAT 구동은 로컬 임시(예: /tmp, C:\Temp)에서 — 프로젝트 루트가 네트워크 공유일 때 정체 가능.
+    #   print.prt 를 월단위 출력으로 제한해 대용량 일자료(channel_sd_day.txt)를 아예 만들지 않는다.
     work = (Path(workdir) if workdir
             else Path(tempfile.gettempdir()) / "picaso_clim_run" / "TxtInOut")
     out_dir = prj / "4_drought_risk" / "climatology"
@@ -160,6 +165,25 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
     ts.write_text("\n".join(lines) + "\n")
     print(f"[3/5] time.sim → {syear}–{eyear} (웜업 {warmup}년 → 출력 {out_first}~)")
 
+    # print.prt: 채널을 월단위(mon)로만 출력, 그 외 객체 출력 off → 대용량 일자료 미생산(시간 절약).
+    pp = work / "print.prt"
+    pl = pp.read_text().splitlines()
+    if len(pl) >= 3 and pl[2].split():
+        toks = pl[2].split()
+        toks[0] = str(warmup)                       # nyskip 동기화(웜업 제외)
+        pl[2] = "  ".join(toks)
+    try:
+        hdr = next(i for i, ln in enumerate(pl) if ln.split()[:1] == ["objects"])
+        for i in range(hdr + 1, len(pl)):
+            t = pl[i].split()
+            if len(t) < 5:
+                continue
+            mon = "y" if t[0] == "channel_sd" else "n"
+            pl[i] = f"{t[0]:<28} n             {mon}             n             n"
+    except StopIteration:
+        pass
+    pp.write_text("\n".join(pl) + "\n")
+
     exe = work / cfg.Executable
     if not exe.is_file():
         shutil.copy2(master_dir / cfg.Executable, exe)
@@ -175,17 +199,15 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
         sys.stderr.write(swat_log.read_text(encoding="utf-8", errors="replace")[-1500:])
         raise SystemExit(f"SWAT 실행 실패 rc={r.returncode} (log: {swat_log})")
 
-    # 채널 추출 — 대용량 파일 스트리밍 1회 읽기. outlet 매핑은 drought.outlets(없으면 기본 12).
+    # 채널 추출 — 월단위 파일(channel_sd_mon.txt). outlet 매핑은 drought.outlets(없으면 기본 12).
     outlets = {int(k): v for k, v in (dict(dc.outlets) or OUTLETS).items()}
-    print(f"[5/5] channel_sd_day.txt → {len(outlets)}채널 추출 (1회 읽기, drought.outlets 매핑)")
-    merged = extract_all_outlets(work / "channel_sd_day.txt", outlets, out_first)
+    print(f"[5/5] channel_sd_mon.txt → {len(outlets)}채널 추출 (월단위, drought.outlets 매핑)")
+    merged = extract_all_outlets(work / "channel_sd_mon.txt", outlets, out_first)
     for name in [c for c in merged.columns if c != "date"]:
         s = merged[["date", name]].dropna()
         print(f"  {name:<12s} n={len(s)} {s['date'].min().date()}~{s['date'].max().date()}")
 
-    # 결과 3종 저장 — 파일명에 결정된 tag 사용.
-    daily_csv = out_dir / f"channel_daily_{tag}.csv"
-    merged.to_csv(daily_csv, index=False, encoding="utf-8-sig")
+    # 결과 2종 저장(일자료 미생산). merged 는 이미 월단위 → to_monthly 는 월초 정규화(멱등).
     monthly = to_monthly(merged)
     monthly_csv = out_dir / f"channel_monthly_{tag}.csv"
     monthly.to_csv(monthly_csv, index=False, encoding="utf-8-sig")
@@ -194,11 +216,10 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
     mavg.to_csv(mavg_csv, index=False, encoding="utf-8-sig")
 
     print("\n저장:")
-    print(f"  daily        : {daily_csv}  shape={merged.shape}")
     print(f"  monthly      : {monthly_csv}  shape={monthly.shape}")
     print(f"  monthly_avg  : {mavg_csv}  shape={mavg.shape}")
-    return {"daily": str(daily_csv), "monthly": str(monthly_csv),
-            "monthly_avg": str(mavg_csv), "n_outlets": len(outlets)}
+    return {"monthly": str(monthly_csv), "monthly_avg": str(mavg_csv),
+            "n_outlets": len(outlets)}
 
 
 def main(argv=None) -> int:
