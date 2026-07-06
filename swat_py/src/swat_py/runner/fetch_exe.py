@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import tempfile
 import urllib.request
@@ -27,6 +28,38 @@ from typing import List, Optional, Tuple
 _REPO = "swat-model/swatplus"
 _API = "https://api.github.com/repos/{repo}/releases/{ref}"
 _TRUSTED_PREFIX = f"https://github.com/{_REPO}/releases/download/"   # 다운로드 허용 도메인/경로
+_VERSION_MARKER = ".swatplus_version"   # 저장 폴더에 남기는 버전 마커(재다운로드 판단용)
+_REV_RE = re.compile(r"rev\.?\s*(\d+\.\d+\.\d+)", re.IGNORECASE)
+
+
+def detect_swat_version(model_dir) -> Optional[str]:
+    """모델 TxtInOut(file.cio 등) 헤더에서 SWAT+ rev.X.Y.Z 를 추출. 없으면 None.
+
+    예) 'file.cio: written by SWAT+ editor v3.1.4 ... for SWAT+ rev.61.0.2' → '61.0.2'.
+    실행파일 버전을 이 값에 맞춰야 입력파일 형식 불일치(SIGSEGV)를 피한다.
+    """
+    for fname in ("file.cio", "object.cnt", "time.sim"):
+        p = Path(model_dir) / fname
+        if not p.is_file():
+            continue
+        try:
+            first = p.read_text(encoding="utf-8", errors="replace").splitlines()[:1]
+        except Exception:
+            continue
+        if first:
+            m = _REV_RE.search(first[0])
+            if m:
+                return m.group(1)
+    return None
+
+
+def read_version_marker(d) -> Optional[str]:
+    """저장 폴더의 버전 마커(.swatplus_version) 읽기. 없으면 None."""
+    p = Path(d) / _VERSION_MARKER
+    try:
+        return p.read_text(encoding="utf-8").strip() if p.is_file() else None
+    except Exception:
+        return None
 
 
 def _detect_os_arch(os_name: Optional[str] = None,
@@ -111,6 +144,7 @@ def fetch_swat_executable(dest_dirs, *, version: str = "latest",
     print(f"  다운로드 완료: {tmpzip.stat().st_size / 1e6:.1f} MB")
 
     exe_src = _extract_exe(tmpzip, os_tag)
+    tag = str(rel.get("tag_name") or "")
     for d in dest_dirs:
         d = Path(d)
         d.mkdir(parents=True, exist_ok=True)
@@ -118,6 +152,7 @@ def fetch_swat_executable(dest_dirs, *, version: str = "latest",
         shutil.copy2(exe_src, dst)
         if os_tag != "win":
             dst.chmod(0o755)
+        (d / _VERSION_MARKER).write_text(tag, encoding="utf-8")   # 버전 마커 기록
         print(f"  저장: {dst}")
 
     print("\n완료. config/swat_py.yaml 에 다음을 지정하세요:")

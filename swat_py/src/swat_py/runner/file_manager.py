@@ -11,7 +11,7 @@ import os
 import platform
 import shutil
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 # SWAT 2012 standard output filenames
 _SWAT2012_OUTPUTS = [
@@ -49,36 +49,58 @@ def _swat_exe_candidates(executable: str) -> List[str]:
 
 
 def resolve_swat_exe(executable: str, model_dir, *, auto_fetch: bool = True,
-                     fetch_dirs=None) -> Path:
-    """SWAT+ 실행파일 **원본 경로** 해석 — OS 자동 대응 + 미발견 시 자동 다운로드.
+                     fetch_dirs=None, version: Optional[str] = None) -> Path:
+    """SWAT+ 실행파일 **원본 경로** 해석 — OS 자동대응 + 모델 버전 일치 + 자동 다운로드.
 
-    ① cfg.Executable → ② OS 기본 이름(swatplus / swatplus.exe) 순으로, 각 후보를
-    절대경로/모델폴더/PATH 에서 탐색한다(모델폴더에 리눅스 바이너리가 있으면
-    model.executable 을 지정하지 않아도 자동 인식). 못 찾고 auto_fetch=True 이면
-    공식 GitHub Releases 에서 받아 fetch_dirs(기본 [model_dir])에 저장 후 사용한다.
+    모델 TxtInOut(file.cio)에서 요구 버전(예 61.0.2)을 감지해, 모델폴더의 실행파일이
+    그 버전과 다르면(입력파일 형식 불일치로 SIGSEGV 위험) **맞는 버전을 재다운로드**한다.
 
-    auto_fetch 는 환경변수 PICASO_NO_AUTOFETCH 로 끌 수 있다.
+    탐색: ① cfg.Executable/OS 기본 이름의 **절대경로** → ② **모델폴더**(버전 마커 일치 시)
+    → ③ **PATH** → ④ 미확보 시 공식 GitHub Releases 에서 요구 버전 다운로드(fetch_dirs).
+    version 미지정 시 모델에서 자동 감지. auto_fetch 는 PICASO_NO_AUTOFETCH 로 끌 수 있다.
     """
-    for name in _swat_exe_candidates(executable):
+    from swat_py.runner.fetch_exe import (
+        detect_swat_version,
+        fetch_swat_executable,
+        read_version_marker,
+    )
+    want = version or detect_swat_version(model_dir)      # 모델이 요구하는 rev
+    cands = _swat_exe_candidates(executable)
+
+    # ① 절대경로 지정(사용자 신뢰)
+    for name in cands:
         p = Path(name)
-        if p.is_absolute():
-            if p.is_file():
-                return p
-            continue
+        if p.is_absolute() and p.is_file():
+            return p
+
+    # ② 모델폴더 내 바이너리 — 버전 마커가 모델 요구와 일치할 때만 사용
+    marker = read_version_marker(model_dir)
+    stale = False
+    for name in cands:
         cand = Path(model_dir) / name
         if cand.is_file():
-            return cand
-        found = shutil.which(name)
-        if found:
-            return Path(found)
+            if want is None or marker == want:
+                return cand
+            stale = True
+            print(f"[SWAT+] 실행파일 버전 불일치(보유: rev {marker or '미상'}, "
+                  f"모델 요구: rev {want}) → 올바른 버전 재다운로드")
+            break
 
-    # 미발견 → 공식 Releases 에서 자동 다운로드(OS 감지)
+    # ③ PATH (모델폴더에 없고, 버전 불일치가 아닐 때만 — PATH 바이너리 버전은 신뢰)
+    if not stale:
+        for name in cands:
+            if not Path(name).is_absolute():
+                found = shutil.which(name)
+                if found:
+                    return Path(found)
+
+    # ④ 자동 다운로드(모델 요구 버전, OS 감지)
     if auto_fetch and not os.environ.get("PICASO_NO_AUTOFETCH"):
         try:
-            from swat_py.runner.fetch_exe import fetch_swat_executable
             dirs = [Path(d) for d in (fetch_dirs or [model_dir]) if d]
-            print("[SWAT+] 실행파일 미발견 → 공식 GitHub Releases 에서 자동 다운로드 …")
-            name = fetch_swat_executable(dirs)
+            ver = want or "latest"
+            print(f"[SWAT+] 실행파일 확보 → 공식 GitHub Releases 에서 다운로드(rev {ver}) …")
+            name = fetch_swat_executable(dirs, version=ver)
             for d in [Path(model_dir), *dirs]:
                 if (d / name).is_file():
                     return d / name
@@ -86,12 +108,12 @@ def resolve_swat_exe(executable: str, model_dir, *, auto_fetch: bool = True,
             print(f"[SWAT+] 자동 다운로드 실패: {e}")
 
     raise SystemExit(
-        f"SWAT+ 실행파일을 찾을 수 없습니다 (모델폴더: {model_dir}).\n"
-        f"  · 자동 다운로드가 실패했다면(인터넷 없음 등) 수동 설치:\n"
-        f"        python -m swat_py.runner.fetch_exe --project <프로젝트루트>\n"
-        f"    또는 리눅스 바이너리를 모델폴더에 두고 config/swat_py.yaml 에\n"
-        f"        model:\n          executable: swatplus   # 또는 절대경로/PATH 이름\n"
-        f"    를 지정하세요. (윈도우 기본값: SWAT-Plus.exe)")
+        f"SWAT+ 실행파일을 확보할 수 없습니다 "
+        f"(모델폴더: {model_dir}, 요구 rev: {want or '미상'}).\n"
+        f"  · 자동 다운로드 실패 시(인터넷 없음 등) 수동 설치:\n"
+        f"        python -m swat_py.runner.fetch_exe --version {want or '61.0.2'} "
+        f"--project <프로젝트루트>\n"
+        f"    또는 해당 버전 바이너리를 모델폴더에 두고 config/swat_py.yaml model.executable 지정.")
 
 
 def copy_input_files(
