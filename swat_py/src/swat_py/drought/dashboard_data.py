@@ -105,9 +105,12 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> None:
     except StopIteration:
         pass
     pp.write_text("\n".join(pl) + "\n")
-    exe = base_dir / cfg.Executable
+    # 실행파일: 절대경로/모델폴더/PATH 를 견고하게 해석해 base 에 복사(리눅스 바이너리 지원).
+    from swat_py.runner.file_manager import resolve_swat_exe
+    exe = base_dir / Path(cfg.Executable).name
     if not exe.is_file():
-        shutil.copy2(Path(cfg.DefaultDir) / cfg.Executable, exe)
+        shutil.copy2(resolve_swat_exe(cfg.Executable, cfg.DefaultDir), exe)
+        exe.chmod(0o755)                        # 리눅스 실행 권한 보장
 
 
 def _observed_monthly(daily: pd.DataFrame, outlet: str, fyear: int,
@@ -151,7 +154,7 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
                        "warmup_years": int(cfg.CioNYSKIP)}
         print(f"[ensemble] warm-up = 최근접 ERA5 격자 ({era5_warmup['grid_daily_std_dir']})")
     ens = run_ensemble(base, member_dir,
-                       fyear=fyear, months=months, exe_name=cfg.Executable,
+                       fyear=fyear, months=months, exe_name=Path(cfg.Executable).name,
                        n_members=n_members, n_workers=n_workers,
                        outlets=outlets, station=station, era5_warmup=era5_warmup)
 

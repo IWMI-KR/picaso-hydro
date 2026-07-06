@@ -184,9 +184,12 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
         pass
     pp.write_text("\n".join(pl) + "\n")
 
-    exe = work / cfg.Executable
+    # 실행파일: 절대경로/모델폴더/PATH 를 견고하게 해석해 work 에 복사(리눅스 바이너리 지원).
+    from swat_py.runner.file_manager import resolve_swat_exe
+    exe = work / Path(cfg.Executable).name
     if not exe.is_file():
-        shutil.copy2(master_dir / cfg.Executable, exe)
+        shutil.copy2(resolve_swat_exe(cfg.Executable, master_dir), exe)
+        exe.chmod(0o755)                        # 리눅스 실행 권한 보장
     print("[4/5] SWAT+ 실행 … (장기, 수 분)")
     # ★ stdout 은 파이프(capture_output) 대신 로그파일로 리디렉션 — SWAT 가 수십년치
     #   진행메시지를 파이프에 쓰다 버퍼(~64KB)가 차면 블록되고, run() 은 종료 후에야

@@ -32,6 +32,36 @@ def setup_run_dir(run_dir: Path) -> None:
     Path(run_dir).mkdir(parents=True, exist_ok=True)
 
 
+def resolve_swat_exe(executable: str, model_dir) -> Path:
+    """SWAT+ 실행파일 **원본 경로** 해석 (OS·설치방식 무관).
+
+    탐색 순서: ① 절대경로 → ② 모델폴더/{name} → ③ PATH(shutil.which).
+    없으면 리눅스 바이너리 지정 방법을 안내하는 명확한 에러를 낸다.
+
+    executable : cfg.Executable (윈도우 기본 'SWAT-Plus.exe'; 리눅스는 'swatplus' 등
+                 이름 또는 절대경로 — swat_py.yaml 의 model.executable 로 지정).
+    model_dir  : 실행파일이 함께 들어있을 수 있는 모델 폴더(calibrated/default).
+    """
+    exe = str(executable)
+    p = Path(exe)
+    if p.is_absolute():
+        if p.is_file():
+            return p
+    else:
+        cand = Path(model_dir) / exe
+        if cand.is_file():
+            return cand
+        found = shutil.which(exe)
+        if found:
+            return Path(found)
+    raise SystemExit(
+        f"SWAT+ 실행파일을 찾을 수 없습니다: '{exe}' (모델폴더: {model_dir})\n"
+        f"  · 리눅스: SWAT+ 리눅스 바이너리(예: swatplus)를 설치한 뒤 config/swat_py.yaml 에\n"
+        f"        model:\n          executable: /절대/경로/swatplus   # 또는 PATH 에 있는 이름\n"
+        f"    를 지정하거나, 모델폴더({model_dir})에 실행파일을 두고 그 이름을 지정하세요.\n"
+        f"  · 윈도우 기본값은 'SWAT-Plus.exe' 입니다.")
+
+
 def copy_input_files(
     common_dir: Path,
     input_dir: Path,
