@@ -785,9 +785,9 @@ def _ensure_dirs(cfg: EnvConfig) -> None:
         f"{cfg.CalibrationDir}/runs"    if cfg.CalibrationDir else "",
         f"{cfg.CalibrationDir}/results" if cfg.CalibrationDir else "",
         cfg.ForecastDir,
-        cfg.CchangeDir,
-        f"{cfg.CchangeDir}/runs"    if cfg.CchangeDir else "",
-        f"{cfg.CchangeDir}/summary" if cfg.CchangeDir else "",
+        # CchangeDir(3_swatplus/cchange)는 여기서 미리 만들지 않는다 — 실제 기후변화
+        #   자료 생성 시 cchange 모듈(runner/analysis)이 Output·Analysis·Summary 를
+        #   parents=True 로 생성한다(불필요한 빈 폴더 방지).
     ]
     for d in dirs:
         if d:
