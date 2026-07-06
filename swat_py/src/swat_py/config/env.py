@@ -21,7 +21,6 @@ from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
-
 # ── 환경변수 치환 ${env:VAR} / ${env:VAR:default} ────────────────────────────
 
 _ENV_PATTERN = re.compile(r"\$\{env:([A-Z_][A-Z0-9_]*)(?::([^}]*))?\}")
@@ -854,6 +853,15 @@ def load_config(
         예) ``{"CioNYSKIP": 5}`` 또는 ``{"model": {"warm_up_years": 5}}``.
     """
     envfile = Path(envfile)
+
+    # PICASO_ROOT 미설정 시 config 파일 위치(<project>/config/)에서 프로젝트 루트 자동 유도.
+    #   → picaso-hydro.yaml 의 ${env:PICASO_ROOT:<하드코딩 fallback>} 오해석(리눅스에서 윈도우
+    #     경로로 떨어지는 문제) 방지. 환경변수가 이미 있으면 존중.
+    if not os.environ.get("PICASO_ROOT"):
+        cf = envfile.resolve()
+        if cf.parent.name == "config":
+            os.environ["PICASO_ROOT"] = str(cf.parent.parent)
+
     with envfile.open("r", encoding="utf-8") as fh:
         raw: Dict[str, Any] = yaml.safe_load(fh) or {}
 

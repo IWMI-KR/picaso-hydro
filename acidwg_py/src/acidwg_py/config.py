@@ -22,7 +22,6 @@ from typing import Any, Dict, Optional
 
 import yaml
 
-
 # 계절 코드 → 월 리스트 (APCC 계절예측 12개 3개월 계절)
 SEASON_MONTHS: Dict[str, list[int]] = {
     "JFM": [1, 2, 3],
@@ -187,6 +186,14 @@ def load_config(config_file: str) -> Dict[str, Any]:
     config_path = Path(config_file)
     if not config_path.exists():
         raise FileNotFoundError(f"설정 파일을 찾을 수 없음: {config_file}")
+
+    # PICASO_ROOT 미설정 시 config 파일 위치(<project>/config/)에서 프로젝트 루트 자동 유도.
+    #   → picaso-hydro.yaml 의 ${env:PICASO_ROOT:<하드코딩 fallback>} 오해석(리눅스에서 윈도우
+    #     경로로 떨어지는 문제) 방지. 환경변수가 이미 있으면 존중.
+    if not os.environ.get("PICASO_ROOT"):
+        cf = config_path.resolve()
+        if cf.parent.name == "config":
+            os.environ["PICASO_ROOT"] = str(cf.parent.parent)
 
     with open(config_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
