@@ -19,7 +19,7 @@ PICASO 힌드캐스트 예보 확률 → acidwg_py 입력 파일 일괄 변환 C
 기본 경로 (PICASO_ROOT 기준)
 ----------------------------
     원본 자료 : 0_database/picaso/
-    관측소 CSV: 1_acidwg/config/stations.csv
+    관측소 CSV: 0_database/obs/weather/stations-acidwg.csv  (ID 컬럼만 사용)
     출력 폴더 : 1_acidwg/picaso/
 """
 
@@ -49,7 +49,8 @@ def _defaults() -> tuple[Path, Path, Path]:
     root = _picaso_root()
     return (
         root / "0_database" / "picaso",
-        root / "1_acidwg" / "config" / "stations.csv",
+        # 관측소 목록 — ID 컬럼만 사용하므로 공통 stations-acidwg.csv 를 그대로 사용.
+        root / "0_database" / "obs" / "weather" / "stations-acidwg.csv",
         root / "1_acidwg" / "picaso",
     )
 
