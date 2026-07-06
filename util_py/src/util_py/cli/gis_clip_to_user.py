@@ -61,7 +61,7 @@ def _load_or_default(config_path: str | None) -> Config:
     return cfg
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="Stage 2: 국가 자료를 사용자 SWAT 영역으로 클립",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -90,7 +90,7 @@ def main() -> int:
                         help="SWAT mdb 복사 안 함")
     parser.add_argument("--list", action="store_true",
                         help="발견된 area 만 나열하고 종료")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     cfg = _load_or_default(args.config)
     gis_root = args.gis_root or cfg.gis.root

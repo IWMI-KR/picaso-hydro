@@ -7,6 +7,7 @@ SWAT/SWAT-Plus 기반 수문 모델링 자동화를 위한 Python 패키지 모�
 
 | 패키지 | 역할 | 주요 의존 |
 |---|---|---|
+| **`picaso_hydro`** | 프로젝트 초기화 — 고정 폴더 구조 + 샘플 config 스캐폴딩 (`initialize`) | (stdlib only) |
 | **`util_py`** | SWAT 입력 자료 자동 수집·가공 (DEM/LULC/Soil/기상/유량 + Stage 1·2 워크플로우) + ERA5 vs 관측 검증 | rasterio, geopandas, cdsapi, netCDF4, pyyaml |
 | **`acidwg_py`** | APCC 계절예측 통계 다운스케일링 (rACID R 패키지 포팅). 1,000-멤버 일자료 앙상블 | numpy, pandas, scipy, scikit-learn, statsmodels, pyyaml |
 | **`swat_py`** | SWAT/SWAT-Plus 자동 실행·보정·검증·기후변화·앙상블 예보 (rSWAT R 포팅 + acidwg_py 1000 멤버 통합) | numpy, pandas, scipy, matplotlib, seaborn, pyyaml |
@@ -18,6 +19,7 @@ SWAT/SWAT-Plus 기반 수문 모델링 자동화를 위한 Python 패키지 모�
 
 ### 옵션 A — 본 저장소에서 직접 (현재 권장)
 ```bash
+pip install "git+https://github.com/IWMI-KR/picaso-hydro.git#subdirectory=picaso_hydro"
 pip install "git+https://github.com/IWMI-KR/picaso-hydro.git#subdirectory=util_py"
 pip install "git+https://github.com/IWMI-KR/picaso-hydro.git#subdirectory=acidwg_py"
 pip install "git+https://github.com/IWMI-KR/picaso-hydro.git#subdirectory=swat_py"
@@ -27,6 +29,7 @@ pip install "git+https://github.com/IWMI-KR/picaso-hydro.git#subdirectory=swat_p
 ```bash
 git clone https://github.com/IWMI-KR/picaso-hydro.git
 cd picaso-hydro
+pip install -e ./picaso_hydro
 pip install -e ./util_py[dev]
 pip install -e ./acidwg_py
 pip install -e ./swat_py
@@ -35,8 +38,12 @@ pip install -e ./swat_py
 ## 빠른 시작
 
 ```bash
+# 프로젝트 초기화 (1회) — 고정 폴더 구조 + 샘플 config 3종 + country_boundary.csv 생성
+picaso-hydro-init D:\MyProject
+
 # 환경 설정 (1회)
 set PICASO_ROOT=D:\MyProject
+#  → config\ 의 3개 yaml, 0_database\gis\admin\country_boundary.csv 를 대상 국가로 편집
 
 # Stage 1 — 국가 전체 자료 수집
 util-gis-download
@@ -63,6 +70,7 @@ util-gis-clip-to-user --area rarotonga
 
 | 명령 | 패키지 | 역할 |
 |---|---|---|
+| `picaso-hydro-init` | picaso_hydro | 프로젝트 고정 폴더 구조 + 샘플 config 초기화 |
 | `util-gis-download` | util_py | DEM/admin/landuse/soil/basin/river 일괄 다운로드 |
 | `util-gis-clip-to-user` | util_py | Stage 2 — 사용자 영역 클립 |
 | `util-era5-download` | util_py | ERA5 시간자료 NC 다운로드 (CDS API) |
@@ -94,6 +102,7 @@ MIT License — 자유 사용·수정·재배포. 상업적 사용 가능. 출�
 
 | 패키지 | 버전 | 테스트 |
 |---|---|---|
+| picaso_hydro | 0.1.0 | 초기화 스캐폴딩 |
 | util_py   | 0.1.0 | 243 passed |
 | acidwg_py | 1.0.0 | 108 passed |
 | swat_py   | 0.1.0 | 45 passed |

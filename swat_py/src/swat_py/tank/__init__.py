@@ -5,7 +5,7 @@ SWAT+ 결과와 비교한다. 설정은 yaml `tank:` 블록(config.env._TankCfg)
 
 주요 진입점
 - run_tank_calibration(cfg) : 관측소별 Tank 검보정 → 3_swatplus/calibration-tank/
-- compare_swat_tank(cfg)    : SWAT vs Tank 비교 → 6_reports/05_모형간_유량비교/
+- compare_swat_tank(cfg)    : SWAT vs Tank 비교 → reports/05_모형간_유량비교/
 - simulate_tank(...)        : 단일 Tank 시뮬레이션
 - compute_pet(df, method, lat) : PET(Hamon/Hargreaves/Priestley-Taylor)
 """

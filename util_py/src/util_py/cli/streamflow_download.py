@@ -60,7 +60,7 @@ def _load_or_default(config_path: str | None) -> Config:
     return cfg
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="국제 관측 유량 자료 다운로드 (CARAVAN + USGS NWIS)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -83,7 +83,7 @@ def main() -> int:
                         help="USGS 시작일 (YYYY-MM-DD)")
     parser.add_argument("--end-date", default=None,
                         help="USGS 종료일 (YYYY-MM-DD)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     cfg = _load_or_default(args.config)
 

@@ -37,6 +37,7 @@ dev = [
 ]
 
 [project.scripts]
+util-download-national = "util_py.cli.download_national:main"
 util-era5-download = "util_py.cli.era5_download:main"
 util-era5-extract  = "util_py.cli.era5_extract:main"
 util-gsod-download = "util_py.cli.gsod_download:main"

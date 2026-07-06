@@ -212,7 +212,7 @@ class _DroughtCfg:
     # SWAT+ sim=[syear, eyear], 웜업(CioNYSKIP) 제외 후 출력. climatology 파일명에 사용.
     syear:           int = 0           # 0 이면 climatology_years[0] 로 대체(하위호환)
     eyear:           int = 0           # 0 이면 climatology_years[-1]
-    ensemble_root:   str = ""          # 미지정 시 1_acidwg/hindcast
+    ensemble_root:   str = ""          # 미지정 시 1_acidwg/forecast/{year}_{season}
     # ── 4단계 급수단계 경계 (설정 가능) ──────────────────────────────────────
     #  method: fdc_exceedance | nonexceed_percentile | fixed_flow
     #  values: [Normal|Watch, Watch|Warning, Warning|Crisis] — method 별 의미 상이(fdc.stage_thresholds).

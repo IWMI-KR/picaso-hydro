@@ -138,7 +138,7 @@ def _run_local(cfg: Config, mapping_path: str | None, resolution: str) -> None:
             print(f"  [LOCAL hour ] {n}개 → {out_h}")
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="기상자료 SWAT 표준 포맷 변환 (ERA5/GSOD/local)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -152,7 +152,7 @@ def main() -> int:
                         default="both", help="시간 해상도")
     parser.add_argument("--mapping", default=None,
                         help="local source 매핑 YAML (YAML weather_std.local.mapping_file 오버라이드)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     cfg = _load_or_default(args.config)
 

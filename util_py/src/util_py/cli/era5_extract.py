@@ -73,7 +73,7 @@ def _autogen_grid_points(grid_csv: Path, era5_dir: Path, boundary_shp: Path) -> 
     print()
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="ERA5 NC 파일로부터 격자점별 시간·일 기상자료 추출",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -100,7 +100,7 @@ def main() -> int:
                              "(기본: $PICASO_ROOT/0_database/gis/admin/admin.shp)")
     parser.add_argument("--overwrite", action="store_true",
                         help="기존 파일 덮어쓰기")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     cfg = _load_or_default(args.config)
 

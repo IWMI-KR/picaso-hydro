@@ -1,0 +1,221 @@
+"""장기 기후 SWAT+ 재실행 — 대시보드 ①평년·④FDC용 채널 유량(일/월/월평년) 생산.
+
+검보정 완료 master(`CalibratedDir`; 지역화 포함 최적 파라미터 baked-in)를 그대로 복사하고,
+기상은 stations-acidwg.csv(장기기록) 단일 관측소로 전 유역 재배정한 뒤 time.sim 을
+drought.syear~eyear(= acidwg observation, 웜업 `CioNYSKIP` 제외 후 출력)로 확장해 1회 실행한다.
+drought.outlets 채널 유량을 `4_drought_risk/climatology/` 에 3종 저장:
+  - channel_daily_{tag}.csv        (일유량, wide: date + 채널)
+  - channel_monthly_{tag}.csv      (월평균 시계열)
+  - channel_monthly_avg_{tag}.csv  (월 평년 1~12)
+  (tag = climatology_tag(cfg) = {syear+warmup}_{eyear})
+
+경로는 모두 `cfg.PrjDir`(project.root) 기준으로 산출되어 OS·설치 위치에 무관하다.
+
+실행: python -m swat_py.drought.climatology_run [--config config/swat_py.yaml]
+프로그램: from swat_py.drought.climatology_run import run_climatology; run_climatology(cfg)
+"""
+from __future__ import annotations
+
+import argparse
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Dict, Optional
+
+import pandas as pd
+
+from swat_py.drought.climatology import climatology_tag
+from swat_py.drought.ensemble_flow import OUTLETS
+from swat_py.io.station import load_station_csv
+from swat_py.io.weather_swat_plus import write_cli_index
+from swat_py.output.reader_swat_plus import _detect_colnames
+
+
+def to_monthly(daily: pd.DataFrame) -> pd.DataFrame:
+    """일유량 → 월 평균 시계열 (연·월별). wide: date(월초) + outlet열."""
+    d = daily.copy()
+    d["date"] = pd.to_datetime(d["date"])
+    cols = [c for c in d.columns if c != "date"]
+    d["ym"] = d["date"].dt.to_period("M")
+    m = d.groupby("ym")[cols].mean().reset_index()
+    m["date"] = m["ym"].dt.to_timestamp()
+    return m[["date", *cols]]
+
+
+def to_monthly_avg(daily: pd.DataFrame) -> pd.DataFrame:
+    """일유량 → 월 평년 (1~12월, 연·월 평균 후 다년 평균). wide: month + outlet열."""
+    d = daily.copy()
+    d["date"] = pd.to_datetime(d["date"])
+    cols = [c for c in d.columns if c != "date"]
+    d["year"] = d["date"].dt.year
+    d["month"] = d["date"].dt.month
+    ym = d.groupby(["year", "month"])[cols].mean().reset_index()
+    return ym.groupby("month")[cols].mean().reset_index()
+
+
+def extract_all_outlets(cha_path: Path, outlets: dict, out_first: str) -> pd.DataFrame:
+    """channel_sd_day.txt 를 **1회만** 읽어 전 outlet 일유량(flo_out) wide 추출.
+
+    outlet 마다(12회) 1.2GB 파일을 통째로 재파싱하는 대신, 필요한 5개 열
+    (gis_id/yr/mon/day/flo_out)만 순수 파이썬 스트리밍으로 1회 읽고 대상 채널만 필터해
+    date×outlet wide 로 피벗한다(저메모리·고속).
+    """
+    cols = _detect_colnames(cha_path)
+    lc = [c.lower() for c in cols]
+    gi, yi, mi, di, fi = (lc.index(k) for k in ("gis_id", "yr", "mon", "day", "flo_out"))
+    targets = {int(k) for k in outlets}
+    fmax = max(gi, yi, mi, di, fi)
+    recs = []
+    with open(cha_path, "r", encoding="utf-8", errors="replace") as fh:
+        for _ in range(3):                     # 헤더 3줄 skip (데이터는 4행부터)
+            fh.readline()
+        for line in fh:
+            p = line.split()
+            if len(p) <= fmax:
+                continue
+            try:
+                g = int(p[gi])
+            except ValueError:
+                continue
+            if g not in targets:
+                continue
+            recs.append((int(p[yi]), int(p[mi]), int(p[di]), g, float(p[fi])))
+    out = pd.DataFrame(recs, columns=["yr", "mon", "day", "gid", "flo"])
+    out["date"] = pd.to_datetime(
+        dict(year=out["yr"], month=out["mon"], day=out["day"]))
+    wide = out.pivot_table(index="date", columns="gid", values="flo", aggfunc="first")
+    wide = wide.rename(columns=dict(outlets)).reset_index()
+    wide = wide[wide["date"] >= pd.Timestamp(out_first)].sort_values("date").reset_index(drop=True)
+    ordered = ["date"] + [name for gid, name in outlets.items() if name in wide.columns]
+    return wide[ordered]
+
+
+def setup_acidwg_weather(cfg, work: Path) -> str:
+    """장기 평년 실행 기상 = stations-acidwg.csv(장기기록) 단일 관측소로 전 유역 재배정.
+
+    검보정용 다중 우량계(stations-hydro.csv; 단기 기록)는 장기 실행이 불가하므로, 작업본의
+    .cli 인덱스를 장기 관측소만 나열하고 weather-sta.cli 의 전 subbasin 을 그 관측소
+    기상파일(.pcp/.tmp/.slr/.hmd/.wnd)로 재배정한다. 해당 관측소 파일은 default 마스터에
+    이미 존재하므로 그대로 재사용한다.
+    """
+    stns = load_station_csv(Path(cfg.ObsDayDir) / "stations-acidwg.csv", [])  # 전체(=장기 관측소)
+    station = stns[0].id
+    # .cli 인덱스를 단일 관측소만 나열 (SWAT+ 가 단기 우량계 .pcp 를 읽지 않도록)
+    for var in ("pcp", "tmp", "wnd", "hmd", "slr"):
+        write_cli_index(var, [station], work)
+    # weather-sta.cli 전 행을 장기 관측소 기상으로 재배정 (wgn 열은 유지)
+    p = work / "weather-sta.cli"
+    lines = p.read_text(encoding="utf-8").splitlines()
+    out = lines[:2]
+    for ln in lines[2:]:
+        t = ln.split()
+        if len(t) < 7:
+            out.append(ln)
+            continue
+        t[2], t[3], t[4] = f"{station}.pcp", f"{station}.tmp", f"{station}.slr"
+        t[5], t[6] = f"{station}.hmd", f"{station}.wnd"
+        out.append(f"{t[0]:<28}{t[1]:<24}" + "".join(f"{x:<27}" for x in t[2:7])
+                   + f"{'null':<10}null")
+    p.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return station
+
+
+def run_climatology(cfg, *, workdir: Optional[Path] = None,
+                    timeout: int = 7200) -> Dict[str, str]:
+    """장기 기후 SWAT+ 를 1회 실행하고 채널유량 3종 CSV(일/월/월평년)를 저장한다.
+
+    반환: {"daily": ..., "monthly": ..., "monthly_avg": ..., "n_outlets": N} 경로 dict.
+    """
+    prj = Path(cfg.PrjDir)
+    master_dir = Path(cfg.CalibratedDir)      # 검보정 완료 master(지역화 baked-in)
+    # ★ SWAT 구동은 로컬 임시(예: /tmp, C:\Temp)에서 — 프로젝트 루트가 네트워크 공유일 때
+    #   거대 channel_sd_day.txt(~1.2GB) 순차쓰기가 정체(hang)한다. 최종 CSV만 climatology 에 저장.
+    work = (Path(workdir) if workdir
+            else Path(tempfile.gettempdir()) / "picaso_clim_run" / "TxtInOut")
+    out_dir = prj / "4_drought_risk" / "climatology"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 기간 — drought.syear/eyear(= acidwg observation). 웜업(CioNYSKIP) 제외 후 출력.
+    dc = cfg.Drought
+    warmup = int(cfg.CioNYSKIP)
+    syear = dc.syear or (dc.climatology_years[0] if dc.climatology_years else 2003)
+    eyear = dc.eyear or (dc.climatology_years[-1] if dc.climatology_years else 2024)
+    out_first = f"{syear + warmup}-01-01"      # 웜업 제외 후 출력 시작
+    tag = climatology_tag(cfg)                  # 파일명 태그 = {syear+warmup}_{eyear}
+
+    if work.parent.exists():
+        shutil.rmtree(work.parent)
+    print(f"[1/5] calibrated master 복사 → {work}")
+    shutil.copytree(master_dir, work)
+
+    stn = setup_acidwg_weather(cfg, work)
+    print(f"[2/5] 기상 재배정 → stations-acidwg.csv({stn}) 단일 관측소")
+
+    # time.sim 확장
+    ts = work / "time.sim"
+    lines = ts.read_text().splitlines()
+    lines[2] = f"       1      {syear}       366      {eyear}         0"
+    ts.write_text("\n".join(lines) + "\n")
+    print(f"[3/5] time.sim → {syear}–{eyear} (웜업 {warmup}년 → 출력 {out_first}~)")
+
+    exe = work / cfg.Executable
+    if not exe.is_file():
+        shutil.copy2(master_dir / cfg.Executable, exe)
+    print("[4/5] SWAT+ 실행 … (장기, 수 분)")
+    # ★ stdout 은 파이프(capture_output) 대신 로그파일로 리디렉션 — SWAT 가 수십년치
+    #   진행메시지를 파이프에 쓰다 버퍼(~64KB)가 차면 블록되고, run() 은 종료 후에야
+    #   파이프를 읽어 상호 교착(deadlock)이 발생하기 때문.
+    swat_log = work / "swat_run.log"
+    with swat_log.open("w", encoding="utf-8", errors="replace") as _fh:
+        r = subprocess.run([str(exe)], cwd=str(work), stdout=_fh,
+                           stderr=subprocess.STDOUT, timeout=timeout)
+    if r.returncode != 0:
+        sys.stderr.write(swat_log.read_text(encoding="utf-8", errors="replace")[-1500:])
+        raise SystemExit(f"SWAT 실행 실패 rc={r.returncode} (log: {swat_log})")
+
+    # 채널 추출 — 대용량 파일 스트리밍 1회 읽기. outlet 매핑은 drought.outlets(없으면 기본 12).
+    outlets = {int(k): v for k, v in (dict(dc.outlets) or OUTLETS).items()}
+    print(f"[5/5] channel_sd_day.txt → {len(outlets)}채널 추출 (1회 읽기, drought.outlets 매핑)")
+    merged = extract_all_outlets(work / "channel_sd_day.txt", outlets, out_first)
+    for name in [c for c in merged.columns if c != "date"]:
+        s = merged[["date", name]].dropna()
+        print(f"  {name:<12s} n={len(s)} {s['date'].min().date()}~{s['date'].max().date()}")
+
+    # 결과 3종 저장 — 파일명에 결정된 tag 사용.
+    daily_csv = out_dir / f"channel_daily_{tag}.csv"
+    merged.to_csv(daily_csv, index=False, encoding="utf-8-sig")
+    monthly = to_monthly(merged)
+    monthly_csv = out_dir / f"channel_monthly_{tag}.csv"
+    monthly.to_csv(monthly_csv, index=False, encoding="utf-8-sig")
+    mavg = to_monthly_avg(merged)
+    mavg_csv = out_dir / f"channel_monthly_avg_{tag}.csv"
+    mavg.to_csv(mavg_csv, index=False, encoding="utf-8-sig")
+
+    print("\n저장:")
+    print(f"  daily        : {daily_csv}  shape={merged.shape}")
+    print(f"  monthly      : {monthly_csv}  shape={monthly.shape}")
+    print(f"  monthly_avg  : {mavg_csv}  shape={mavg.shape}")
+    return {"daily": str(daily_csv), "monthly": str(monthly_csv),
+            "monthly_avg": str(mavg_csv), "n_outlets": len(outlets)}
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="swat_py.drought.climatology_run",
+                                 description="장기 기후 SWAT+ 재실행 → ①평년·④FDC 채널유량")
+    ap.add_argument("--config", default="config/swat_py.yaml",
+                    help="swat_py 설정 (같은 폴더의 picaso-hydro.yaml 공통값 자동 병합)")
+    ap.add_argument("--workdir", default=None,
+                    help="SWAT 구동 임시폴더(기본: 시스템 임시)")
+    ap.add_argument("--timeout", type=int, default=7200, help="SWAT 실행 제한(초)")
+    args = ap.parse_args(argv)
+    from swat_py.config import load_config
+    cfg = load_config(args.config)
+    run_climatology(cfg, workdir=Path(args.workdir) if args.workdir else None,
+                    timeout=args.timeout)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

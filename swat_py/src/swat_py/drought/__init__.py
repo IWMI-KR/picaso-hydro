@@ -21,6 +21,9 @@ from swat_py.drought.fdc import stage_thresholds
 from swat_py.drought.stages import (
     classify_stage4, stage_probabilities4, STAGES4, STAGE_COLORS,
 )
+from swat_py.drought.climatology_run import run_climatology
+from swat_py.drought.ensemble_weather import generate_ensemble_weather
+from swat_py.drought.reclassify import reclassify_stages
 from swat_py.drought.run import run_pipeline
 
 __all__ = [
@@ -29,5 +32,7 @@ __all__ = [
     "classify_stage", "stage_probabilities", "STAGES",
     "classify_stage4", "stage_probabilities4", "STAGES4", "STAGE_COLORS",
     "load_daily_flow", "monthly_climatology", "outlet_climatology_and_thresholds",
-    "run_ensemble", "OUTLETS", "run_pipeline",
+    "run_ensemble", "OUTLETS",
+    "run_climatology", "generate_ensemble_weather", "reclassify_stages",
+    "run_pipeline",
 ]

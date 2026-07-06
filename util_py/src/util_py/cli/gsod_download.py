@@ -57,7 +57,7 @@ def _load_or_default(config_path: str | None) -> Config:
     return cfg
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="NOAA GSOD 일자료 다운로드 (boundary_csv 기준 국가 + bbox 필터)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -85,7 +85,7 @@ def main() -> int:
                         help="bbox 추가 필터 비활성화 (국가 코드만 사용)")
     parser.add_argument("--overwrite", action="store_true",
                         help="기존 통합 CSV 덮어쓰기")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     cfg = _load_or_default(args.config)
 

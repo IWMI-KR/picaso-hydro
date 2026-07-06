@@ -69,7 +69,7 @@ def _load_or_default(config_path: str | None) -> Config:
     return cfg
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="ERA5 격자점 vs 관측소 산점 검증",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -92,7 +92,7 @@ def main() -> int:
                         help="combined plot 의 subplot 열 수 (기본 4)")
     parser.add_argument("--output-dir", default=None,
                         help="출력 폴더 (YAML weather_validation.output_base 오버라이드)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     cfg = _load_or_default(args.config)
 

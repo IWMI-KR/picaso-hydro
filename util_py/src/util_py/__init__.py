@@ -91,8 +91,10 @@ from util_py.streamflow import (
     download_streamflow_caravan,
     download_streamflow_usgs,
 )
+from util_py.national import download_national_database
 
 __all__ = [
+    "download_national_database",
     "VARIABLES",
     "compute_area",
     "download_era5_year",

@@ -19,42 +19,11 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
-import sys
 from pathlib import Path
 
 from swat_py.drought.climatology import climatology_daily_path
-
-
-def _acidwg_generate(acidwg_config: Path, fyear: int, season: str, n_members: int) -> None:
-    """acidwg 앙상블 상세화 — 경로·obs기간은 acidwg config, 대상·앙상블수는 마스터 주입.
-
-    연도에 따라 폴더 자동 분기: 관측기간 이내(fyear ≤ eyear_obs)면 hindcast(검증),
-    이후면 operational. 각각 acidwg_root/{hindcast|operational}/{year}/{season} 에 생성.
-    """
-    from acidwg_py.config import load_config as load_acidwg, SEASON_MONTHS
-    from acidwg_py.run import acid_run_hindcast, acid_run
-    a = load_acidwg(str(acidwg_config))
-    if fyear <= int(a["eyear_obs"]):
-        acid_run_hindcast(
-            station_csv=a["station_csv"], obs_dir=a["obs_dir"],
-            picaso_dir=a["picaso_dir"], output_root=a["acidwg_root"],
-            syear_obs=a["syear_obs"], eyear_obs=a["eyear_obs"],
-            years=[fyear], seasons=[season],
-            n_ensemble=n_members,                  # ★ 마스터 값 주입(단일 원천)
-            model_file=a.get("model_file"),
-            retrieve=a.get("retrieve", True), observation_eyear_cap=True,
-        )
-    else:                                          # operational (hindcast 이후 연도)
-        forecast_csv = str(Path(a["picaso_dir"]) / f"{fyear}_{season}_picaso.csv")
-        output_dir = str(Path(a["acidwg_root"]) / "operational" / str(fyear))
-        acid_run(
-            station_csv=a["station_csv"], obs_dir=a["obs_dir"], output_dir=output_dir,
-            sim_period=SEASON_MONTHS[season], syear_obs=a["syear_obs"],
-            eyear_obs=a["eyear_obs"], forecast_csv=forecast_csv,
-            n_ensemble=n_members, model_file=a.get("model_file"),
-            retrieve=a.get("retrieve", True), forecast_year=fyear,
-        )
+from swat_py.drought.climatology_run import run_climatology
+from swat_py.drought.ensemble_weather import generate_ensemble_weather
 
 
 def run_pipeline(cfg, *, forecast=None, n_members=None, n_workers=4,
@@ -62,7 +31,6 @@ def run_pipeline(cfg, *, forecast=None, n_members=None, n_workers=4,
     dc = cfg.Drought
     forecast = forecast or dc.forecast
     n = int(n_members or dc.n_members)
-    fyear = int(forecast.split("_")[0]); season = forecast.split("_")[1]
     root = Path(cfg.PrjDir)
     acidwg_config = Path(acidwg_config) if acidwg_config else \
         root / "config" / "acidwg_py.yaml"      # 공통 picaso-hydro.yaml 과 동거
@@ -76,20 +44,20 @@ def run_pipeline(cfg, *, forecast=None, n_members=None, n_workers=4,
     clim_csv = climatology_daily_path(cfg)
     if with_climatology:
         print("[1/3] 장기 기후 SWAT+ 재실행 …")
-        subprocess.run([sys.executable,
-                        str(root / "4_drought_risk" / "scripts" / "run_climatology.py")],
-                       check=True)
+        run_climatology(cfg)
     elif not clim_csv.is_file():
         raise SystemExit(f"기후 평년/FDC 자료 없음: {clim_csv}\n"
-                         f"  → --with-climatology 로 먼저 생성하거나 run_climatology.py 실행")
+                         f"  → --with-climatology 로 먼저 생성하거나 "
+                         f"python -m swat_py.drought.climatology_run 실행")
 
     # ② acidwg 앙상블 상세화 (마스터 N 주입)
     if not skip_acidwg:
         print(f"[2/3] acidwg 앙상블 상세화 {n}멤버 ({forecast}) …")
-        _acidwg_generate(acidwg_config, fyear, season, n)
+        generate_ensemble_weather(cfg, forecast=forecast, n_members=n,
+                                  acidwg_config=acidwg_config)
 
     # ③ SWAT+ 앙상블 + Drought Risk 대시보드
-    print(f"[3/3] SWAT+ 앙상블 + Drought Risk 대시보드 …")
+    print("[3/3] SWAT+ 앙상블 + Drought Risk 대시보드 …")
     from swat_py.drought.dashboard_data import build
     from swat_py.drought.figure import make_all_figures
     res = build(cfg, forecast, n_members=n, n_workers=n_workers)

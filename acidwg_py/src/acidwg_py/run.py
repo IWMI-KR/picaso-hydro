@@ -406,7 +406,8 @@ def acid_run(
 
     출력
     ----
-    output_dir/{season}/member_{i:04d}/{station_id}.csv
+    forecast_year 지정 시: output_dir/{year}_{season}/member_{i:04d}/{station_id}.csv  (통합)
+    미지정 시(하위호환):   output_dir/{season}/member_{i:04d}/{station_id}.csv
     각 CSV 컬럼: [year,] mon, day, prcp, tmax, tmin
     """
     MONTH_ABB = ["Jan","Feb","Mar","Apr","May","Jun",
@@ -439,8 +440,11 @@ def acid_run(
     param_list = acid_modeling(obs_data, model_file=model_file, retrieve=retrieve)
 
     # 4. 출력 디렉토리 준비
+    #    통합 forecast 레이아웃: forecast_year 지정 시 {year}_{season} 플랫 폴더(연월 일관).
+    #    미지정 시 기존 {season} 하위호환.
     season = season_naming(sim_period)
-    out_path = os.path.join(output_dir, season)
+    leaf = f"{forecast_year}_{season}" if forecast_year is not None else season
+    out_path = os.path.join(output_dir, leaf)
     os.makedirs(out_path, exist_ok=True)
     print(f"[acidwg_py] 출력 경로: {out_path}")
 
@@ -516,7 +520,7 @@ def acid_run_hindcast(
 
     각 (year, season) 에 대해:
         forecast CSV 자동 경로  : ``picaso_dir/{year}_{season}_picaso.csv``
-        출력 경로               : ``output_root/hindcast/{year}/{season}/member_*``
+        출력 경로               : ``output_root/forecast/{year}_{season}/member_*``  (통합 레이아웃)
         관측 종료 연도          : observation_eyear_cap=True 면 ``min(eyear_obs, year-1)``
                                   (각 hindcast 시점 이후 관측을 모델 적합에서 제외 — leakage 방지)
 
@@ -557,7 +561,7 @@ def acid_run_hindcast(
             if not fc_csv.is_file():
                 skipped.append((year, season, "forecast CSV 없음"))
                 continue
-            out_dir = Path(output_root) / "hindcast" / str(year)
+            out_dir = Path(output_root) / "forecast"   # acid_run 이 {year}_{season} 부여
             jobs.append({
                 "year": year, "season": season, "sim_period": sim_period,
                 "fc_csv": str(fc_csv), "out_dir": str(out_dir),
@@ -569,7 +573,7 @@ def acid_run_hindcast(
     print("=" * 62)
     for j in jobs:
         print(f"  {j['year']} {j['season']}  obs[{syear_obs}~{j['eyear_use']}]  "
-              f"→ {j['out_dir']}/{j['season']}")
+              f"→ {j['out_dir']}/{j['year']}_{j['season']}")
     if skipped:
         print()
         print(f"  건너뜀:")

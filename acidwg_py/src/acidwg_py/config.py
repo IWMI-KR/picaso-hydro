@@ -156,6 +156,11 @@ def _merge_shared_acidwg(shared: Dict[str, Any], raw: Dict[str, Any]) -> Dict[st
     nm = (shared.get("ensemble") or {}).get("n_members")
     if nm is not None:
         raw.setdefault("ensemble", {}).setdefault("n_members", nm)
+    # 공통 예측연월(forecast.period) — acidwg-run 무인자 실행의 기본 대상(SSOT).
+    #   acidwg_py.yaml 에 두지 않고, picaso-hydro.yaml 에 있으면 그 값을 전달만 한다.
+    period = (shared.get("forecast") or {}).get("period")
+    if period is not None:
+        raw.setdefault("forecast_period", period)
     return raw
 
 
@@ -164,7 +169,7 @@ def load_config(config_file: str) -> Dict[str, Any]:
 
     YAML 섹션
     ---------
-    paths        : station_csv, obs_dir, picaso_dir, acidwg_root, ensemble_root[_operational], model_file
+    paths        : station_csv, obs_dir, picaso_dir, acidwg_root, ensemble_root, model_file
     observation  : syear, eyear
     operational  : year, season(또는 months)            # 단일 — acidwg-run 기본
     hindcast     : years, seasons, observation_eyear_cap  # 일괄 — acidwg-run --hindcast
@@ -284,15 +289,13 @@ def load_config(config_file: str) -> Dict[str, Any]:
     n_cores          = int(adv.get("n_cores", 1))
     validate_after   = bool(adv.get("validate_after", False))
 
-    # operational 의 단일 forecast_csv / output_dir 자동 산출
-    # output_dir 은 year 까지만 — acid_run 이 내부에서 season 폴더 자동 추가
+    # 단일 forecast_csv / output_dir 자동 산출
+    # output_dir 은 forecast base — acid_run 이 forecast_year 로 {year}_{season} 폴더 부여
     forecast_csv_op = (
         Path(paths["picaso_dir"])
         / f"{forecast_year}_{_season_label(sim_period)}_picaso.csv"
     )
-    output_dir_op = (
-        Path(paths["acidwg_root"]) / "operational" / str(forecast_year)
-    )
+    output_dir_op = Path(paths["acidwg_root"]) / "forecast"
 
     return {
         # 경로 (공용)
@@ -301,8 +304,7 @@ def load_config(config_file: str) -> Dict[str, Any]:
         "picaso_dir":        paths["picaso_dir"],
         "acidwg_root":       paths["acidwg_root"],
         "output_root":       paths["acidwg_root"],   # 호환 별칭(구 이름)
-        "ensemble_root":             paths.get("ensemble_root"),
-        "ensemble_root_operational": paths.get("ensemble_root_operational"),
+        "ensemble_root":             paths.get("ensemble_root"),   # 통합 forecast 루트
         "model_file":        paths.get("model_file"),
         # 관측 기간
         "syear_obs":         syear_obs,
@@ -314,6 +316,8 @@ def load_config(config_file: str) -> Dict[str, Any]:
         "output_dir":        str(output_dir_op),
         # hindcast (일괄) — acidwg-run --hindcast 사용
         "hindcast":          hindcast_cfg,
+        # 공통 예측연월(picaso-hydro.yaml forecast.period) — 무인자 실행의 기본 대상. 없으면 None.
+        "forecast_period":   resolved.get("forecast_period"),
         # 공통 옵션
         "n_ensemble":        n_ensemble,
         "random_seed":       random_seed,

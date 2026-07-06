@@ -14,7 +14,7 @@
 3. generate_pub_figures: viz.pub_report.make_report 재사용 → {관측소}_{cal|val}_{항목}.png
                         + pub_report_index.csv.
 4. write_param_history : 최종 파라미터(rows 포함)와 검보정 단계별 성능 이력을 영속 저장.
-5. promote_to_reports  : 그림·요약표를 6_reports/04_검보정결과 로 편입 + README.
+5. promote_to_reports  : 그림·요약표를 reports/04_검보정결과 로 편입 + README.
 6. finalize            : 위 단계를 순서대로 수행.
 
 CLI:
@@ -76,7 +76,7 @@ def _results_dir(cfg) -> Path:
 
 
 def _reports04_dir(cfg) -> Path:
-    return Path(cfg.PrjDir) / "6_reports" / "04_검보정결과"
+    return Path(cfg.PrjDir) / "reports" / "04_검보정결과"
 
 
 def _phase_periods(cfg) -> Dict[str, tuple]:
@@ -203,10 +203,10 @@ def write_param_history(cfg, stage_history: Optional[List[dict]] = None) -> Dict
     return out
 
 
-# ── 4. 6_reports/04 편입 ─────────────────────────────────────────────────────
+# ── 4. reports/04 편입 ─────────────────────────────────────────────────────
 
 def promote_to_reports(cfg) -> Path:
-    """그림·요약표를 6_reports/04_검보정결과 로 복사 편입 + README 갱신."""
+    """그림·요약표를 reports/04_검보정결과 로 복사 편입 + README 갱신."""
     results_dir = _results_dir(cfg)
     fig_dir = results_dir / "figures"
     dest = _reports04_dir(cfg)

@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -223,3 +224,39 @@ def make_all_figures(out_root: Path) -> int:
             n += 1
     print(f"  그림 {n}장(+⑤ 게이지) → {out_root}")
     return n
+
+
+def resolve_out_root(cfg, forecast: str) -> Path:
+    """예측연월의 대시보드 폴더 경로 — dashboard_data.build 산출 위치와 동일."""
+    return Path(cfg.PrjDir) / "4_drought_risk" / "forecast" / forecast
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="swat_py.drought.figure",
+                                 description="가뭄위험 대시보드 outlet별 그림 + ⑤ 게이지 생성")
+    ap.add_argument("--config", default="config/swat_py.yaml",
+                    help="swat_py 설정 (같은 폴더의 picaso-hydro.yaml 공통값 자동 병합)")
+    ap.add_argument("--forecast", default=None,
+                    help="예측연월 (기본: config 의 forecast.period)")
+    ap.add_argument("--out-root", default=None,
+                    help="대시보드 폴더 직접 지정 (기본: 4_drought_risk/forecast/{period})")
+    args = ap.parse_args(argv)
+
+    if args.out_root:
+        out_root = Path(args.out_root)
+    else:
+        from swat_py.config import load_config
+        cfg = load_config(args.config)
+        forecast = args.forecast or getattr(cfg.Drought, "forecast", None)
+        if not forecast:
+            raise SystemExit("예측연월 미지정 — --forecast 또는 config forecast.period 필요")
+        out_root = resolve_out_root(cfg, forecast)
+    if not out_root.is_dir():
+        raise SystemExit(f"대시보드 폴더 없음: {out_root}\n"
+                         f"  → 먼저 dashboard_data.build 로 series.csv 등을 생성하세요.")
+    make_all_figures(out_root)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

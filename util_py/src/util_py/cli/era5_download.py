@@ -67,7 +67,7 @@ def _load_or_default(config_path: str | None) -> Config:
     return cfg
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="ERA5 시간별 자료 다운로드 (CDS API)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -94,7 +94,7 @@ def main() -> int:
                         help="CDS API URL (YAML era5.cds.url 오버라이드)")
     parser.add_argument("--key", default=None,
                         help="CDS API 키 (YAML era5.cds.key 오버라이드)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # ── 우선순위 적용: CLI > YAML > smart default ─────────────────────────
     cfg = _load_or_default(args.config)

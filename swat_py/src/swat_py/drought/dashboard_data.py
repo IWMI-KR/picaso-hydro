@@ -9,13 +9,15 @@
        → 평균/분위·단계확률은 4_drought_risk/forecast/{period}/{outlet}/ 로 저장
   4. outlet별 series.csv/thresholds.csv/stage_prob.csv/dashboard.json + summary.csv 저장
 
-CLI: python -m swat_py.drought.dashboard_data --forecast 2016_AMJ [--members 100] [--demo N]
+CLI: python -m swat_py.drought.dashboard_data [--forecast 2016_AMJ] [--members 100] [--demo N]
+     인자 생략 시 config(picaso-hydro.yaml→swat_py.yaml)의 forecast.period·ensemble.n_members 사용.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List
@@ -45,22 +47,25 @@ def _forecast_station(cfg) -> str:
 
 
 def _member_dir(cfg, fyear: int, season: str) -> Path:
-    """예측 연·계절의 앙상블 멤버 폴더 — hindcast(과거·검증) 우선, 없으면 operational(이후).
+    """예측 연·계절의 앙상블 멤버 폴더 — 통합 forecast 레이아웃.
 
-    acidwg 는 hindcast 연도는 1_acidwg/hindcast/, 이후(operational) 연도는
-    1_acidwg/operational/ 아래에 member_XXXX 를 둔다. 실제 멤버가 있는 폴더를 자동 선택.
+    acidwg 는 hindcast·operational 모드와 무관하게 1_acidwg/forecast/{year}_{season}/ 아래에
+    member_XXXX 를 둔다. (구 hindcast/{year}/{season}·operational/{year}/{season} 은 하위호환 폴백.)
+    실제 멤버가 있는 폴더를 자동 선택한다.
     """
     dc = getattr(cfg, "Drought", None)
     base = Path(cfg.PrjDir) / "1_acidwg"
+    key = f"{fyear}_{season}"
     cands = []
     if dc and dc.ensemble_root:                       # 설정 우선(있으면)
-        cands.append(Path(dc.ensemble_root) / str(fyear) / season)
-    cands += [base / "hindcast" / str(fyear) / season,
+        cands.append(Path(dc.ensemble_root) / key)
+    cands.append(base / "forecast" / key)             # 통합 레이아웃(기본)
+    cands += [base / "hindcast" / str(fyear) / season,   # 구 레이아웃(폴백)
               base / "operational" / str(fyear) / season]
     for d in cands:
         if d.is_dir() and any(d.glob("member_*")):
             return d
-    return cands[-2] if len(cands) >= 2 else cands[-1]   # 기본: hindcast
+    return base / "forecast" / key                    # 기본: 통합 forecast
 
 
 def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> None:
@@ -81,15 +86,25 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> None:
     lines = ts.read_text().splitlines()
     lines[2] = f"       1      {start_yr}       {last.dayofyear}      {fyear}         0"
     ts.write_text("\n".join(lines) + "\n")
-    # print.prt nyskip 을 warm_up_years 로 동기화 (출력 시작 = fyear)
+    # print.prt: nyskip 동기화 + 채널을 월단위(mon)로만 출력, 그 외 객체 출력 전부 off.
+    #   예측은 월유량(채널)만 필요 → 일단위 대용량 출력(90채널×일 + HRU·hyd 등) 제거로 대폭 가속.
     pp = base_dir / "print.prt"
     pl = pp.read_text().splitlines()
-    if len(pl) >= 3:
+    if len(pl) >= 3 and pl[2].split():
         toks = pl[2].split()
-        if toks:
-            toks[0] = str(nyskip)
-            pl[2] = "  ".join(toks)
-            pp.write_text("\n".join(pl) + "\n")
+        toks[0] = str(nyskip)
+        pl[2] = "  ".join(toks)
+    try:
+        hdr = next(i for i, l in enumerate(pl) if l.split()[:1] == ["objects"])
+        for i in range(hdr + 1, len(pl)):
+            t = pl[i].split()
+            if len(t) < 5:
+                continue
+            mon = "y" if t[0] == "channel_sd" else "n"
+            pl[i] = f"{t[0]:<28} n             {mon}             n             n"
+    except StopIteration:
+        pass
+    pp.write_text("\n".join(pl) + "\n")
     exe = base_dir / cfg.Executable
     if not exe.is_file():
         shutil.copy2(Path(cfg.DefaultDir) / cfg.Executable, exe)
@@ -120,7 +135,9 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
     daily = load_daily_flow(clim_csv)
 
     # ── 예측 앙상블 (③⑤) ──
-    base = root / "scripts" / "_ens_base" / "TxtInOut"
+    # base·멤버 실행은 로컬(C:) — 프로젝트 루트(I:)는 네트워크 공유라 N멤버가 각자
+    # base 를 네트워크에서 복사하면 극심히 느리다. 결과 CSV(소용량)만 I: 에 저장.
+    base = Path(tempfile.gettempdir()) / "picaso_ens_base" / "TxtInOut"
     print(f"[base] 예측 앙상블용 모델 준비 (fyear={fyear}, months={months})")
     prepare_base(cfg, base, fyear, months)
     print(f"[ensemble] {n_members} 멤버 SWAT+ 실행")
@@ -220,16 +237,33 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="swat_py.drought.dashboard_data")
-    ap.add_argument("--config", default="config/swat_py.yaml")
-    ap.add_argument("--forecast", default="2016_AMJ")
-    ap.add_argument("--members", type=int, default=100)
+    ap.add_argument("--config", default="config/swat_py.yaml",
+                    help="swat_py 설정 (같은 폴더의 picaso-hydro.yaml 공통값 자동 병합)")
+    ap.add_argument("--forecast", default=None,
+                    help="예측연월 {year}_{season} (기본: config 의 forecast.period)")
+    ap.add_argument("--members", type=int, default=None,
+                    help="앙상블 수 (기본: config 의 ensemble.n_members)")
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--demo", type=int, default=0, help=">0 이면 그 수만큼만(검증)")
     args = ap.parse_args(argv)
     from swat_py.config import load_config
     cfg = load_config(args.config)
-    n = args.demo if args.demo else args.members
-    res = build(cfg, args.forecast, n_members=n, n_workers=args.workers)
+    dc = getattr(cfg, "Drought", None)
+
+    # 예측연월·앙상블 수 미지정 시 config(picaso-hydro.yaml→swat_py.yaml)에서 폴백.
+    forecast = args.forecast or (getattr(dc, "forecast", None) if dc else None)
+    if not forecast:
+        raise SystemExit(
+            "예측연월 미지정 — --forecast 로 주거나 config 의 forecast.period "
+            "(picaso-hydro.yaml) 를 설정하세요.")
+    members = (args.members if args.members is not None
+               else int(getattr(dc, "n_members", 100) if dc else 100))
+    n = args.demo if args.demo else members
+
+    print(f"[config] {args.config} → forecast={forecast} "
+          f"({'CLI' if args.forecast else 'yaml'}) · members={n} "
+          f"({'demo' if args.demo else ('CLI' if args.members is not None else 'yaml')})")
+    res = build(cfg, forecast, n_members=n, n_workers=args.workers)
     from swat_py.drought.figure import make_all_figures
     make_all_figures(Path(res["out_root"]))
     return 0

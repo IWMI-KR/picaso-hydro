@@ -1,4 +1,4 @@
-"""SWAT+ vs Tank 유량 비교 → 6_reports/05_모형간_유량비교/.
+"""SWAT+ vs Tank 유량 비교 → reports/05_모형간_유량비교/.
 
 두 모형의 관측소별 모의유량(각 검보정 결과)을 관측치와 함께 비교한다.
   - 입력: SWAT `3_swatplus/calibration/results/top1_sim_daily.csv`,
@@ -99,7 +99,7 @@ def compare_swat_tank(cfg) -> Dict:
 
     swat = _load_wide(swat_csv)
     tank = _load_wide(tank_csv)
-    dest = Path(cfg.PrjDir) / "6_reports" / "05_모형간_유량비교"
+    dest = Path(cfg.PrjDir) / "reports" / "05_모형간_유량비교"
     dest.mkdir(parents=True, exist_ok=True)
 
     cal_period = (cfg.CalPeriodStart or "2015-01-01", cfg.CalPeriodEnd or "2017-12-31")

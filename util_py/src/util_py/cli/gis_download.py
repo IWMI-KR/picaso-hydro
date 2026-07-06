@@ -72,7 +72,7 @@ def _load_or_default(config_path: str | None) -> Config:
     return cfg
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="SWAT 입력 GIS 자료 다운로드 (글로벌 공개 소스)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -89,7 +89,7 @@ def main() -> int:
                         help=f"다운로드할 자료 종류 (기본 all). 가능: {_DATASETS + ['all']}")
     parser.add_argument("--keep-continental", action="store_true",
                         help="HydroSHEDS 대륙 원본도 보관")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     cfg = _load_or_default(args.config)
     boundary_csv = args.boundary_csv or cfg.region.boundary_csv

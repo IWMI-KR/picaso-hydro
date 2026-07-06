@@ -89,7 +89,9 @@ def _run_one(args) -> Dict:
             return {"_member": member_csv.parent.name, "_error": r.returncode}
         res: Dict = {"_member": member_csv.parent.name}
         for gid, name in outlets.items():
-            df = parse_channel_sd_day(run / "channel_sd_day.txt", outlet=gid,
+            # 월단위 출력(channel_sd_mon.txt) — parse_channel_sd_day 는 yr/mon/day
+            # 컬럼이 있어 월단위 파일에도 그대로 작동(각 행=월말 날짜·월평균 flo_out).
+            df = parse_channel_sd_day(run / "channel_sd_mon.txt", outlet=gid,
                                       sdate=f"{fyear}-01-01")
             if df is None:
                 continue
