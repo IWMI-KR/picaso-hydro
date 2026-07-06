@@ -68,7 +68,7 @@ def _member_dir(cfg, fyear: int, season: str) -> Path:
     return base / "forecast" / key                    # 기본: 통합 forecast
 
 
-def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> None:
+def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
     """calibrated(검보정 완료·지역화 포함, 파라미터 baked-in) 복사 + time.sim(웜업 선행 ~
     예측끝월) → 예측 앙상블 base TxtInOut. default+수동적용이 아닌 calibrated 를 그대로 사용."""
     if base_dir.parent.exists():
@@ -105,12 +105,15 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> None:
     except StopIteration:
         pass
     pp.write_text("\n".join(pl) + "\n")
-    # 실행파일: 절대경로/모델폴더/PATH 를 견고하게 해석해 base 에 복사(리눅스 바이너리 지원).
+    # 실행파일: OS 자동 대응 + 미발견 시 자동 다운로드(공식 Releases → default·calibrated).
     from swat_py.runner.file_manager import resolve_swat_exe
-    exe = base_dir / Path(cfg.Executable).name
+    exe_src = resolve_swat_exe(cfg.Executable, cfg.DefaultDir,
+                               fetch_dirs=[cfg.DefaultDir, cfg.CalibratedDir])
+    exe = base_dir / exe_src.name               # 해석된 실제 바이너리 이름 사용
     if not exe.is_file():
-        shutil.copy2(resolve_swat_exe(cfg.Executable, cfg.DefaultDir), exe)
+        shutil.copy2(exe_src, exe)
         exe.chmod(0o755)                        # 리눅스 실행 권한 보장
+    return exe_src.name
 
 
 def _observed_monthly(daily: pd.DataFrame, outlet: str, fyear: int,
@@ -142,7 +145,7 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
     # base 를 네트워크에서 복사하면 극심히 느리다. 결과 CSV(소용량)만 I: 에 저장.
     base = Path(tempfile.gettempdir()) / "picaso_ens_base" / "TxtInOut"
     print(f"[base] 예측 앙상블용 모델 준비 (fyear={fyear}, months={months})")
-    prepare_base(cfg, base, fyear, months)
+    exe_name = prepare_base(cfg, base, fyear, months)   # 해석/다운로드된 실행파일 이름
     print(f"[ensemble] {n_members} 멤버 SWAT+ 실행")
     print(f"[ensemble] 멤버 폴더: {member_dir}")
     # (선택) warm-up 을 최근접 ERA5 격자로 재구성 — 운영 예보용(drought.era5_warmup=true).
@@ -154,7 +157,7 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
                        "warmup_years": int(cfg.CioNYSKIP)}
         print(f"[ensemble] warm-up = 최근접 ERA5 격자 ({era5_warmup['grid_daily_std_dir']})")
     ens = run_ensemble(base, member_dir,
-                       fyear=fyear, months=months, exe_name=Path(cfg.Executable).name,
+                       fyear=fyear, months=months, exe_name=exe_name,
                        n_members=n_members, n_workers=n_workers,
                        outlets=outlets, station=station, era5_warmup=era5_warmup)
 

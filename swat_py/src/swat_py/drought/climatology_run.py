@@ -184,11 +184,13 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
         pass
     pp.write_text("\n".join(pl) + "\n")
 
-    # 실행파일: 절대경로/모델폴더/PATH 를 견고하게 해석해 work 에 복사(리눅스 바이너리 지원).
+    # 실행파일: OS 자동 대응 + 미발견 시 자동 다운로드(공식 Releases → calibrated·default).
     from swat_py.runner.file_manager import resolve_swat_exe
-    exe = work / Path(cfg.Executable).name
+    exe_src = resolve_swat_exe(cfg.Executable, master_dir,
+                               fetch_dirs=[cfg.CalibratedDir, cfg.DefaultDir])
+    exe = work / exe_src.name                   # 해석된 실제 바이너리 이름 사용
     if not exe.is_file():
-        shutil.copy2(resolve_swat_exe(cfg.Executable, master_dir), exe)
+        shutil.copy2(exe_src, exe)
         exe.chmod(0o755)                        # 리눅스 실행 권한 보장
     print("[4/5] SWAT+ 실행 … (장기, 수 분)")
     # ★ stdout 은 파이프(capture_output) 대신 로그파일로 리디렉션 — SWAT 가 수십년치
