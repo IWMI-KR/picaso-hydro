@@ -142,10 +142,18 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
     prepare_base(cfg, base, fyear, months)
     print(f"[ensemble] {n_members} 멤버 SWAT+ 실행")
     print(f"[ensemble] 멤버 폴더: {member_dir}")
+    # (선택) warm-up 을 최근접 ERA5 격자로 재구성 — 운영 예보용(drought.era5_warmup=true).
+    era5_warmup = None
+    if dc and getattr(dc, "era5_warmup", False):
+        era5_root = Path(cfg.PrjDir) / "0_database" / "era5"
+        era5_warmup = {"grid_points_csv": str(era5_root / "grid_points-era5.csv"),
+                       "grid_daily_std_dir": str(era5_root / "grid_daily_std"),
+                       "warmup_years": int(cfg.CioNYSKIP)}
+        print(f"[ensemble] warm-up = 최근접 ERA5 격자 ({era5_warmup['grid_daily_std_dir']})")
     ens = run_ensemble(base, member_dir,
                        fyear=fyear, months=months, exe_name=cfg.Executable,
                        n_members=n_members, n_workers=n_workers,
-                       outlets=outlets, station=station)
+                       outlets=outlets, station=station, era5_warmup=era5_warmup)
 
     # SWAT+ 앙상블 예측 결과(멤버×월 채널유량) → 3_swatplus/forecast/{period}
     swat_fc = Path(cfg.PrjDir) / "3_swatplus" / "forecast" / forecast

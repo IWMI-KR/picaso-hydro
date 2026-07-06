@@ -69,8 +69,8 @@ def _overwrite_forecast_rows(run_dir: Path, forcing: Dict[int, tuple],
 
 
 def _run_one(args) -> Dict:
-    """(member_csv, base_dir, exe, fyear, months, outlets) → {channel: {month: q}} 또는 None."""
-    member_csv, base_dir, exe_name, fyear, months, outlets = args
+    """(member_csv, base_dir, exe, fyear, months, outlets, era5_warmup) → 채널 월유량 dict|None."""
+    member_csv, base_dir, exe_name, fyear, months, outlets, era5_warmup = args
     member_csv, base_dir = Path(member_csv), Path(base_dir)
     jday0 = pd.Timestamp(fyear, months[0], 1).dayofyear
     last = pd.Timestamp(fyear, months[-1], 1) + pd.offsets.MonthEnd(0)
@@ -79,6 +79,14 @@ def _run_one(args) -> Dict:
     try:
         run = tmp / "TxtInOut"
         shutil.copytree(base_dir, run)
+        # (선택) warm-up 을 최근접 ERA5 격자 일자료로 재구성 — 운영 예보용.
+        #   예보 구간은 아래 acidwg 덮어쓰기가 최종값을 넣으므로, 여기선 warm-up 채움이 목적.
+        if era5_warmup:
+            from swat_py.drought.warmup_era5 import write_era5_warmup
+            write_era5_warmup(run, era5_warmup["grid_points_csv"],
+                              era5_warmup["grid_daily_std_dir"], fyear=fyear,
+                              warmup_years=int(era5_warmup["warmup_years"]),
+                              forecast_end=last)
         _overwrite_forecast_rows(run, _member_forcing(member_csv), fyear, jday0, jday1)
         try:
             r = subprocess.run([str(run / exe_name)], cwd=str(run),
@@ -106,16 +114,19 @@ def _run_one(args) -> Dict:
 def run_ensemble(base_dir: Path, ensemble_dir: Path, *, fyear: int, months: List[int],
                  exe_name: str = "SWAT-Plus.exe", n_members: int = 100,
                  n_workers: int = 6, outlets: Dict[int, str] = None,
-                 station: str = "918430") -> Dict[str, pd.DataFrame]:
+                 station: str = "918430", era5_warmup: Dict = None) -> Dict[str, pd.DataFrame]:
     """멤버 폴더들 → 채널별 [member × month] 월유량 DataFrame dict.
 
     base_dir     : 예측기간 time.sim 설정된 검보정 SWAT+ TxtInOut (관측 weather 포함)
     ensemble_dir : member_XXXX/{stn}.csv 루트 (acidwg 산출)
     outlets      : {gis_id: name} — None 이면 기본 12개(OUTLETS)
+    era5_warmup  : {grid_points_csv, grid_daily_std_dir, warmup_years} — 지정 시 warm-up 을
+                   최근접 ERA5 격자 일자료로 재구성(운영 예보). None 이면 검보정 모델 관측 사용.
     """
     outlets = outlets or OUTLETS
     members = sorted(ensemble_dir.glob("member_*"))[:n_members]
-    tasks = [(str(m / f"{station}.csv"), str(base_dir), exe_name, fyear, months, outlets)
+    tasks = [(str(m / f"{station}.csv"), str(base_dir), exe_name, fyear, months,
+              outlets, era5_warmup)
              for m in members if (m / f"{station}.csv").is_file()]
     records = []
     n_fail = 0

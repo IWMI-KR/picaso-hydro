@@ -92,9 +92,11 @@ from util_py.streamflow import (
     download_streamflow_usgs,
 )
 from util_py.national import download_national_database
+from util_py.era5_update import era5_update_to_present
 
 __all__ = [
     "download_national_database",
+    "era5_update_to_present",
     "VARIABLES",
     "compute_area",
     "download_era5_year",

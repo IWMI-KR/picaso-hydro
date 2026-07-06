@@ -213,6 +213,9 @@ class _DroughtCfg:
     syear:           int = 0           # 0 이면 climatology_years[0] 로 대체(하위호환)
     eyear:           int = 0           # 0 이면 climatology_years[-1]
     ensemble_root:   str = ""          # 미지정 시 1_acidwg/forecast/{year}_{season}
+    # 운영 예보 시 warm-up 을 최근접 ERA5 격자 일자료로 재구성(그 전 관측이 없을 때).
+    #   true → 0_database/era5/grid_daily_std 사용(util-era5-update 로 최신화 필요). 기본 false.
+    era5_warmup:     bool = False
     # ── 4단계 급수단계 경계 (설정 가능) ──────────────────────────────────────
     #  method: fdc_exceedance | nonexceed_percentile | fixed_flow
     #  values: [Normal|Watch, Watch|Warning, Warning|Crisis] — method 별 의미 상이(fdc.stage_thresholds).
@@ -678,6 +681,7 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
         syear=            int(dr.get("syear", 0) or 0),
         eyear=            int(dr.get("eyear", 0) or 0),
         ensemble_root=    str(dr_ens.get("root", "") or ""),
+        era5_warmup=      bool(dr.get("era5_warmup", False)),
         threshold_method= str(dr_thr.get("method", "fdc_exceedance") or "fdc_exceedance"),
         threshold_values= [float(x) for x in (dr_thr.get("values", [50.685, 75.342, 97.260])
                                               or [50.685, 75.342, 97.260])],
