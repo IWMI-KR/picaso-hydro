@@ -149,10 +149,17 @@ def fetch_swat_executable(dest_dirs, *, version: str = "latest",
         d = Path(d)
         d.mkdir(parents=True, exist_ok=True)
         dst = d / canon
-        shutil.copy2(exe_src, dst)
+        # copyfile: 메타데이터(권한) 복사 안 함 — 네트워크 마운트(CIFS/SMB)의 EPERM 회피.
+        shutil.copyfile(exe_src, dst)
         if os_tag != "win":
-            dst.chmod(0o755)
-        (d / _VERSION_MARKER).write_text(tag, encoding="utf-8")   # 버전 마커 기록
+            try:
+                dst.chmod(0o755)                     # 마운트가 chmod 불허 시 무시(best-effort)
+            except OSError:
+                pass
+        try:
+            (d / _VERSION_MARKER).write_text(tag, encoding="utf-8")   # 버전 마커(선택)
+        except OSError:
+            pass
         print(f"  저장: {dst}")
 
     print("\n완료. config/swat_py.yaml 에 다음을 지정하세요:")

@@ -90,7 +90,10 @@ def _run_one(args) -> Dict:
         _overwrite_forecast_rows(run, _member_forcing(member_csv), fyear, jday0, jday1)
         exe_path = run / exe_name
         if exe_path.is_file():
-            exe_path.chmod(0o755)               # 리눅스 실행 권한 보장(copytree 후)
+            try:
+                exe_path.chmod(0o755)           # 리눅스 실행 권한(best-effort, 마운트 EPERM 무시)
+            except OSError:
+                pass
         try:
             r = subprocess.run([str(exe_path)], cwd=str(run),
                                capture_output=True, timeout=900)

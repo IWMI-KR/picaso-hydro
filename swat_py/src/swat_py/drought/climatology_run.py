@@ -190,8 +190,11 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
                                fetch_dirs=[cfg.CalibratedDir, cfg.DefaultDir])
     exe = work / exe_src.name                   # 해석된 실제 바이너리 이름 사용
     if not exe.is_file():
-        shutil.copy2(exe_src, exe)
-        exe.chmod(0o755)                        # 리눅스 실행 권한 보장
+        shutil.copyfile(exe_src, exe)           # copyfile: 마운트 EPERM 회피(메타데이터 복사 안 함)
+        try:
+            exe.chmod(0o755)                    # 실행 권한(best-effort)
+        except OSError:
+            pass
     print("[4/5] SWAT+ 실행 … (장기, 수 분)")
     # ★ stdout 은 파이프(capture_output) 대신 로그파일로 리디렉션 — SWAT 가 수십년치
     #   진행메시지를 파이프에 쓰다 버퍼(~64KB)가 차면 블록되고, run() 은 종료 후에야

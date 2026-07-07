@@ -111,8 +111,11 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
                                fetch_dirs=[cfg.DefaultDir, cfg.CalibratedDir])
     exe = base_dir / exe_src.name               # 해석된 실제 바이너리 이름 사용
     if not exe.is_file():
-        shutil.copy2(exe_src, exe)
-        exe.chmod(0o755)                        # 리눅스 실행 권한 보장
+        shutil.copyfile(exe_src, exe)           # copyfile: 마운트 EPERM 회피
+        try:
+            exe.chmod(0o755)                    # 실행 권한(best-effort)
+        except OSError:
+            pass
     return exe_src.name
 
 
