@@ -13,7 +13,7 @@ ERA5 vs 관측소 산점 검증 CLI
 
 출력
 ----
-    {analysis_dir}/era5_vs_{source}/
+    reports/era5_vs_{source}/
       nearest_pairs.csv
       statistics.csv
       plots/{variable}/{era5_id}__{obs_id}.png
@@ -49,7 +49,7 @@ def _load_or_default(config_path: str | None) -> Config:
     cfg = Config()
     root = _picaso_root()
     cfg.project.root = str(root)
-    cfg.weather_validation.output_base = str(root / "0_database" / "analysis")
+    cfg.weather_validation.output_base = str(root / "reports")
 
     # ERA5 격자점 메타 + std daily (extract / standardize 출력)
     era5_dir = root / "0_database" / "era5"
@@ -96,7 +96,8 @@ def main(argv=None) -> int:
 
     cfg = _load_or_default(args.config)
 
-    out_base = Path(args.output_dir or cfg.weather_validation.output_base)
+    out_base = Path(args.output_dir or cfg.weather_validation.output_base
+                    or (Path(cfg.project.root) / "reports"))
     out_dir = out_base / f"era5_vs_{args.source}"
 
     variables = args.variables or cfg.weather_validation.variables
