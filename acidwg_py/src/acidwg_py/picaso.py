@@ -67,6 +67,34 @@ def _picaso_path(picaso_dir: Path, var: str, month_str: str,
             / f"{prefix}_{month_str}_{file_year}_LT{lt}.csv")
 
 
+def _resolve_picaso_ids(stn_df: pd.DataFrame, picaso_dir: Path) -> list[str]:
+    """대상 관측소를 **PICASO stnid** 로 해석.
+
+    stations CSV 의 ID(예: GSOD 918430)가 PICASO 원본 stnid(예: 91843)와 id 체계가
+    다를 수 있다. stations CSV 에 위경도(Lon/Lat)가 있고 picaso/stn_loc_unep.csv
+    (stn_num, lat, lon)가 있으면 **최근접 위경도**로 PICASO stnid 를 매핑한다.
+    매핑 불가 시 원래 ID 를 그대로 사용한다.
+    """
+    ids = stn_df["ID"].astype(str).tolist()
+    unep = Path(picaso_dir) / "stn_loc_unep.csv"
+    cols = {c.lower(): c for c in stn_df.columns}
+    if not unep.is_file() or "lon" not in cols or "lat" not in cols:
+        return ids
+    try:
+        u = pd.read_csv(unep)
+        u.columns = u.columns.str.strip().str.lower()
+        if not {"stn_num", "lat", "lon"} <= set(u.columns):
+            return ids
+        out = []
+        for _, r in stn_df.iterrows():
+            lon, lat = float(r[cols["lon"]]), float(r[cols["lat"]])
+            dist = (u["lon"] - lon) ** 2 + (u["lat"] - lat) ** 2
+            out.append(str(u.loc[dist.idxmin(), "stn_num"]))
+        return out
+    except Exception:
+        return ids
+
+
 def _read_picaso(fpath: Path, target_ids: list[str]) -> pd.DataFrame:
     """PICASO CSV를 읽어 대상 관측소의 stnid, an, nn, bn 반환합니다."""
     df = pd.read_csv(fpath)
@@ -119,10 +147,10 @@ def build_picaso_forecast_csv(
     first_month = months[0]
     picaso_dir = Path(picaso_dir)
 
-    # 관측소 ID 로드 (WMO stnid → str 형식으로 정규화)
+    # 관측소 ID 로드 → PICASO stnid 로 해석(id 체계 상이 시 위경도 매핑)
     stn_df = pd.read_csv(stations_csv)
     stn_df.columns = stn_df.columns.str.strip()
-    target_ids = stn_df["ID"].astype(str).tolist()
+    target_ids = _resolve_picaso_ids(stn_df, picaso_dir)
 
     rows: list[dict] = []
 
