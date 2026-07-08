@@ -18,6 +18,7 @@ from typing import Dict, Optional
 
 import pandas as pd
 
+from swat_py.dashboard.json_writers import dumps_json   # NaN→null 표준 JSON
 from swat_py.drought.climatology import (
     climatology_daily_path,
     load_daily_flow,
@@ -82,7 +83,7 @@ def reclassify_stages(cfg, forecast: str, *, n_ensemble: int = 0,
         dj["thresholds"] = {"normal_watch": q185, "watch_warning": q275, "warning_crisis": q355}
         dj["stages"] = stage_rows
         (outlet_dir / "dashboard.json").write_text(
-            json.dumps(dj, ensure_ascii=False, indent=1), encoding="utf-8")
+            dumps_json(dj, indent=1), encoding="utf-8")   # NaN→null 표준 JSON
         # 그림 재생성
         make_outlet_figure(outlet_dir)
         make_stage_gauges(outlet_dir)

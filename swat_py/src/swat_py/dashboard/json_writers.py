@@ -5,11 +5,58 @@ JSX 코드 (PicasoHydrology.jsx) 의 loadForecast / loadTimeseries 가 받는 �
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
+
+
+def sanitize_json(obj):
+    """객체를 **표준 JSON 안전값**으로 재귀 변환 (NaN/Inf → None=null).
+
+    Python ``json`` 기본값(``allow_nan=True``)은 결측을 비표준 토큰 ``NaN``·``Infinity``
+    로 출력해 엄격한 파서(Rust ``serde_json`` / JS ``JSON.parse``)가 거부한다. 이 함수로
+    직렬화 전에 정제하면 결측이 ``null`` 로 기록된다.
+
+    - float/np.floating 의 NaN·±Inf → None
+    - np.integer → int · np.floating → float · np.ndarray → list
+    - pd.Timestamp → 'YYYY-MM-DD' · NaT → None · dict/list/tuple 재귀
+    """
+    if isinstance(obj, dict):
+        return {k: sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_json(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return [sanitize_json(v) for v in obj.tolist()]
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, (np.floating, float)):
+        f = float(obj)
+        return None if (math.isnan(f) or math.isinf(f)) else f
+    if isinstance(obj, pd.Timestamp):
+        return obj.strftime("%Y-%m-%d")
+    if obj is pd.NaT:
+        return None
+    return obj
+
+
+def dumps_json(obj, *, indent: int = 2) -> str:
+    """NaN·Inf → null 로 정제한 표준 JSON 문자열.
+
+    ``allow_nan=False`` 로 잔여 NaN 은 조용히 통과하지 않고 예외(fail-fast).
+    """
+    return json.dumps(sanitize_json(obj), ensure_ascii=False, indent=indent,
+                      allow_nan=False)
+
+
+def dump_json(path: Union[str, Path], obj, *, indent: int = 2) -> Path:
+    """:func:`dumps_json` 결과를 파일로 저장(부모 폴더 자동 생성)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(dumps_json(obj, indent=indent), encoding="utf-8")
+    return path
 
 
 _MONTH_ABB = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -40,11 +87,7 @@ def write_forecast_json(
     if narratives:
         data["narratives"] = narratives
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    return output_path
+    return dump_json(output_path, data, indent=2)   # NaN→null 표준 JSON
 
 
 def write_timeseries_json(
@@ -112,11 +155,7 @@ def write_timeseries_json(
         "thresholds": thresholds or {},
     }
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as f:
-        json.dump(out_data, f, ensure_ascii=False, indent=2, default=_json_safe)
-    return output_path
+    return dump_json(output_path, out_data, indent=2)   # NaN→null 표준 JSON
 
 
 def _json_safe(obj):

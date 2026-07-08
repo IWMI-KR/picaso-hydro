@@ -16,7 +16,6 @@ CLI: python -m swat_py.drought.dashboard_data [--forecast 2016_AMJ] [--members 1
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import tempfile
 import time
@@ -26,6 +25,7 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
+from swat_py.dashboard.json_writers import dumps_json   # NaN→null 표준 JSON
 from swat_py.drought.climatology import (
     climatology_daily_path, load_daily_flow, outlet_climatology_and_thresholds,
 )
@@ -303,14 +303,14 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
                     "most_likely": season_row["most_likely"], "Normal": season_row["Normal"],
                     "Watch": season_row["Watch"], "Warning": season_row["Warning"],
                     "Crisis": season_row["Crisis"]})
-            (out_dir / "dashboard.json").write_text(json.dumps({
+            (out_dir / "dashboard.json").write_text(dumps_json({
                 "outlet": outlet, "type": "reservoir", "unit": "capacity_pct",
                 "forecast": forecast, "months": months,
                 "thresholds": {"normal_watch": q185, "watch_warning": q275,
                                "warning_crisis": q355},
-                "series": series.where(pd.notna(series), None).to_dict(orient="list"),
+                "series": series.to_dict(orient="list"),   # NaN→null 은 dumps_json 이 처리
                 "stages": stage_rows, "season_stage": season_row,
-            }, ensure_ascii=False, indent=1), encoding="utf-8")
+            }, indent=1), encoding="utf-8")
             for sr in stage_rows:
                 summary_rows.append({"outlet": outlet, "month": sr["month"],
                                      "most_likely": sr["most_likely"],
@@ -382,13 +382,13 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
                 "Crisis": season_row["Crisis"]})
 
         # dashboard.json
-        (out_dir / "dashboard.json").write_text(json.dumps({
+        (out_dir / "dashboard.json").write_text(dumps_json({
             "outlet": outlet, "forecast": forecast, "months": months,
             "thresholds": {"normal_watch": q185, "watch_warning": q275,
                            "warning_crisis": q355},
-            "series": series.where(pd.notna(series), None).to_dict(orient="list"),
+            "series": series.to_dict(orient="list"),   # NaN→null 은 dumps_json 이 처리
             "stages": stage_rows, "season_stage": season_row,
-        }, ensure_ascii=False, indent=1), encoding="utf-8")
+        }, indent=1), encoding="utf-8")
 
         for sr in stage_rows:
             summary_rows.append({"outlet": outlet, "month": sr["month"],
