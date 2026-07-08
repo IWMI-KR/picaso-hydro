@@ -196,12 +196,42 @@ class _TankCfg:
 
 
 @dataclass
+class _DroughtSource:
+    """yaml.drought.sources.<name> — 수원(水源) 유형별 가뭄단계 설정.
+
+    수원 유형(type)에 따라 서로 다른 임계 방법을 쓴다:
+      - stream    : 하천수 — fdc_exceedance 등 유량 분포 기반.
+      - reservoir : 저수지 — capacity_fraction(만수위 저수량 대비 %) 기반.
+    outlets : {gis_id(int): name(str)} — 이 수원에 속한 채널/저수지.
+    reservoir : type=reservoir 일 때 §reservoirs 레지스트리 참조(만수위=capacity).
+    """
+    name:             str
+    type:             str = "stream"          # stream | reservoir
+    reservoir:        str = ""                 # reservoirs 레지스트리 참조(type=reservoir)
+    outlets:          Dict[int, str] = field(default_factory=dict)
+    threshold_method: str = "fdc_exceedance"
+    threshold_values: List[float] = field(default_factory=lambda: [70.0, 90.0, 95.0])
+    # ── 예측 초기조건 (type=reservoir 전용) ─────────────────────────────────────
+    #  예측 시점 초기 저수위 → 물수지로 3개월 %저수량(수위) 예측의 출발점.
+    #  단위: 수위내용적 곡선/registry 와 동일 datum(MSL, ft; 여수로 45·댐마루 51·바닥 23.34).
+    init_water_level_ft: float = float("nan")  # 미지정 시 만수(cap)로 시작(기존 동작)
+    measured:            bool = False           # true=실측 초기수위 / false=가정 시나리오
+
+    def has_initial_condition(self) -> bool:
+        v = self.init_water_level_ft
+        return self.type == "reservoir" and v == v  # NaN 이면 False
+
+
+@dataclass
 class _DroughtCfg:
     """yaml.drought 블록 — 가뭄위험 대시보드(①~⑤) 설정.
 
     outlets : {gis_id(int): name(str)} — 12개 소유역 outlet 채널. 미계측은 outlet_chNN.
+    sources : 수원 유형별(하천/저수지) 설정 목록. 신규 스키마(drought.sources) 사용 시 채워지며,
+              구 flat 스키마(Cook)만 있으면 비어 있고 아래 flat 필드가 그대로 쓰인다(하위호환).
     """
     outlets:         Dict[int, str] = field(default_factory=dict)
+    sources:         List["_DroughtSource"] = field(default_factory=list)
     forecast:        str = "2016_AMJ"
     n_members:       int = 100
     forecast_station: str = ""    # 미지정 시 obs_weather_std/stations-acidwg.csv 로 결정
@@ -221,6 +251,47 @@ class _DroughtCfg:
     threshold_method: str = "fdc_exceedance"
     threshold_values: List[float] = field(
         default_factory=lambda: [70.0, 90.0, 95.0])   # Q70/Q90/Q95 (USDM D0/D2/D3, WMO Q95)
+
+    @staticmethod
+    def _source_match(s: "_DroughtSource", outlet) -> bool:
+        """outlet 을 gis_id(int) 또는 이름(str) 어느 쪽으로 줘도 매칭."""
+        try:
+            if int(outlet) in s.outlets:
+                return True
+        except (ValueError, TypeError):
+            pass
+        return str(outlet) in {str(v) for v in s.outlets.values()}
+
+    def threshold_for(self, outlet) -> "tuple[str, List[float]]":
+        """outlet(gis_id 또는 이름)이 속한 수원의 (method, values) 반환.
+
+        sources 정의 시 해당 수원 임계를, 아니면 flat 값을 반환(하위호환).
+        """
+        for s in self.sources:
+            if self._source_match(s, outlet):
+                return s.threshold_method, s.threshold_values
+        return self.threshold_method, self.threshold_values
+
+    def source_for(self, outlet) -> "Optional[_DroughtSource]":
+        """outlet(gis_id 또는 이름)이 속한 _DroughtSource 반환(없으면 None)."""
+        for s in self.sources:
+            if self._source_match(s, outlet):
+                return s
+        return None
+
+    def forecast_suffix(self) -> str:
+        """예측 결과 폴더/파일명 접미사 — 저수지 초기조건 시나리오 구분용.
+
+        저수지 초기조건이 있으면 ``__ic{수위}ft-{scn|meas}`` (예 ``__ic44.0ft-scn``),
+        없으면 ``''`` (하천만 → Cook 하위호환, 접미사 없음).
+        여러 저수지면 ``_`` 로 연결.
+        """
+        parts = []
+        for s in self.sources:
+            if s.has_initial_condition():
+                tag = "meas" if s.measured else "scn"
+                parts.append(f"ic{s.init_water_level_ft:.1f}ft-{tag}")
+        return ("__" + "_".join(parts)) if parts else ""
 
 
 @dataclass
@@ -670,8 +741,44 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
     dr = raw.get("drought", {}) or {}
     dr_ens = dr.get("ensemble", {}) or {}
     dr_thr = dr.get("thresholds", {}) or {}
+
+    # 신규 스키마: drought.sources (수원 유형별). 없으면 구 flat 스키마(하위호환).
+    dr_sources_raw = dr.get("sources", {}) or {}
+    dr_sources: List[_DroughtSource] = []
+    merged_outlets: Dict[int, str] = {}
+    for sname, sv in dr_sources_raw.items():
+        sv = sv or {}
+        sthr = sv.get("thresholds", {}) or {}
+        souts = {int(k): str(v) for k, v in (sv.get("outlets", {}) or {}).items()}
+        merged_outlets.update(souts)
+        ic = sv.get("initial_condition", {}) or {}
+        _iwl = ic.get("init_water_level_ft", None)
+        dr_sources.append(_DroughtSource(
+            name=             str(sname),
+            type=             str(sv.get("type", "stream") or "stream"),
+            reservoir=        str(sv.get("reservoir", "") or ""),
+            outlets=          souts,
+            threshold_method= str(sthr.get("method", "fdc_exceedance") or "fdc_exceedance"),
+            threshold_values= [float(x) for x in (sthr.get("values", [70.0, 90.0, 95.0])
+                                                  or [70.0, 90.0, 95.0])],
+            init_water_level_ft= (float(_iwl) if _iwl is not None else float("nan")),
+            measured=         _to_bool(ic.get("measured", False)),
+        ))
+
+    if dr_sources:
+        # sources 사용 시: flat outlets = 병합, flat method/values = 첫 수원(레거시 소비자 대비)
+        _outlets_flat = merged_outlets
+        _thr_method_flat = dr_sources[0].threshold_method
+        _thr_values_flat = dr_sources[0].threshold_values
+    else:
+        _outlets_flat = {int(k): str(v) for k, v in (dr.get("outlets", {}) or {}).items()}
+        _thr_method_flat = str(dr_thr.get("method", "fdc_exceedance") or "fdc_exceedance")
+        _thr_values_flat = [float(x) for x in (dr_thr.get("values", [50.685, 75.342, 97.260])
+                                               or [50.685, 75.342, 97.260])]
+
     flat["Drought"] = _DroughtCfg(
-        outlets=          {int(k): str(v) for k, v in (dr.get("outlets", {}) or {}).items()},
+        outlets=          _outlets_flat,
+        sources=          dr_sources,
         forecast=         str(dr.get("forecast", "2016_AMJ") or "2016_AMJ"),
         n_members=        int(dr_ens.get("n_members", 100) or 100),
         forecast_station= str(dr.get("forecast_station", "") or ""),
@@ -681,9 +788,8 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
         eyear=            int(dr.get("eyear", 0) or 0),
         ensemble_root=    str(dr_ens.get("root", "") or ""),
         era5_warmup=      bool(dr.get("era5_warmup", False)),
-        threshold_method= str(dr_thr.get("method", "fdc_exceedance") or "fdc_exceedance"),
-        threshold_values= [float(x) for x in (dr_thr.get("values", [50.685, 75.342, 97.260])
-                                              or [50.685, 75.342, 97.260])],
+        threshold_method= _thr_method_flat,
+        threshold_values= _thr_values_flat,
     )
 
     # 7. 기후변화
@@ -766,6 +872,26 @@ def _as_list(val: Any) -> list:
     if isinstance(val, list):
         return val
     return [val]
+
+
+def _to_bool(val: Any, default: bool = False) -> bool:
+    """Yes/No·true/false·1/0·문자열 모두 견고히 bool 로 해석.
+
+    YAML 이 이미 bool 로 파싱한 경우(True/False)와 사용자가 따옴표로 감싼
+    문자열("Yes"/"No")·대소문자 혼용을 모두 처리한다.
+    """
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return bool(val)
+    s = str(val).strip().lower()
+    if s in ("yes", "y", "true", "t", "1", "on"):
+        return True
+    if s in ("no", "n", "false", "f", "0", "off"):
+        return False
+    return default
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -64,16 +64,32 @@ def fdc_thresholds(daily_q) -> Dict[str, float]:
 #   fdc_exceedance      : 초과확률(%). 값↑=저유량. 기본 [70, 90, 95] (USDM D0/D2/D3, WMO Q95).
 #   nonexceed_percentile: 비초과 백분위(%). 값↑=고유량 → 내림차순 권장(예 [30,10,5]=Q70/Q90/Q95).
 #   fixed_flow          : 절대 경계유량(m³/s) 직접 지정.
+#   capacity_fraction       : ★ 저수지(댐) 전용. 만수위 저수량(full capacity) 대비 % 경계.
+#                         값↓=저수위(고갈). 예 [100, 85, 65] = 만수 이상 Normal, 85%까지 Watch,
+#                         85~65% Warning, 65% 이하 Crisis. capacity(만수 저수량, m³) 지정 시
+#                         절대 저수량 경계로, 미지정 시 % 경계(저수량-% 계열 분류용)로 반환.
 # 권장 기본(문헌): Q70(D0 Normal|Watch)·Q90(D2 Watch|Warning)·Q95(D3 Warning|Crisis).
 #   근거: 4_drought_risk/가뭄단계_임계값_산정_방법_보고서.md (USDM·WMO·Van Loon).
 DEFAULT_STAGE_EXCEEDANCE = [70.0, 90.0, 95.0]
 
+# capacity_fraction 별칭 (저수지 만수위 저수량 대비 % 방법)
+_CAPACITY_FRACTION_ALIASES = ("capacity_fraction", "pool_fraction", "fill_fraction")
+
 
 def stage_thresholds(daily_q, method: str = "fdc_exceedance",
-                     values=None) -> Dict[str, float]:
-    """설정에 따라 4단계 경계유량 {normal_watch, watch_warning, warning_crisis} 산정.
+                     values=None, capacity: "float | None" = None) -> Dict[str, float]:
+    """설정에 따라 4단계 경계값 {normal_watch, watch_warning, warning_crisis} 산정.
 
-    반환 유량은 항상 normal_watch ≥ watch_warning ≥ warning_crisis (고→저) 순.
+    하천(유량) method 는 유량(m³/s), 저수지(capacity_fraction) method 는 저수량(m³) 또는
+    저수량-%(capacity 미지정) 단위의 경계를 반환. 항상 normal_watch ≥ watch_warning ≥
+    warning_crisis (고→저=습윤→고갈) 순.
+
+    Parameters
+    ----------
+    daily_q  : 유량(하천) 또는 저수량(저수지) 일 계열.
+    method   : fdc_exceedance | nonexceed_percentile | fixed_flow | capacity_fraction.
+    values   : [Normal|Watch, Watch|Warning, Warning|Crisis] 경계(method별 의미 상이).
+    capacity : capacity_fraction 전용 — 만수위 저수량(m³). 지정 시 % → 절대 저수량 환산.
     """
     v = list(values) if values else DEFAULT_STAGE_EXCEEDANCE
     if len(v) != 3:
@@ -87,7 +103,14 @@ def stage_thresholds(daily_q, method: str = "fdc_exceedance",
         nw, ww, wc = (float(np.percentile(q, x)) if q.size else float("nan") for x in v)
     elif m in ("fixed_flow", "fixed"):
         nw, ww, wc = (float(x) for x in v)
+    elif m in _CAPACITY_FRACTION_ALIASES:
+        # 만수위 저수량 대비 % 경계. capacity 지정 시 절대 저수량, 아니면 % 그대로.
+        cap = float(capacity) if capacity else None
+        if cap is not None:
+            nw, ww, wc = ((float(x) / 100.0) * cap for x in v)
+        else:
+            nw, ww, wc = (float(x) for x in v)
     else:
         raise ValueError(f"미지원 threshold method '{method}' "
-                         "(fdc_exceedance | nonexceed_percentile | fixed_flow)")
+                         "(fdc_exceedance | nonexceed_percentile | fixed_flow | capacity_fraction)")
     return {"normal_watch": nw, "watch_warning": ww, "warning_crisis": wc}

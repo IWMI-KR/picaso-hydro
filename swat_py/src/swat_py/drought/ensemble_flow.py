@@ -42,6 +42,22 @@ def _member_forcing(member_csv: Path) -> Dict[int, tuple]:
     return out
 
 
+def _member_monthly_weather(member_csv: Path, fyear: int,
+                            months: List[int]) -> Dict[int, tuple]:
+    """멤버 918430.csv → {month: (precip_mm 합, tmax_c 평균, tmin_c 평균)} (예측월).
+
+    이 멤버를 구동한 앙상블 forcing(918430 예측)을 예측월별로 집계 — 지역별
+    결과 CSV 의 강수·기온 칼럼용. 섬 단일예측이라 전 수원에 동일 적용."""
+    df = pd.read_csv(member_csv)
+    df = df[(df["year"].astype(int) == fyear) & (df["mon"].astype(int).isin(months))]
+    out: Dict[int, tuple] = {}
+    for m, sub in df.groupby(df["mon"].astype(int)):
+        out[int(m)] = (float(pd.to_numeric(sub["prcp"], errors="coerce").sum()),
+                       float(pd.to_numeric(sub["tmax"], errors="coerce").mean()),
+                       float(pd.to_numeric(sub["tmin"], errors="coerce").mean()))
+    return out
+
+
 def _overwrite_forecast_rows(run_dir: Path, forcing: Dict[int, tuple],
                              fyear: int, jday0: int, jday1: int) -> None:
     """예측월(fyear, jday0..jday1) 의 모든 .pcp/.tmp 를 멤버 forcing 으로 덮어씀."""
@@ -69,8 +85,14 @@ def _overwrite_forecast_rows(run_dir: Path, forcing: Dict[int, tuple],
 
 
 def _run_one(args) -> Dict:
-    """(member_csv, base_dir, exe, fyear, months, outlets, era5_warmup) → 채널 월유량 dict|None."""
-    member_csv, base_dir, exe_name, fyear, months, outlets, era5_warmup = args
+    """(member_csv, base_dir, exe, fyear, months, outlets, era5_warmup, reservoirs)
+    → 채널 월유량 + 저수지 월 만수대비% dict|None.
+
+    reservoirs: {gis_id: ReservoirForecastParams} — 해당 gid 는 채널 유량 대신
+    reservoir_day.txt 물수지 만수대비% 를 산출(저수지 수원). 없으면 {}."""
+    (member_csv, base_dir, exe_name, fyear, months, outlets, era5_warmup,
+     reservoirs) = args
+    reservoirs = reservoirs or {}
     member_csv, base_dir = Path(member_csv), Path(base_dir)
     jday0 = pd.Timestamp(fyear, months[0], 1).dayofyear
     last = pd.Timestamp(fyear, months[-1], 1) + pd.offsets.MonthEnd(0)
@@ -96,15 +118,27 @@ def _run_one(args) -> Dict:
                 pass
         try:
             r = subprocess.run([str(exe_path)], cwd=str(run),
-                               capture_output=True, timeout=900)
+                               capture_output=True, timeout=10)
         except subprocess.TimeoutExpired:
             return {"_member": member_csv.parent.name, "_error": "timeout"}
         if r.returncode != 0:
             return {"_member": member_csv.parent.name, "_error": r.returncode}
         res: Dict = {"_member": member_csv.parent.name}
+        # 이 멤버를 구동한 예측월 강수·기온(지역별 CSV 칼럼용) — 섬 단일예측이라 공통.
+        res["_weather"] = _member_monthly_weather(member_csv, fyear, months)
         for gid, name in outlets.items():
-            # 월단위 출력(channel_sd_mon.txt) — parse_channel_sd_day 는 yr/mon/day
-            # 컬럼이 있어 월단위 파일에도 그대로 작동(각 행=월말 날짜·월평균 flo_out).
+            if gid in reservoirs:
+                # 저수지 수원 — reservoir_day.txt 물수지 → 월 만수대비% + 월말 저수위(ft)
+                from swat_py.drought.reservoir_forecast import member_reservoir_series
+                ser = member_reservoir_series(
+                    run, reservoirs[gid], fyear=fyear, months=months,
+                    sdate=f"{fyear}-01-01")
+                if ser:
+                    res[name] = {m: v["storage_pct"] for m, v in ser.items()}
+                    res.setdefault("_wlevel", {})[name] = {
+                        m: v["water_level_ft"] for m, v in ser.items()}
+                continue
+            # 채널 수원 — 월단위 출력(channel_sd_mon.txt), 각 행=월말·월평균 flo_out.
             df = parse_channel_sd_day(run / "channel_sd_mon.txt", outlet=gid,
                                       sdate=f"{fyear}-01-01")
             if df is None:
@@ -120,8 +154,14 @@ def _run_one(args) -> Dict:
 def run_ensemble(base_dir: Path, ensemble_dir: Path, *, fyear: int, months: List[int],
                  exe_name: str = "SWAT-Plus.exe", n_members: int = 100,
                  n_workers: int = 6, outlets: Dict[int, str] = None,
-                 station: str = "918430", era5_warmup: Dict = None) -> Dict[str, pd.DataFrame]:
-    """멤버 폴더들 → 채널별 [member × month] 월유량 DataFrame dict.
+                 station: str = "918430", era5_warmup: Dict = None,
+                 reservoirs: Dict = None) -> tuple:
+    """멤버 폴더들 → (values, aux).
+
+    반환:
+      values : {name: DataFrame[member × month]} — 하천=월유량(m³/s), 저수지=만수대비%.
+      aux    : {"weather": {var: DataFrame[member × month]},   # var: precip_mm/tmax_c/tmin_c
+                "wlevel":  {name: DataFrame[member × month]}}   # 저수지 월말 저수위(ft)
 
     base_dir     : 예측기간 time.sim 설정된 검보정 SWAT+ TxtInOut (관측 weather 포함)
     ensemble_dir : member_XXXX/{stn}.csv 루트 (acidwg 산출)
@@ -130,9 +170,10 @@ def run_ensemble(base_dir: Path, ensemble_dir: Path, *, fyear: int, months: List
                    최근접 ERA5 격자 일자료로 재구성(운영 예보). None 이면 검보정 모델 관측 사용.
     """
     outlets = outlets or OUTLETS
+    reservoirs = reservoirs or {}
     members = sorted(ensemble_dir.glob("member_*"))[:n_members]
     tasks = [(str(m / f"{station}.csv"), str(base_dir), exe_name, fyear, months,
-              outlets, era5_warmup)
+              outlets, era5_warmup, reservoirs)
              for m in members if (m / f"{station}.csv").is_file()]
     records = []
     n_fail = 0
@@ -151,11 +192,24 @@ def run_ensemble(base_dir: Path, ensemble_dir: Path, *, fyear: int, months: List
                 n_fail += 1
             if done % 10 == 0:
                 print(f"    앙상블 {done}/{len(tasks)} (실패 {n_fail})", flush=True)
-    # 채널별 [member × month]
+    # 수원별 값 [member × month] (하천 유량 / 저수지 만수대비%)
     out: Dict[str, pd.DataFrame] = {}
     for name in outlets.values():
         rows = {r["_member"]: r[name] for r in records if name in r}
         if rows:
             out[name] = pd.DataFrame(rows).T.reindex(columns=months)
+    # aux — 멤버별 예측월 기상(강수/기온) + 저수지 월말 저수위
+    weather: Dict[str, pd.DataFrame] = {}
+    for i, var in enumerate(("precip_mm", "tmax_c", "tmin_c")):
+        rows = {r["_member"]: {m: vals[i] for m, vals in r["_weather"].items()}
+                for r in records if r.get("_weather")}
+        if rows:
+            weather[var] = pd.DataFrame(rows).T.reindex(columns=months)
+    wlevel: Dict[str, pd.DataFrame] = {}
+    for name in outlets.values():
+        rows = {r["_member"]: r["_wlevel"][name] for r in records
+                if r.get("_wlevel") and name in r["_wlevel"]}
+        if rows:
+            wlevel[name] = pd.DataFrame(rows).T.reindex(columns=months)
     print(f"  앙상블 유효 멤버 {len(records)}/{len(tasks)}")
-    return out
+    return out, {"weather": weather, "wlevel": wlevel}

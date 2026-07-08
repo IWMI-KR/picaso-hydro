@@ -221,3 +221,20 @@ def test_real_ngerimel_curve():
     assert float(c.stage_to_storage(45.0)) == pytest.approx(83.7 * _M3_PER_ACFT, rel=1e-3)
     # 단조·clamp
     assert float(c.storage_to_stage(1e9)) == pytest.approx(51.0)
+
+
+# ── 초기수위 → 저류량 / 만수 대비 % ───────────────────────────────────────────
+
+def test_water_level_to_storage():
+    from swat_py.io.reservoir import water_level_to_storage
+    c = _simple_curve()   # 0 m³@0ft, 1000 m³@10ft
+    assert water_level_to_storage(c, 5.0) == pytest.approx(500.0, rel=1e-6)
+
+
+def test_storage_to_capacity_fraction():
+    from swat_py.io.reservoir import storage_to_capacity_fraction
+    import numpy as np
+    c = _simple_curve()   # full_level 10ft → 1000 m³
+    assert storage_to_capacity_fraction(c, 850.0, 10.0) == pytest.approx(85.0)
+    out = storage_to_capacity_fraction(c, np.array([1000.0, 650.0]), 10.0)
+    np.testing.assert_allclose(out, [100.0, 65.0])

@@ -292,6 +292,39 @@ def simulate_managed_storage(
     })
 
 
+def water_level_to_storage(
+    curve: StageStorageCurve,
+    water_level_ft: float,
+    *,
+    interp: str = "pchip",
+) -> float:
+    """초기 저수위(ft, MSL=곡선 datum) → 초기 저류량(m³).
+
+    예측 물수지의 출발 저류량(simulate_managed_storage 의 init_m3)으로 쓴다.
+    입력 수위는 수위-내용적 곡선/registry 와 동일 datum(여수로 45·댐마루 51·바닥 23.34 ft).
+    """
+    return float(curve.stage_to_storage(float(water_level_ft), interp=interp))
+
+
+def storage_to_capacity_fraction(
+    curve: StageStorageCurve,
+    storage_m3,
+    full_level_ft: float,
+    *,
+    interp: str = "pchip",
+):
+    """저류량(m³) → 만수위(full_level_ft) 대비 저수량 백분율(%).
+
+    capacity_fraction 가뭄단계 분류(값↓=고갈)용. full_level_ft = 여수로(만수) 수위.
+    """
+    full = float(curve.stage_to_storage(float(full_level_ft), interp=interp))
+    if full <= 0:
+        return float("nan")
+    arr = np.asarray(storage_m3, dtype=float)
+    pct = arr / full * 100.0
+    return float(pct) if np.isscalar(storage_m3) else pct
+
+
 # ── hydrology.res 저수지 용적 갱신 (실측 수위-내용적 곡선 → SWAT+ 매개변수) ─────────
 #
 #  QSWAT+ 가 DEM 에서 산출한 hydrology.res 의 저수지 용적(area_ps/vol_ps/area_es/

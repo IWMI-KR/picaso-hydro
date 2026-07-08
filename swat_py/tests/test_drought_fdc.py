@@ -107,3 +107,26 @@ def test_stage_thresholds_invalid():
         stage_thresholds([1, 2, 3], "bogus", [70, 90, 95])
     with pytest.raises(ValueError):
         stage_thresholds([1, 2, 3], "fdc_exceedance", [70, 90])   # 3개 아님
+
+
+# ── 저수지 capacity_fraction (만수위 저수량 대비 %) ───────────────────────────────
+
+def test_capacity_fraction_percent_no_capacity():
+    # capacity 미지정 → % 경계 그대로 (저수량-% 계열 분류용)
+    st = stage_thresholds([], "capacity_fraction", [100, 85, 65])
+    assert (st["normal_watch"], st["watch_warning"], st["warning_crisis"]) == (100.0, 85.0, 65.0)
+    assert st["normal_watch"] > st["watch_warning"] > st["warning_crisis"]
+
+
+def test_capacity_fraction_absolute_with_capacity():
+    cap = 103242.0   # 만수위 저수량(m³)
+    st = stage_thresholds([], "capacity_fraction", [100, 85, 65], capacity=cap)
+    assert st["normal_watch"] == pytest.approx(cap)
+    assert st["watch_warning"] == pytest.approx(0.85 * cap)
+    assert st["warning_crisis"] == pytest.approx(0.65 * cap)
+
+
+def test_capacity_fraction_aliases():
+    for name in ("capacity_fraction", "capacity_fraction", "fill_fraction"):
+        st = stage_thresholds([], name, [100, 85, 65])
+        assert st["warning_crisis"] == 65.0
