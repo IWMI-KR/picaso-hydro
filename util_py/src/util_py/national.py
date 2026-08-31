@@ -13,39 +13,19 @@
 그 다음 (Stage 2, 사용자 shape 있을 때만) gis-clip-to-user --all
 
 프로그램:  from util_py import download_national_database
-           download_national_database(start_year=2010)
+           download_national_database()   # 연도는 util_py.yaml 에서
 CLI:       util-download-national [--start-year 2010] [--config ...] [옵션]
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 
-def _picaso_root() -> Path:
-    if env := os.environ.get("PICASO_ROOT"):
-        return Path(env)
-    cwd = Path.cwd().resolve()
-    for parent in [cwd, *cwd.parents]:
-        if (parent / "0_database").is_dir():
-            return parent
-    return cwd
-
-
 def _user_base_and_pattern(config: Optional[str]) -> Tuple[str, str]:
-    """gis/user 루트와 shape 파일명 패턴 — config 있으면 우선, 없으면 PICASO_ROOT 기본."""
-    from util_py.config import find_config, load_config
-    cfg = None
-    if config:
-        cfg = load_config(config)
-    else:
-        found = find_config()
-        if found:
-            cfg = load_config(found)
-    if cfg and getattr(cfg, "gis_user", None) and cfg.gis_user.base_dir:
-        return cfg.gis_user.base_dir, cfg.gis_user.filename_pattern
-    return str(_picaso_root() / "0_database" / "gis" / "user"), "boundary-{area}.shp"
+    """gis/user 루트와 shape 파일명 패턴 — 값은 전부 util_py.yaml 에서 온다."""
+    from util_py.config import load_effective_config
+    cfg = load_effective_config(config)
+    return cfg.gis_user.base_dir, cfg.gis_user.filename_pattern
 
 
 def _banner(msg: str) -> None:
@@ -57,7 +37,7 @@ def _banner(msg: str) -> None:
 def download_national_database(
     config: Optional[str] = None,
     *,
-    start_year: int = 2010,
+    start_year: Optional[int] = None,
     validate: bool = True,
     streamflow: bool = True,
     clip: bool = True,
@@ -69,7 +49,7 @@ def download_national_database(
     Parameters
     ----------
     config           : util_py.yaml 경로 (생략 시 자동 탐색 / 기본값 사용)
-    start_year       : ERA5 다운로드 시작 연도 (기본 2010)
+    start_year       : ERA5 다운로드 시작 연도 (생략 시 util_py.yaml era5.start_year)
     validate         : weather-validate(ERA5 vs 관측 검증) 실행 여부
     streamflow       : streamflow-download(유량 자료) 실행 여부
     clip             : 사용자 shape 존재 시 Stage 2 UTM 클립 실행 여부
@@ -94,10 +74,12 @@ def download_national_database(
     from util_py.gis_user import discover_user_areas
 
     cbase = ["--config", config] if config else []
-    sy = ["--start-year", str(start_year)]
+    # 미지정이면 era5-download 가 util_py.yaml 의 era5.start_year 를 쓴다
+    sy = ["--start-year", str(start_year)] if start_year is not None else []
     steps = [
         ("gis-download",        gis_download.main,        cbase),
-        ("era5-download",       era5_download.main,       cbase + sy),
+        # era5-extract 를 바로 다음 단계에서 실행하므로 자동 추출은 끈다
+        ("era5-download",       era5_download.main,       cbase + sy + ["--no-extract"]),
         ("era5-extract",        era5_extract.main,        cbase),
         ("gsod-download",       gsod_download.main,       cbase),
         ("weather-standardize", weather_standardize.main, cbase),

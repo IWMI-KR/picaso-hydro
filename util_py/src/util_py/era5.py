@@ -3,10 +3,16 @@ ERA5 단일 레벨 시간별 자료 다운로드 및 검증 모듈
 
 다운로드 설명
 ------------
-- CDS(Copernicus Climate Data Store) API를 통해 ERA5 reanalysis 자료를 연 단위로 다운로드
+- CDS(Copernicus Climate Data Store) API를 통해 ERA5 reanalysis 자료를 다운로드
 - 공간 범위: country_boundary.csv의 영역 + 0.25° 버퍼, ERA5 격자에 스냅
-- 파일명 형식: ERA5_{var}_hourly_{year}.nc
+- 파일 단위 (중요)
+    * 지난 연도  : 연 단위 1파일  — ERA5_{var}_hourly_{year}.nc      (예: ..._2025.nc)
+    * 현재 연도  : 월 단위 N파일  — ERA5_{var}_hourly_{year}{mm}.nc  (예: ..._202604.nc)
+  현재 연도를 연 단위로 저장하면 "파일이 이미 있다"는 이유로 매번 skip 되어
+  진행 중인 연도가 영원히 갱신되지 않는다. 월 단위로 쪼개면 없는 달만 받아 채운다.
 - 현재 연도는 전월(이번 달 - 1)까지만 포함
+- 지난 연도가 월 단위 파일로 채워져 있으면(= 현재 연도였을 때 받은 것) 그대로 인정하고
+  연 단위로 다시 받지 않는다.
 
 CDS API 인증 설정 (최초 1회)
 ------------------------------
@@ -70,6 +76,9 @@ _AREA_BUFFER  = 0.25    # 경계 버퍼 (도)
 # 검증 시 기대 최소 파일 크기 (bytes) — 연간 시간별 데이터 기준
 _MIN_FILE_BYTES = 1 * 1024 * 1024   # 1 MB
 
+# 월 단위 파일은 연간의 1/12 이므로 하한도 비례해서 낮춘다 (최소 50 KB)
+_MIN_FILE_BYTES_FLOOR = 50 * 1024   # 50 KB
+
 
 # ── 내부 유틸 ─────────────────────────────────────────────────────────────────
 
@@ -97,6 +106,135 @@ def _days_fmt() -> List[str]:
 
 def _hours_fmt() -> List[str]:
     return [f"{h:02d}:00" for h in range(24)]
+
+
+def _min_bytes(months: List[int]) -> int:
+    """월 수에 비례한 최소 파일 크기 하한."""
+    return max(_MIN_FILE_BYTES_FLOOR, _MIN_FILE_BYTES * len(months) // 12)
+
+
+# ── 파일명 규칙 ───────────────────────────────────────────────────────────────
+
+def nc_filename(var_key: str, year: int, month: Optional[int] = None) -> str:
+    """ERA5 NC 파일명. month 가 있으면 월 단위(YYYYMM), 없으면 연 단위(YYYY)."""
+    stamp = f"{year}{month:02d}" if month else f"{year}"
+    return f"ERA5_{var_key}_hourly_{stamp}.nc"
+
+
+def parse_nc_stamp(name: str) -> Optional[Tuple[int, Optional[int]]]:
+    """ERA5 NC 파일명에서 (year, month|None) 을 파싱합니다. 형식이 아니면 None.
+
+    >>> parse_nc_stamp("ERA5_prcp_hourly_2025.nc")
+    (2025, None)
+    >>> parse_nc_stamp("ERA5_prcp_hourly_202604.nc")
+    (2026, 4)
+    """
+    stem = Path(name).stem
+    token = stem.split("_")[-1]
+    if not token.isdigit():
+        return None
+    if len(token) == 4:
+        return int(token), None
+    if len(token) == 6:
+        month = int(token[4:])
+        if 1 <= month <= 12:
+            return int(token[:4]), month
+    return None
+
+
+def _year_months_present(output_dir: str, year: int,
+                         var_key: str) -> List[int]:
+    """해당 연/변수에 대해 이미 존재하는 월 단위 파일의 월 목록."""
+    out = []
+    for m in range(1, 13):
+        if (Path(output_dir) / nc_filename(var_key, year, m)).exists():
+            out.append(m)
+    return out
+
+
+# ── 다운로드 계획 ─────────────────────────────────────────────────────────────
+
+def plan_era5_downloads(
+    output_dir: str,
+    start_year: int,
+    end_year: Optional[int] = None,
+    var_keys: Optional[List[str]] = None,
+    today: Optional[date] = None,
+) -> List[Dict]:
+    """다운로드 대상(변수 × 연 또는 변수 × 연월) 목록을 계산합니다.
+
+    실제 네트워크 접근 없이 "무엇을 받고 무엇을 건너뛸지"만 결정하므로
+    `--dry-run` 및 테스트에서 그대로 쓸 수 있다.
+
+    규칙
+    ----
+    - 현재 연도 : **월 단위**. 1월~전월 중 파일이 없는 달만 대상.
+    - 지난 연도 : 연 단위 파일이 있으면 skip. 없고 월 단위 파일이 일부라도 있으면
+                  (과거에 현재 연도로서 월 단위로 받은 경우) 빠진 달만 월 단위로 채움.
+                  둘 다 없으면 연 단위 1파일로 받음.
+
+    Returns
+    -------
+    list of dict: {var, year, month(None=연단위), months(요청 월 목록),
+                   path, exists(bool), reason}
+    """
+    today = today or date.today()
+    if end_year is None:
+        end_year = today.year
+    if var_keys is None:
+        var_keys = list(VARIABLES.keys())
+
+    plan: List[Dict] = []
+    for year in range(start_year, end_year + 1):
+        if year > today.year:
+            continue
+
+        if year == today.year:
+            last_month = today.month - 1     # 이번 달은 아직 미완성 → 제외
+            if last_month < 1:
+                continue
+            target_months = list(range(1, last_month + 1))
+            for var_key in var_keys:
+                for m in target_months:
+                    path = Path(output_dir) / nc_filename(var_key, year, m)
+                    plan.append({
+                        "var": var_key, "year": year, "month": m,
+                        "months": [m], "path": str(path),
+                        "exists": path.exists(),
+                        "reason": "현재 연도(월 단위)",
+                    })
+            continue
+
+        # ── 지난 연도 ────────────────────────────────────────────────────────
+        for var_key in var_keys:
+            yearly = Path(output_dir) / nc_filename(var_key, year)
+            if yearly.exists():
+                plan.append({
+                    "var": var_key, "year": year, "month": None,
+                    "months": list(range(1, 13)), "path": str(yearly),
+                    "exists": True, "reason": "연 단위 파일 존재",
+                })
+                continue
+
+            present = _year_months_present(output_dir, year, var_key)
+            if present:
+                # 현재 연도였을 때 월 단위로 받아둔 연도 → 빠진 달만 채운다
+                for m in range(1, 13):
+                    path = Path(output_dir) / nc_filename(var_key, year, m)
+                    plan.append({
+                        "var": var_key, "year": year, "month": m,
+                        "months": [m], "path": str(path),
+                        "exists": m in present,
+                        "reason": "지난 연도(월 단위 보유)",
+                    })
+            else:
+                plan.append({
+                    "var": var_key, "year": year, "month": None,
+                    "months": list(range(1, 13)), "path": str(yearly),
+                    "exists": False, "reason": "지난 연도(연 단위)",
+                })
+
+    return plan
 
 
 # ── 공개 API ──────────────────────────────────────────────────────────────────
@@ -134,8 +272,9 @@ def download_era5_year(
     key: Optional[str] = None,
     timeout: int = 3600,
     retry: int = 3,
+    month: Optional[int] = None,
 ) -> Optional[str]:
-    """단일 변수 × 연도에 대해 ERA5 시간별 자료를 다운로드합니다.
+    """단일 변수 × 연도(또는 연월)에 대해 ERA5 시간별 자료를 다운로드합니다.
 
     Parameters
     ----------
@@ -143,7 +282,8 @@ def download_era5_year(
     year         : 다운로드할 연도
     output_dir   : NC 파일 저장 폴더
     boundary_csv : country_boundary.csv 경로 (공간 범위 계산에 사용)
-    months       : 다운로드할 월 목록 (None → 1~12 전체)
+    months       : 다운로드할 월 목록 (None → 1~12 전체). month 지정 시 무시됨
+    month        : 월 단위로 받을 달. 지정하면 파일명이 ERA5_{var}_hourly_{YYYYMM}.nc
     overwrite    : True이면 기존 파일 덮어쓰기
     url          : CDS API URL (None → .cdsapirc 또는 환경변수 사용)
     key          : CDS API 키 (None → .cdsapirc 또는 환경변수 사용)
@@ -159,10 +299,12 @@ def download_era5_year(
 
     cds_var, _ = VARIABLES[var_key]
 
-    if months is None:
+    if month is not None:
+        months = [month]
+    elif months is None:
         months = list(range(1, 13))
 
-    out_path = Path(output_dir) / f"ERA5_{var_key}_hourly_{year}.nc"
+    out_path = Path(output_dir) / nc_filename(var_key, year, month)
 
     if out_path.exists() and not overwrite:
         print(f"  [SKIP] {out_path.name} (이미 존재)")
@@ -252,41 +394,44 @@ def download_era5_all(
     if var_keys is None:
         var_keys = list(VARIABLES.keys())
 
+    plan = plan_era5_downloads(output_dir, start_year, end_year, var_keys, today)
+
     created: List[str] = []
     failed:  List[str] = []
 
-    for year in range(start_year, end_year + 1):
-        # 현재 연도는 전월까지만 (이번 달 - 1)
-        if year == today.year:
-            last_month = today.month - 1
-            if last_month < 1:
-                print(f"  [{year}] 아직 다운로드 가능한 완성된 달이 없음 — 건너뜀")
-                continue
-            months = list(range(1, last_month + 1))
+    current_year_label = None
+    for item in plan:
+        label = (f"{item['year']}년 (현재 연도, 월 단위)"
+                 if item["month"] and item["year"] == today.year
+                 else (f"{item['year']}년 (월 단위 보충)" if item["month"]
+                       else f"{item['year']}년 (전체 12개월)"))
+        if label != current_year_label:
+            current_year_label = label
             print(f"\n{'='*60}")
-            print(f"  {year}년 (현재 연도, 1~{last_month}월)")
-            print(f"{'='*60}")
-        else:
-            months = list(range(1, 13))
-            print(f"\n{'='*60}")
-            print(f"  {year}년 (전체 12개월)")
+            print(f"  {label}")
             print(f"{'='*60}")
 
-        for var_key in var_keys:
-            path = download_era5_year(
-                var_key=var_key,
-                year=year,
-                output_dir=output_dir,
-                boundary_csv=boundary_csv,
-                months=months,
-                overwrite=overwrite,
-                url=url,
-                key=key,
-            )
-            if path:
-                created.append(path)
-            else:
-                failed.append(f"{year}_{var_key}")
+        if item["exists"] and not overwrite:
+            print(f"  [SKIP] {Path(item['path']).name} (이미 존재)")
+            created.append(item["path"])
+            continue
+
+        path = download_era5_year(
+            var_key=item["var"],
+            year=item["year"],
+            output_dir=output_dir,
+            boundary_csv=boundary_csv,
+            months=item["months"],
+            month=item["month"],
+            overwrite=overwrite,
+            url=url,
+            key=key,
+        )
+        if path:
+            created.append(path)
+        else:
+            stamp = f"{item['year']}{item['month']:02d}" if item["month"] else f"{item['year']}"
+            failed.append(f"{stamp}_{item['var']}")
 
     return created, failed
 
@@ -326,10 +471,10 @@ def verify_era5_file(nc_path: str, var_key: str, year: int,
         result["messages"].append("파일 없음")
         return result
 
-    # 2. 파일 크기
+    # 2. 파일 크기 (월 단위 파일은 하한도 월 수에 비례)
     size_bytes = p.stat().st_size
     result["size_mb"] = size_bytes / 1e6
-    if size_bytes < _MIN_FILE_BYTES:
+    if size_bytes < _min_bytes(months or list(range(1, 13))):
         result["messages"].append(f"파일 크기 너무 작음 ({result['size_mb']:.2f} MB)")
         return result
 
@@ -407,22 +552,17 @@ def verify_era5_all(
         var_keys = list(VARIABLES.keys())
 
     rows = []
-    for year in range(start_year, end_year + 1):
-        months = (list(range(1, today.month))
-                  if year == today.year
-                  else list(range(1, 13)))
-
-        for var_key in var_keys:
-            nc_path = str(Path(output_dir) / f"ERA5_{var_key}_hourly_{year}.nc")
-            r = verify_era5_file(nc_path, var_key, year, months)
-            rows.append({
-                "year":           year,
-                "var":            var_key,
-                "ok":             r["ok"],
-                "size_mb":        round(r["size_mb"], 1),
-                "n_times":        r["n_times"],
-                "expected_times": r["expected_times"],
-                "messages":       "; ".join(r["messages"]) if r["messages"] else "OK",
-            })
+    for item in plan_era5_downloads(output_dir, start_year, end_year, var_keys, today):
+        r = verify_era5_file(item["path"], item["var"], item["year"], item["months"])
+        rows.append({
+            "year":           (f"{item['year']}{item['month']:02d}"
+                               if item["month"] else str(item["year"])),
+            "var":            item["var"],
+            "ok":             r["ok"],
+            "size_mb":        round(r["size_mb"], 1),
+            "n_times":        r["n_times"],
+            "expected_times": r["expected_times"],
+            "messages":       "; ".join(r["messages"]) if r["messages"] else "OK",
+        })
 
     return pd.DataFrame(rows)

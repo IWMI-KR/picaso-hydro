@@ -25,40 +25,14 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
-from pathlib import Path
 
-from util_py.config import Config, find_config, load_config
+from util_py.config import load_effective_config
 from util_py.gis_user import (
     clip_to_all_user_areas,
     clip_to_user_area,
     discover_user_areas,
 )
-
-
-def _picaso_root() -> Path:
-    if env := os.environ.get("PICASO_ROOT"):
-        return Path(env)
-    cwd = Path.cwd().resolve()
-    for parent in [cwd, *cwd.parents]:
-        if (parent / "0_database").is_dir():
-            return parent
-    return cwd
-
-
-def _load_or_default(config_path: str | None) -> Config:
-    if config_path:
-        return load_config(config_path)
-    found = find_config()
-    if found:
-        return load_config(found)
-    cfg = Config()
-    root = _picaso_root()
-    cfg.project.root = str(root)
-    cfg.gis.root = str(root / "0_database" / "gis")
-    cfg.gis_user.base_dir = str(root / "0_database" / "gis" / "user")
-    return cfg
 
 
 def main(argv=None) -> int:
@@ -92,7 +66,7 @@ def main(argv=None) -> int:
                         help="발견된 area 만 나열하고 종료")
     args = parser.parse_args(argv)
 
-    cfg = _load_or_default(args.config)
+    cfg = load_effective_config(args.config)
     gis_root = args.gis_root or cfg.gis.root
     user_base = args.user_base or cfg.gis_user.base_dir
     raster_types = args.types or cfg.gis_user.raster_types

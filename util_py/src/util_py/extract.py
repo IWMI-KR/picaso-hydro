@@ -197,17 +197,57 @@ def extract_era5_to_grid(
     n_pts   = len(pts)
     print(f"  격자점 수: {n_pts}개  |  UTC 오프셋: {utc_offset:+d}h")
 
-    # ── 2. 사용 가능 연도 탐색 (prcp 기준) ────────────────────────────────────
-    avail = sorted(
-        int(p.stem.split("_")[-1])
-        for p in nc_dir.glob("ERA5_prcp_hourly_*.nc")
-    )
-    if not avail:
+    # ── 2. 사용 가능 청크 탐색 (변수별) ───────────────────────────────────────
+    # 청크 = (year, month|None). 연 단위 파일과 월 단위 파일이 섞여 있을 수 있고,
+    # 변수마다 섞인 정도가 다를 수 있으므로 **변수별로 따로** 판정한다.
+    # 규칙: 어떤 변수의 특정 연도에 월 단위 파일이 하나라도 있으면,
+    #       그 변수·그 연도의 연 단위 파일은 무시한다(시간 중복 방지).
+    from util_py.era5 import parse_nc_stamp
+
+    def _chunk_key(c: Tuple[int, Optional[int]]) -> Tuple[int, int]:
+        """(year, month|None) 정렬 키 — 연 단위(None)를 그 해의 맨 앞에 둔다."""
+        return (c[0], 0 if c[1] is None else c[1])
+
+    def _chunks_for(var_key: str) -> List[Tuple[int, Optional[int]]]:
+        stamps = [s for s in (parse_nc_stamp(p.name)
+                              for p in nc_dir.glob(f"ERA5_{var_key}_hourly_*.nc"))
+                  if s is not None]
+        monthly_years = {y for y, m in stamps if m is not None}
+        kept = [(y, m) for y, m in stamps
+                if not (m is None and y in monthly_years)]
+        return sorted(kept, key=_chunk_key)
+
+    var_chunks: Dict[str, List[Tuple[int, Optional[int]]]] = {
+        vk: _chunks_for(vk) for vk in _VAR_META
+    }
+    all_stamps = [c for cs in var_chunks.values() for c in cs]
+    if not all_stamps:
         raise FileNotFoundError(f"ERA5 NC 파일 없음: {nc_dir}")
-    y0 = start_year or avail[0]
-    y1 = end_year   or avail[-1]
-    years = [y for y in avail if y0 <= y <= y1]
-    print(f"  대상 연도: {years[0]}~{years[-1]} ({len(years)}개)\n")
+
+    dropped = set()
+    for vk in _VAR_META:
+        for p in nc_dir.glob(f"ERA5_{vk}_hourly_*.nc"):
+            s = parse_nc_stamp(p.name)
+            if s and s[1] is None and s not in var_chunks[vk]:
+                dropped.add(p.name)
+    if dropped:
+        print(f"  [주의] 월 단위 파일이 있어 무시하는 연 단위 파일 "
+              f"{len(dropped)}개: {', '.join(sorted(dropped)[:4])}"
+              f"{' ...' if len(dropped) > 4 else ''}")
+
+    avail_years = sorted({y for y, _ in all_stamps})
+    y0 = start_year or avail_years[0]
+    y1 = end_year   or avail_years[-1]
+    for vk in var_chunks:
+        var_chunks[vk] = [(y, m) for y, m in var_chunks[vk] if y0 <= y <= y1]
+    chunks = sorted({c for cs in var_chunks.values() for c in cs}, key=_chunk_key)
+    if not chunks:
+        raise FileNotFoundError(
+            f"지정 연도 범위({y0}~{y1})에 해당하는 ERA5 NC 파일 없음: {nc_dir}")
+    years = sorted({y for y, _ in chunks})
+    n_monthly = sum(1 for _, m in chunks if m is not None)
+    print(f"  대상 연도: {years[0]}~{years[-1]} ({len(years)}개, "
+          f"청크 {len(chunks)}개 / 월 단위 {n_monthly}개)\n")
 
     # ── 3. 격자 인덱스 파악 ───────────────────────────────────────────────────
     import netCDF4 as nc4
@@ -220,13 +260,19 @@ def extract_era5_to_grid(
     lon_idx = _find_idx(lon_arr, pt_lons)
 
     # ── 4. 연도×변수별 데이터 추출 ────────────────────────────────────────────
-    # frames[(var_key, year)] = (times_utc, data_2d)  data_2d: (n_t, n_pts)
-    frames: Dict[Tuple[str, int], Tuple] = {}
+    # frames[(var_key, (year, month))] = (times_utc, data_2d)  data_2d: (n_t, n_pts)
+    from util_py.era5 import nc_filename
 
-    for year in years:
-        print(f"  [{year}] ", end="", flush=True)
+    frames: Dict[Tuple[str, Tuple[int, Optional[int]]], Tuple] = {}
+
+    for year, month in chunks:
+        label = f"{year}{month:02d}" if month else f"{year}"
+        print(f"  [{label}] ", end="", flush=True)
         for var_key, (nc_var, conv, _) in _VAR_META.items():
-            nc_path = nc_dir / f"ERA5_{var_key}_hourly_{year}.nc"
+            if (year, month) not in var_chunks[var_key]:
+                # 이 변수는 해당 청크를 쓰지 않음(연 단위로 커버되거나 파일 없음)
+                continue
+            nc_path = nc_dir / nc_filename(var_key, year, month)
             if not nc_path.exists():
                 print(f"{var_key}✗ ", end="", flush=True)
                 continue
@@ -234,7 +280,7 @@ def extract_era5_to_grid(
                 times_idx, data_pts = _read_points_from_nc(
                     str(nc_path), nc_var, lat_idx, lon_idx
                 )
-                frames[(var_key, year)] = (times_idx, conv(data_pts))
+                frames[(var_key, (year, month))] = (times_idx, conv(data_pts))
                 print(f"{var_key}✓ ", end="", flush=True)
             except Exception as e:
                 print(f"{var_key}✗({e}) ", end="", flush=True)
@@ -262,6 +308,11 @@ def extract_era5_to_grid(
             data_cat[order, :],
             index=times_cat[order],
         )
+        # 안전장치: 파일 구성이 겹쳐 같은 시각이 두 번 들어오면 뒤엣것만 남긴다
+        if df_v.index.has_duplicates:
+            n_dup = int(df_v.index.duplicated().sum())
+            df_v = df_v[~df_v.index.duplicated(keep="last")]
+            print(f"  [주의] {var_key}: 중복 시각 {n_dup}개 제거")
         var_df[var_key] = df_v
         if ref_times is None:
             ref_times = df_v.index

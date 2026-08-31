@@ -2,7 +2,7 @@
 CMIP6 글로벌 NC 파일 영역 추출 모듈
 
 country_boundary.csv의 바운딩 박스를 기준으로
-S:/Database-INT/CMIP6/Global_Services_V2 의 글로벌 NC 파일에서
+설정된 글로벌 NC 폴더(util_py.yaml cmip6.source_dir)의 파일에서
 해당 영역 자료를 추출하여 원본과 동일한 파일명으로 저장합니다.
 
 연관 Skill: util_py/cmip6
@@ -14,13 +14,12 @@ S:/Database-INT/CMIP6/Global_Services_V2 의 글로벌 NC 파일에서
 
 country_boundary.csv 위치
 --------------------------
-  {project_root}/0_database/gis/admin/country_boundary.csv
+  util_py.yaml region.boundary_csv (기본: 0_database/gis/admin/country_boundary.csv)
   컬럼: OBJECTID, NAME, ISO3, ISO2, xmin, ymin, xmax, ymax
 """
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -186,7 +185,7 @@ def extract_cmip6_region(
     Parameters
     ----------
     boundary_csv  : country_boundary.csv 경로. 컬럼: xmin, ymin, xmax, ymax
-    cmip6_nc_dir  : 글로벌 NC 파일 디렉토리 (예: S:/Database-INT/CMIP6/Global_Services_V2)
+    cmip6_nc_dir  : 글로벌 NC 파일 디렉토리 (util_py.yaml cmip6.source_dir)
     output_nc_dir : 추출 결과 저장 디렉토리 (원본 파일명 그대로 저장)
     variables     : 추출할 변수 접두어 목록 (예: ['pr', 'hurs']).
                     None이면 디렉토리 내 모든 NC 파일 처리.
@@ -205,7 +204,7 @@ def extract_cmip6_region(
     ymin = bbox["ymin"]
     ymax = bbox["ymax"]
 
-    print(f"  바운딩 박스:")
+    print("  바운딩 박스:")
     print(f"    위도: {ymin:.4f} ~ {ymax:.4f}°N")
     print(f"    경도: {bbox['xmin']:.4f} ~ {bbox['xmax']:.4f}° "
           f"(0-360 변환: {xmin_360:.4f} ~ {xmax_360:.4f}°)")

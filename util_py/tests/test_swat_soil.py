@@ -73,8 +73,11 @@ def test_is_korea_detects_kor_iso3() -> None:
     assert _is_korea("") is False
 
 
+_BASE = "http://example.invalid/swat_py/"
+
+
 def test_swat_soil_sources_korea_branch() -> None:
-    urls, filenames, label = _swat_soil_sources("KOR")
+    urls, filenames, label = _swat_soil_sources("KOR", _BASE)
     assert label == "Korea-RDA"
     assert urls["tif"].endswith("soil_korea.tif")
     assert urls["mdb"].endswith("QSWAT-Korea-RDA%20Soil.mdb")
@@ -87,7 +90,7 @@ def test_swat_soil_sources_korea_branch() -> None:
 
 
 def test_swat_soil_sources_global_branch() -> None:
-    urls, filenames, label = _swat_soil_sources("COK")
+    urls, filenames, label = _swat_soil_sources("COK", _BASE)
     assert label == "Global-FAO"
     assert urls["tif"].endswith("soil_global.tif")
     assert urls["mdb"].endswith("QSWAT-Global-FAO%20Soil.mdb")
@@ -98,7 +101,7 @@ def test_swat_soil_sources_global_branch() -> None:
 
 
 def test_swat_soil_sources_defaults_to_global_when_none() -> None:
-    urls, _, label = _swat_soil_sources(None)
+    urls, _, label = _swat_soil_sources(None, _BASE)
     assert label == "Global-FAO"
     assert urls["tif"].endswith("soil_global.tif")
 
@@ -120,13 +123,14 @@ def _make_fake_local_swat(local_dir: Path) -> None:
 
 
 def _setup_fake_sources(
-    monkeypatch, fake_root: Path, *,
+    fake_root: Path, *,
     is_korea: bool = False,
     tif_bytes: bytes = b"FAKE_TIF" * 1000,
-) -> dict:
-    """핵심 4종 fake 파일 생성 + module 의 URL dict 를 file:// URI 로 redirect.
+) -> str:
+    """핵심 4종 fake 파일을 만들고 그 폴더의 ``file://`` base_url 을 돌려준다.
 
-    is_korea=False 면 글로벌 URL 셋을 monkeypatch, True 면 한국 URL 셋.
+    URL 은 ``base_url + 파일명`` 으로 조립되므로, 폴더 하나만 준비하면
+    실제 다운로드 경로를 그대로 태울 수 있다(별도 monkeypatch 불필요).
     """
     from util_py import gis_download as gd
 
@@ -134,37 +138,27 @@ def _setup_fake_sources(
 
     if is_korea:
         filenames = gd._SWAT_SOIL_FILENAMES_KOREA
-        target_dict = "_SWAT_SOIL_URLS_KOREA"
         lookup_content = "val,SWAT_MUID\n1,KOR001\n2,KOR002\n"
     else:
         filenames = gd._SWAT_SOIL_FILENAMES_GLOBAL
-        target_dict = "_SWAT_SOIL_URLS_GLOBAL"
         lookup_content = "Value,NAME\n0,0\n1,1\n2,2\n"
 
-    paths = {
-        "tif":    fake_root / filenames["tif"],
-        "mdb":    fake_root / filenames["mdb"],
-        "sqlite": fake_root / filenames["sqlite"],
-        "lookup": fake_root / filenames["lookup"],
-    }
+    paths = {k: fake_root / filenames[k] for k in ("tif", "mdb", "sqlite", "lookup")}
     paths["tif"].write_bytes(tif_bytes)
     paths["mdb"].write_bytes(b"FAKE_MDB" * 5000)
     paths["sqlite"].write_bytes(b"FAKE_SQLITE" * 3000)
     paths["lookup"].write_text(lookup_content, encoding="utf-8")
 
-    monkeypatch.setattr(gd, target_dict, {k: p.as_uri() for k, p in paths.items()})
-    return paths
+    return fake_root.as_uri() + "/"
 
 
-def test_download_swat_soil_global_no_boundary(monkeypatch, tmp_path) -> None:
+def test_download_swat_soil_global_no_boundary(tmp_path) -> None:
     """글로벌 + boundary 없으면 raster 를 그대로 canonical 로 복사 + 4종 모두 저장."""
-    local = tmp_path / "swat_gisdb"
-    _make_fake_local_swat(local)
-    _setup_fake_sources(monkeypatch, tmp_path / "url_src", is_korea=False)
+    base = _setup_fake_sources(tmp_path / "url_src", is_korea=False)
     gis_root = tmp_path / "gis"
 
     saved = download_swat_soil(
-        gis_root=gis_root, source="local", local_dir=local,
+        gis_root=gis_root, base_url=base,
         boundary_path=None, bbox=None, iso3="COK",
     )
 
@@ -191,14 +185,13 @@ def test_download_swat_soil_global_no_boundary(monkeypatch, tmp_path) -> None:
     assert "lookup" in saved
 
 
-def test_download_swat_soil_korea_branch(monkeypatch, tmp_path) -> None:
+def test_download_swat_soil_korea_branch(tmp_path) -> None:
     """ISO3='KOR' 이면 한국 RDA URL 셋 사용 + 한국 파일명 저장."""
-    _setup_fake_sources(monkeypatch, tmp_path / "url_src", is_korea=True)
+    base = _setup_fake_sources(tmp_path / "url_src", is_korea=True)
     gis_root = tmp_path / "gis"
 
     saved = download_swat_soil(
-        gis_root=gis_root, source="local",
-        local_dir=tmp_path / "no_local",
+        gis_root=gis_root, base_url=base,
         boundary_path=None, iso3="KOR",
     )
 
@@ -218,15 +211,14 @@ def test_download_swat_soil_korea_branch(monkeypatch, tmp_path) -> None:
     assert (out_dir / "soil_lookup.csv").is_file()
 
 
-def test_download_swat_soil_excludes_hwsd(monkeypatch, tmp_path) -> None:
+def test_download_swat_soil_excludes_hwsd(tmp_path) -> None:
     """HWSD 파일이 local_dir 에 있어도 다운로드되지 않음 (SWAT DB 와 무관)."""
-    local = tmp_path / "swat_gisdb"
-    _make_fake_local_swat(local)
-    _setup_fake_sources(monkeypatch, tmp_path / "url_src", is_korea=False)
+    base = _setup_fake_sources(tmp_path / "url_src", is_korea=False)
+    _make_fake_local_swat(tmp_path / "swat_gisdb")   # 디스트랙터(무시되어야 함)
     gis_root = tmp_path / "gis"
 
     download_swat_soil(
-        gis_root=gis_root, source="local", local_dir=local,
+        gis_root=gis_root, base_url=base,
         boundary_path=None, iso3="COK",
     )
 
@@ -241,27 +233,22 @@ def test_download_swat_soil_excludes_hwsd(monkeypatch, tmp_path) -> None:
     assert expected.issubset(actual)
 
 
-def test_download_swat_soil_url_failure_raises(monkeypatch, tmp_path) -> None:
-    """URL 다운로드 실패 시 RuntimeError(URL 다운로드 실패)."""
-    from util_py import gis_download as gd
-    bogus = (tmp_path / "no_such.bin").as_uri()
-    monkeypatch.setattr(gd, "_SWAT_SOIL_URLS_GLOBAL", {
-        "tif": bogus, "mdb": bogus, "sqlite": bogus, "lookup": bogus,
-    })
+def test_download_swat_soil_url_failure_raises(tmp_path) -> None:
+    """base_url 하위에 파일이 없으면 RuntimeError(URL 다운로드 실패)."""
+    empty = tmp_path / "empty_src"
+    empty.mkdir()
     with pytest.raises(RuntimeError, match="URL 다운로드 실패"):
         download_swat_soil(gis_root=tmp_path / "gis",
-                           source="local", local_dir=tmp_path / "any",
-                           iso3="COK")
+                           base_url=empty.as_uri() + "/", iso3="COK")
 
 
-def test_download_swat_soil_works_without_local_dir(monkeypatch, tmp_path) -> None:
-    """local_dir 미존재 시에도 핵심 4종 URL 다운로드만으로 동작 (sidecar 만 [skip])."""
-    _setup_fake_sources(monkeypatch, tmp_path / "url_src", is_korea=False)
+def test_download_swat_soil_downloads_core_four(tmp_path) -> None:
+    """핵심 4종을 base_url 에서만 받아 동작 (로컬 공유드라이브 불필요)."""
+    base = _setup_fake_sources(tmp_path / "url_src", is_korea=False)
     gis_root = tmp_path / "gis"
 
     download_swat_soil(
-        gis_root=gis_root, source="local",
-        local_dir=tmp_path / "no_such_local",
+        gis_root=gis_root, base_url=base,
         boundary_path=None, iso3=None,
     )
 
@@ -271,9 +258,10 @@ def test_download_swat_soil_works_without_local_dir(monkeypatch, tmp_path) -> No
     assert (gis_root / "soil" / "soil_lookup.csv").is_file()
 
 
-def test_download_swat_soil_url_not_implemented(tmp_path) -> None:
-    with pytest.raises(NotImplementedError, match="source="):
-        download_swat_soil(gis_root=tmp_path / "gis", source="url")
+def test_download_swat_soil_requires_base_url(tmp_path) -> None:
+    """base_url 미지정이면 설정을 지정하라는 ValueError."""
+    with pytest.raises(ValueError, match="base_url"):
+        download_swat_soil(gis_root=tmp_path / "gis", base_url="")
 
 
 # ── boundary 클립 + 빈 결과 안 저장 ──────────────────────────────────────────
@@ -368,33 +356,23 @@ def test_clip_swat_soil_partial_valid_saves(tmp_path) -> None:
     assert out.is_file()
 
 
-def test_download_swat_soil_with_boundary_no_data(monkeypatch, tmp_path) -> None:
+def test_download_swat_soil_with_boundary_no_data(tmp_path) -> None:
     """전체 워크플로우: boundary 안 자료 없으면 soil.tif 저장 안 됨, 나머지는 정상."""
-    local = tmp_path / "swat_gisdb"
-    _make_fake_local_swat(local)
     fake_url_dir = tmp_path / "url_src"
     fake_url_dir.mkdir()
     nodata_tif = fake_url_dir / "soil_global.tif"
     _make_soil_global(nodata_tif, fill_value=0)
 
-    from util_py import gis_download as gd
     (fake_url_dir / "Soil_global_lookup.txt").write_text(
         "Value,NAME\n0,0\n1,1\n", encoding="utf-8")
     (fake_url_dir / "QSWAT-Global-FAO Soil.mdb").write_bytes(b"FAKE_MDB" * 1000)
     (fake_url_dir / "QSWATPlus-Global-FAO Soil.sqlite").write_bytes(b"FAKE_SQL" * 1000)
-    monkeypatch.setattr(gd, "_SWAT_SOIL_URLS_GLOBAL", {
-        "tif":    nodata_tif.as_uri(),
-        "mdb":    (fake_url_dir / "QSWAT-Global-FAO Soil.mdb").as_uri(),
-        "sqlite": (fake_url_dir / "QSWATPlus-Global-FAO Soil.sqlite").as_uri(),
-        "lookup": (fake_url_dir / "Soil_global_lookup.txt").as_uri(),
-    })
-
     poly = _make_polygon_shp(tmp_path / "poly.shp",
                              bbox=(0.0, 0.0, 1.0, 1.0))
 
     gis_root = tmp_path / "gis"
     saved = download_swat_soil(
-        gis_root=gis_root, source="local", local_dir=local,
+        gis_root=gis_root, base_url=fake_url_dir.as_uri() + "/",
         boundary_path=poly, buffer_deg=0.0, iso3="COK",
     )
 

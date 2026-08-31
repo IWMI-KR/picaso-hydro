@@ -23,39 +23,12 @@ ERA5 격자점 기상자료 추출 CLI
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
-from util_py.config import Config, find_config, load_config
+from util_py.config import config_source, load_effective_config
 from util_py.extract import extract_era5_to_grid
 from util_py.grid import extract_era5_grid_points
-
-
-def _picaso_root() -> Path:
-    if env := os.environ.get("PICASO_ROOT"):
-        return Path(env)
-    cwd = Path.cwd().resolve()
-    for parent in [cwd, *cwd.parents]:
-        if (parent / "0_database").is_dir():
-            return parent
-    return cwd
-
-
-def _load_or_default(config_path: str | None) -> Config:
-    if config_path:
-        return load_config(config_path)
-    found = find_config()
-    if found:
-        return load_config(found)
-    cfg = Config()
-    root = _picaso_root()
-    cfg.project.root = str(root)
-    cfg.extract.grid_file  = str(root / "0_database" / "era5" / "grid_points-era5.csv")
-    cfg.extract.hourly_dir = str(root / "0_database" / "era5" / "grid_hourly")
-    cfg.extract.daily_dir  = str(root / "0_database" / "era5" / "grid_daily")
-    cfg.era5.output_dir    = str(root / "0_database" / "era5" / "nc_hourly")
-    return cfg
 
 
 def _autogen_grid_points(grid_csv: Path, era5_dir: Path, boundary_shp: Path) -> None:
@@ -90,25 +63,33 @@ def main(argv=None) -> int:
     parser.add_argument("--daily-dir", default=None,
                         help="일단위 출력 (YAML extract.daily_dir 오버라이드)")
     parser.add_argument("--utc-offset", type=int, default=None,
-                        help="UTC → 로컬 시차 (YAML region.utc_offset 오버라이드)")
+                        help="UTC → 로컬 시차 (YAML region.utc_offset 오버라이드. "
+                             "YAML 이 null 이면 GIS 경도에서 자동 추정)")
     parser.add_argument("--start-year", type=int, default=None,
                         help="추출 시작 연도 (YAML extract.start_year 오버라이드)")
     parser.add_argument("--end-year", type=int, default=None,
                         help="추출 종료 연도 (YAML extract.end_year 오버라이드)")
     parser.add_argument("--boundary", default=None,
                         help="격자점 자동생성용 boundary shapefile "
-                             "(기본: $PICASO_ROOT/0_database/gis/admin/admin.shp)")
+                             "(기본: util_py.yaml gis.root 아래 admin/admin.shp)")
     parser.add_argument("--overwrite", action="store_true",
                         help="기존 파일 덮어쓰기")
     args = parser.parse_args(argv)
 
-    cfg = _load_or_default(args.config)
+    cfg = load_effective_config(args.config)
 
     grid       = args.grid       or cfg.extract.grid_file
     era5_dir   = args.era5_dir   or cfg.era5.output_dir
     hourly_dir = args.hourly_dir or cfg.extract.hourly_dir
     daily_dir  = args.daily_dir  or cfg.extract.daily_dir
-    utc_offset = args.utc_offset if args.utc_offset is not None else cfg.region.utc_offset
+    # region.utc_offset 이 null 이면 GIS 자료(경도)에서 자동 추정
+    from util_py.gis import resolve_utc_offset
+    utc_offset = (args.utc_offset if args.utc_offset is not None
+                  else resolve_utc_offset(
+                      cfg.region.utc_offset,
+                      boundary_csv=cfg.region.boundary_csv,
+                      boundary_shp=str(Path(cfg.gis.root) / "admin" / "admin.shp"),
+                  ))
     start_year = args.start_year if args.start_year is not None else cfg.extract.start_year
     end_year   = args.end_year   if args.end_year   is not None else cfg.extract.end_year
 
@@ -124,7 +105,7 @@ def main(argv=None) -> int:
     print("=" * 62)
     print("  ERA5 격자점 기상자료 추출")
     print("=" * 62)
-    print(f"  설정 출처    : {args.config or find_config() or '(코드 기본값)'}")
+    print(f"  설정 출처    : {config_source(args.config)}")
     print(f"  격자점 파일  : {grid}")
     print(f"  ERA5 폴더    : {era5_dir}")
     print(f"  UTC 오프셋   : {utc_offset:+d}h")
@@ -137,7 +118,7 @@ def main(argv=None) -> int:
     grid_path = Path(grid)
     if not grid_path.is_file():
         boundary = Path(args.boundary) if args.boundary else (
-            Path(cfg.project.root) / "0_database" / "gis" / "admin" / "admin.shp"
+            Path(cfg.gis.root) / "admin" / "admin.shp"   # YAML gis.root 기준
         )
         if not boundary.is_file():
             parser.error(

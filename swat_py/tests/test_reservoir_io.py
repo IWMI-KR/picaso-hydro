@@ -1,12 +1,12 @@
 """수위-내용적 곡선(StageStorageCurve) + 취수 물수지(simulate_managed_storage)."""
 from __future__ import annotations
 
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from ._paths import palau_path
 from swat_py.io.reservoir import (
     StageStorageCurve,
     load_stage_storage,
@@ -18,7 +18,7 @@ from swat_py.io.reservoir import (
 _M_PER_FT = 0.3048
 
 _M3_PER_ACFT = 1233.4815589592
-_NGERI = Path(r"I:/2025-APCC_Palau/PICASO-Hydro/0_database/obs/reservoir/ngerimel_stage_storage.csv")
+_NGERI = palau_path("0_database/obs/reservoir/ngerimel_stage_storage.csv")
 
 
 # ── StageStorageCurve ─────────────────────────────────────────────────────────

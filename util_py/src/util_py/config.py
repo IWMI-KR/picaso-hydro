@@ -22,6 +22,16 @@ from typing import Any, Dict, List, Optional, Union
 import yaml
 
 
+# ── 상수 ──────────────────────────────────────────────────────────────────────
+
+CONFIG_FILENAME = "util_py.yaml"
+CONFIG_SUBDIR   = "config"          # 프로젝트 표준 위치: {root}/config/util_py.yaml
+
+#: 패키지에 동봉된 기본 설정. 프로젝트에 util_py.yaml 이 없을 때 이 값이 쓰인다.
+#: 파이썬 코드에는 경로·시차 등의 기본값을 두지 않고 전부 이 파일에서 읽는다.
+PACKAGE_TEMPLATE = Path(__file__).resolve().parent / "templates" / CONFIG_FILENAME
+
+
 # ── 데이터클래스 ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -78,7 +88,7 @@ class _WeatherValidationCfg:
 @dataclass
 class _RegionCfg:
     boundary_csv: str = ""
-    utc_offset:   int = -10        # 쿡 아일랜드 표준시
+    utc_offset:   Optional[int] = None   # None/null → GIS 자료(경도)에서 자동 추정
     buffer_deg:   float = 0.25
 
 
@@ -151,8 +161,8 @@ class _WorldCoverCfg:
 
 @dataclass
 class _SwatSoilCfg:
-    source:    str = "local"                        # local | url
-    local_dir: str = "S:/Database-INT/GISDB/Soils"
+    #: 토양 자료 HTTP 기본 주소 (util_py.yaml gis_download.swat_soil.base_url)
+    base_url: str = ""
 
 
 @dataclass
@@ -212,7 +222,6 @@ class _GsodCfg:
     obs_dir:         str = ""
     station_csv:     str = ""
     station_shp:     str = ""
-    archive_dir:     str = ""
     start_year:      int = 1929
     end_year:        Optional[int] = None
     country_code:    Optional[str] = None
@@ -244,6 +253,34 @@ class Config:
     gsod:         _GsodCfg        = field(default_factory=_GsodCfg)
 
 
+# ── YAML 원본 읽기 / 병합 ─────────────────────────────────────────────────────
+
+def _read_raw(path: Union[str, Path]) -> Dict[str, Any]:
+    """YAML 파일을 dict 로 읽습니다(참조 미해석 상태)."""
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"설정 파일이 없습니다: {p}")
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"YAML 파싱 실패: {p} — {e}") from e
+    if not isinstance(raw, dict):
+        raise ValueError(f"YAML 최상위는 매핑이어야 합니다: {p}")
+    return raw
+
+
+def _deep_merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
+    """over 를 base 위에 깊은 병합(재귀). over 의 값이 우선."""
+    out = dict(base)
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 # ── 교차참조 + 환경변수 치환 ─────────────────────────────────────────────────
 
 _REF_RE = re.compile(r"\$\(([\w\.]+)\)")
@@ -260,15 +297,23 @@ def _flat_get(data: Dict[str, Any], dotted: str) -> Any:
     return cur
 
 
-def _resolve_string(s: str, root: Dict[str, Any], _stack: Optional[set] = None) -> str:
-    """문자열 안의 $(key) 와 ${env:VAR[:default]} 를 재귀적으로 해석."""
+def _resolve_string(s: str, root: Dict[str, Any], _stack: Optional[set] = None,
+                    extra_env: Optional[Dict[str, str]] = None) -> str:
+    """문자열 안의 $(key) 와 ${env:VAR[:default]} 를 재귀적으로 해석.
+
+    extra_env : 실제 환경변수가 없을 때 사용할 대체값(예: 자동 탐지한 PICASO_ROOT).
+    """
     if _stack is None:
         _stack = set()
 
-    # 환경변수 먼저 (단순)
+    # 환경변수 먼저 (단순). 실제 env → extra_env → YAML 기본값 순.
     def env_sub(m: re.Match) -> str:
         var, default = m.group(1), m.group(2)
-        return os.environ.get(var, default if default is not None else "")
+        if var in os.environ and os.environ[var]:
+            return os.environ[var]
+        if extra_env and extra_env.get(var):
+            return extra_env[var]
+        return default if default is not None else ""
     s = _ENV_RE.sub(env_sub, s)
 
     # 교차참조: 중첩 가능 → 변화가 없을 때까지
@@ -286,18 +331,19 @@ def _resolve_string(s: str, root: Dict[str, Any], _stack: Optional[set] = None) 
         if not isinstance(value, str):
             value = str(value)
         # 참조된 값에 또 다른 참조가 있으면 먼저 풀기
-        value = _resolve_string(value, root, _stack | {key})
+        value = _resolve_string(value, root, _stack | {key}, extra_env)
         s = s[: m.start()] + value + s[m.end() :]
 
 
-def _resolve_tree(node: Any, root: Dict[str, Any]) -> Any:
+def _resolve_tree(node: Any, root: Dict[str, Any],
+                  extra_env: Optional[Dict[str, str]] = None) -> Any:
     """dict/list/str을 재귀 순회하며 모든 문자열의 참조를 해석."""
     if isinstance(node, dict):
-        return {k: _resolve_tree(v, root) for k, v in node.items()}
+        return {k: _resolve_tree(v, root, extra_env) for k, v in node.items()}
     if isinstance(node, list):
-        return [_resolve_tree(v, root) for v in node]
+        return [_resolve_tree(v, root, extra_env) for v in node]
     if isinstance(node, str):
-        return _resolve_string(node, root)
+        return _resolve_string(node, root, None, extra_env)
     return node
 
 
@@ -313,7 +359,8 @@ def _build_config(raw: Dict[str, Any]) -> Config:
     if region := raw.get("region"):
         cfg.region = _RegionCfg(
             boundary_csv=str(region.get("boundary_csv", "") or ""),
-            utc_offset=int(region.get("utc_offset", -10)),
+            utc_offset=(None if region.get("utc_offset") is None
+                        else int(region["utc_offset"])),
             buffer_deg=float(region.get("buffer_deg", 0.25)),
         )
 
@@ -443,8 +490,7 @@ def _build_config(raw: Dict[str, Any]) -> Config:
             )
         if ss := gd.get("swat_soil"):
             gd_cfg.swat_soil = _SwatSoilCfg(
-                source=str(ss.get("source", "local")),
-                local_dir=str(ss.get("local_dir", _SwatSoilCfg().local_dir)),
+                base_url=str(ss.get("base_url", "") or ""),
             )
         cfg.gis_download = gd_cfg
 
@@ -470,7 +516,6 @@ def _build_config(raw: Dict[str, Any]) -> Config:
             obs_dir=str(gs.get("obs_dir", "") or ""),
             station_csv=str(gs.get("station_csv", "") or ""),
             station_shp=str(gs.get("station_shp", "") or ""),
-            archive_dir=str(gs.get("archive_dir", "") or ""),
             start_year=int(gs.get("start_year", 1929)),
             end_year=gs.get("end_year"),
             country_code=gs.get("country_code"),
@@ -484,7 +529,8 @@ def _build_config(raw: Dict[str, Any]) -> Config:
     return cfg
 
 
-def load_config(path: Union[str, Path]) -> Config:
+def load_config(path: Union[str, Path],
+                project_root: Optional[Union[str, Path]] = None) -> Config:
     """util_py.yaml을 로드하여 :class:`Config` 로 반환합니다.
 
     Parameters
@@ -500,31 +546,42 @@ def load_config(path: Union[str, Path]) -> Config:
     FileNotFoundError : 경로에 파일이 없을 때
     ValueError        : YAML 파싱 실패 또는 교차참조 오류
     """
-    p = Path(path)
-    if not p.is_file():
-        raise FileNotFoundError(f"설정 파일이 없습니다: {p}")
+    raw = _read_raw(path)
 
-    try:
-        with p.open("r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-    except yaml.YAMLError as e:
-        raise ValueError(f"YAML 파싱 실패: {p}\n  {e}") from e
+    extra_env = {"PICASO_ROOT": str(project_root)} if project_root else None
+    resolved = _resolve_tree(raw, raw, extra_env)
+    cfg = _build_config(resolved)
+    if not cfg.project.root and project_root:
+        cfg.project.root = str(project_root)
+    return cfg
 
-    if not isinstance(raw, dict):
-        raise ValueError(f"YAML 최상위는 매핑이어야 합니다: {p}")
 
-    resolved = _resolve_tree(raw, raw)
-    return _build_config(resolved)
+def find_project_root(start: Optional[Path] = None) -> Path:
+    """PICASO-Hydro 프로젝트 루트를 찾습니다.
+
+    ``PICASO_ROOT`` 환경변수 → cwd 에서 위로 올라가며 ``0_database`` 보유 폴더 →
+    (못 찾으면) cwd. 모든 CLI 가 이 함수 하나만 사용한다.
+    """
+    if env := os.environ.get("PICASO_ROOT"):
+        return Path(env)
+    cwd = (start or Path.cwd()).resolve()
+    for parent in [cwd, *cwd.parents]:
+        if (parent / "0_database").is_dir():
+            return parent
+    return cwd
 
 
 def find_config(start: Optional[Path] = None) -> Optional[Path]:
-    """util_py.yaml 파일을 자동 탐색합니다.
+    """``util_py.yaml`` 을 자동 탐색합니다.
 
     탐색 순서
     ---------
     1. 환경변수 ``UTIL_PY_CONFIG``
-    2. 현재 디렉토리 → 상위로 올라가며 ``util_py.yaml``
-    3. ``$PICASO_ROOT/util_py.yaml``
+    2. 현재 디렉토리 → 상위로 올라가며 ``config/util_py.yaml`` → ``util_py.yaml``
+    3. ``$PICASO_ROOT/config/util_py.yaml`` → ``$PICASO_ROOT/util_py.yaml``
+
+    프로젝트 표준 위치는 ``{프로젝트 루트}/config/util_py.yaml`` 이다.
+    루트 바로 아래(``util_py.yaml``)도 하위 호환으로 계속 인식한다.
 
     Returns
     -------
@@ -536,13 +593,81 @@ def find_config(start: Optional[Path] = None) -> Optional[Path]:
 
     cwd = (start or Path.cwd()).resolve()
     for parent in [cwd, *cwd.parents]:
-        candidate = parent / "util_py.yaml"
-        if candidate.is_file():
-            return candidate
+        for candidate in (parent / CONFIG_SUBDIR / CONFIG_FILENAME,
+                          parent / CONFIG_FILENAME):
+            if candidate.is_file():
+                return candidate
 
     if picaso := os.environ.get("PICASO_ROOT"):
-        candidate = Path(picaso) / "util_py.yaml"
-        if candidate.is_file():
-            return candidate
+        for candidate in (Path(picaso) / CONFIG_SUBDIR / CONFIG_FILENAME,
+                          Path(picaso) / CONFIG_FILENAME):
+            if candidate.is_file():
+                return candidate
 
     return None
+
+
+def load_effective_config(config_path: Optional[str] = None,
+                          start: Optional[Path] = None) -> Config:
+    """모든 CLI 가 사용하는 **단일** 설정 진입점.
+
+    ``--config`` 인자 → 자동 탐색된 프로젝트 ``util_py.yaml`` →
+    패키지 동봉 기본 템플릿(:data:`PACKAGE_TEMPLATE`) 순으로 읽는다.
+    어느 경우에도 값의 출처는 YAML 이며, 파이썬 코드에 경로·시차 같은
+    사이트 종속 값을 두지 않는다.
+
+    프로젝트 루트는 :func:`find_project_root` 로 탐지해 YAML 안의
+    ``${env:PICASO_ROOT}`` 에 주입하므로, 템플릿만으로도 올바른 경로가 만들어진다.
+    """
+    path = Path(config_path) if config_path else find_config(start)
+
+    raw = _read_raw(PACKAGE_TEMPLATE)            # ① 패키지 기본값 (모든 키 보유)
+    if path is not None:
+        raw = _deep_merge(raw, _read_raw(path))  # ② 프로젝트 값으로 덮어쓰기
+
+    root = _resolve_project_root(raw, path, start)
+    raw.setdefault("project", {})["root"] = root
+
+    cfg = _build_config(_resolve_tree(raw, raw, {"PICASO_ROOT": root}))
+    return cfg
+
+
+def _config_dir_root(path: Optional[Path]) -> Optional[Path]:
+    """설정 파일 위치로부터 프로젝트 루트를 추론.
+
+    ``{root}/config/util_py.yaml`` → ``{root}`` / ``{root}/util_py.yaml`` → ``{root}``
+    """
+    if path is None:
+        return None
+    parent = path.resolve().parent
+    return parent.parent if parent.name == CONFIG_SUBDIR else parent
+
+
+def _resolve_project_root(raw: Dict[str, Any], path: Optional[Path],
+                          start: Optional[Path]) -> str:
+    """프로젝트 루트 결정 — 환경변수 > YAML 명시값 > 설정파일 위치 > 자동 탐지."""
+    if env := os.environ.get("PICASO_ROOT"):
+        return str(env)
+
+    declared = ((raw.get("project") or {}).get("root") or "")
+    if isinstance(declared, str) and declared.strip():
+        # ${env:PICASO_ROOT:기본값} 의 기본값 부분을 해석 (env 는 위에서 이미 확인)
+        resolved = _resolve_string(str(declared), raw)
+        if resolved.strip():
+            return resolved.strip()
+
+    if (from_cfg := _config_dir_root(path)) is not None:
+        return str(from_cfg)
+
+    return str(find_project_root(start))
+
+
+def config_source(config_path: Optional[str] = None,
+                  start: Optional[Path] = None) -> str:
+    """설정이 어디에서 왔는지 사람이 읽을 문자열 (CLI 출력용)."""
+    if config_path:
+        return str(config_path)
+    found = find_config(start)
+    if found:
+        return str(found)
+    return f"{PACKAGE_TEMPLATE} (패키지 기본 템플릿)"

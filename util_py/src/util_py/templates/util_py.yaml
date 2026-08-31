@@ -1,5 +1,5 @@
 # ══════════════════════════════════════════════════════════════════════════════
-#  util_py 설정 파일 — PICASO-Hydro 기본값
+#  util_py 설정 파일 — 패키지 동봉 기본 템플릿 (site-neutral)
 #  ERA5 다운로드/추출 + CMIP6 영역 추출 + GSOD 일자료 다운로드
 # ══════════════════════════════════════════════════════════════════════════════
 #
@@ -18,7 +18,7 @@
 
 # ── 1. 프로젝트 루트 ─────────────────────────────────────────────────────────
 project:
-  root: "${env:PICASO_ROOT:I:/2025-APCC_Cook/PICASO-Hydro}"
+  root: "${env:PICASO_ROOT}"    # 비우면 0_database 를 가진 상위 폴더를 자동 탐지
 
 
 # ── 2. 영역 / 시간대 ─────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ project:
 #  국가 admin 정보와 일치하므로 gis/admin/ 폴더에 위치.
 region:
   boundary_csv: "$(project.root)/0_database/gis/admin/country_boundary.csv"
-  utc_offset:   -10           # 쿡 아일랜드 표준시 (CIST = UTC−10).  한국=+9, 인도=+5
+  utc_offset:   null          # null → GIS 경계(경도)에서 자동 추정. 법정 표준시와 다를 수 있음
   buffer_deg:   0.25          # CDS 영역 버퍼 (도)
 
 
@@ -65,17 +65,17 @@ weather_std:
     std_dir:        "$(project.root)/0_database/gsod/daily_std"
     wind_height_m:  10.0
   local:
-    raw_daily_dir:  "$(project.root)/0_database/weather/local/raw_daily"
-    raw_hourly_dir: "$(project.root)/0_database/weather/local/raw_hourly"
-    std_daily_dir:  "$(project.root)/0_database/weather/local/std_daily"
-    std_hourly_dir: "$(project.root)/0_database/weather/local/std_hourly"
-    mapping_file:   "$(project.root)/0_database/weather/local/mapping.yaml"
+    raw_daily_dir:  "$(project.root)/0_database/obs/weather/daily"
+    raw_hourly_dir: "$(project.root)/0_database/obs/weather/hourly"
+    std_daily_dir:  "$(project.root)/0_database/obs/weather/daily_std"
+    std_hourly_dir: "$(project.root)/0_database/obs/weather/hourly_std"
+    mapping_file:   "$(project.root)/0_database/obs/weather/mapping.yaml"
     wind_height_m:  10.0
 
 
 # ── 4-3. ERA5 vs 관측 산점 검증 (analysis 출력) ─────────────────────────────
 weather_validation:
-  output_base: "$(project.root)/0_database/analysis"   # era5_vs_{source}/ 가 하위 생성
+  output_base: "$(project.root)/reports"               # era5_vs_{source}/ 가 하위 생성
   variables:                                            # 비교 변수 (기본 SWAT 7개)
     - pcp_mm
     - tmax_c
@@ -104,8 +104,8 @@ extract:
 
 # ── 5. CMIP6 영역 추출 ───────────────────────────────────────────────────────
 cmip6:
-  source_dir: "S:/Database-INT/CMIP6/Global_Services_V2"
-  output_dir: "$(project.root)/0_database/cmip6/regional"
+  source_dir: "$(project.root)/0_database/cmip6/nc_daily"
+  output_dir: "$(project.root)/0_database/cmip6/downscaled"
   variables:  null             # null → 디렉토리 내 모든 NC 파일
 
 
@@ -123,7 +123,6 @@ gsod:
   obs_dir:     "$(project.root)/0_database/gsod/daily"           # 관측소별 통합 일자료 CSV
   station_csv: "$(project.root)/0_database/gsod/station-gsod.csv"  # 다운로드된 관측소 메타 (CSV)
   station_shp: "$(gis.root)/gsod/station-gsod.shp"                 # 관측소 위치 shapefile (GIS)
-  archive_dir: "I:/2025-APCC_Cook/Database/GSOD/archive"          # 로컬 .tar.gz (선택, 빠름)
 
   start_year: 1929              # NOAA archive 시작 연도
   end_year:   null              # null → 현재 연도
@@ -152,7 +151,7 @@ gis:
   root:         "$(project.root)/0_database/gis"
   default_epsg: 4326             # canonical 자료 좌표계 (수집 원본 기본값)
   # SWAT 워크플로우에서 사용할 평면 좌표계. null 이면 boundary bbox 중심에서 자동 산출.
-  swat_epsg:    null             # 예: Cook Islands → 32704 (자동), 한국 → 32652
+  swat_epsg:    null             # null → boundary bbox 중심에서 자동 산출
   # raster 클립 시 boundary 주변 버퍼 (도). SWAT 변두리 셀 + 흐름방향 안전 여유.
   # 30m DEM 기준 0.05° ≈ 5.5 km ≈ 180 픽셀.
   swat_buffer_deg: 0.05
@@ -218,8 +217,9 @@ gis_download:
   #   IWMI 사내 HTTP (shared.iwmi.kr:48080) 에서 다운로드.
   #   boundary_csv 가 있으면 raster 를 자동 클립 → 유효 픽셀 0개면 soil.tif 저장 안 함.
   swat_soil:
-    source:    "local"                          # local | url
-    local_dir: "S:/Database-INT/GISDB/Soils"    # 사내 SWAT GISDB 위치 (sidecar 만 참조)
+    # 대상국이 한국(ISO3=KOR)이면 soil_korea.tif, 그 외에는 soil_global.tif 를
+    # 아래 주소에서 내려받는다(mdb/sqlite/lookup 도 같은 위치).
+    base_url: "http://shared.iwmi.kr:48080/permanent/swat_py/"
 
   # ── LANDUSE: ESA WorldCover 2021 v200 (AWS S3, 3°×3° tile) ──
   worldcover:

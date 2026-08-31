@@ -21,12 +21,9 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
-from pathlib import Path
-from typing import Optional
 
-from util_py.config import Config, find_config, load_config
+from util_py.config import load_effective_config
 from util_py.gis_download import _read_bbox_iso
 from util_py.streamflow import (
     _bbox_in_usgs_coverage,
@@ -34,30 +31,6 @@ from util_py.streamflow import (
     download_streamflow_caravan,
     download_streamflow_usgs,
 )
-
-
-def _picaso_root() -> Path:
-    if env := os.environ.get("PICASO_ROOT"):
-        return Path(env)
-    cwd = Path.cwd().resolve()
-    for parent in [cwd, *cwd.parents]:
-        if (parent / "0_database").is_dir():
-            return parent
-    return cwd
-
-
-def _load_or_default(config_path: str | None) -> Config:
-    if config_path:
-        return load_config(config_path)
-    found = find_config()
-    if found:
-        return load_config(found)
-    cfg = Config()
-    root = _picaso_root()
-    cfg.project.root = str(root)
-    cfg.region.boundary_csv = str(root / "0_database" / "gis" / "admin" / "country_boundary.csv")
-    cfg.streamflow.obs_dir = str(root / "0_database" / "obs" / "streamflow")
-    return cfg
 
 
 def main(argv=None) -> int:
@@ -85,7 +58,7 @@ def main(argv=None) -> int:
                         help="USGS 종료일 (YYYY-MM-DD)")
     args = parser.parse_args(argv)
 
-    cfg = _load_or_default(args.config)
+    cfg = load_effective_config(args.config)
 
     # bbox 결정
     if args.bbox:
@@ -105,7 +78,7 @@ def main(argv=None) -> int:
     if src == "auto":
         if _bbox_in_usgs_coverage(bbox):
             src = "usgs"
-            print(f"[auto] bbox 가 USGS 권역 → usgs")
+            print("[auto] bbox 가 USGS 권역 → usgs")
         elif caravan_subsets_for_bbox(bbox):
             src = "caravan"
             subs = [s["name"] for s in caravan_subsets_for_bbox(bbox)]

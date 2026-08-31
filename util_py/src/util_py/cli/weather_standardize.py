@@ -23,62 +23,18 @@ Hourly: datetime, pcp_mm, tavg_c, tdew_c, hmd_pct, slr_wm2,
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 import yaml
 
-from util_py.config import Config, find_config, load_config
+from util_py.config import Config, load_effective_config
 from util_py.weather_std import (
     standardize_dir_era5_daily,
     standardize_dir_era5_hourly,
     standardize_dir_gsod_daily,
     standardize_local,
 )
-
-
-def _picaso_root() -> Path:
-    if env := os.environ.get("PICASO_ROOT"):
-        return Path(env)
-    cwd = Path.cwd().resolve()
-    for parent in [cwd, *cwd.parents]:
-        if (parent / "0_database").is_dir():
-            return parent
-    return cwd
-
-
-def _load_or_default(config_path: str | None) -> Config:
-    if config_path:
-        return load_config(config_path)
-    found = find_config()
-    if found:
-        return load_config(found)
-    cfg = Config()
-    root = _picaso_root()
-    cfg.project.root = str(root)
-
-    # ERA5 — grid_daily/_std, grid_hourly/_std (extract 출력 → standardize 입력)
-    era5_dir = root / "0_database" / "era5"
-    cfg.weather_std.era5.raw_daily_dir  = str(era5_dir / "grid_daily")
-    cfg.weather_std.era5.raw_hourly_dir = str(era5_dir / "grid_hourly")
-    cfg.weather_std.era5.std_daily_dir  = str(era5_dir / "grid_daily_std")
-    cfg.weather_std.era5.std_hourly_dir = str(era5_dir / "grid_hourly_std")
-
-    # GSOD — daily/_std
-    gsod_dir = root / "0_database" / "gsod"
-    cfg.weather_std.gsod.raw_dir = str(gsod_dir / "daily")
-    cfg.weather_std.gsod.std_dir = str(gsod_dir / "daily_std")
-
-    # local 관측 — obs/weather/{daily,hourly,daily_std,hourly_std} + mapping.yaml
-    obs_dir = root / "0_database" / "obs" / "weather"
-    cfg.weather_std.local.raw_daily_dir  = str(obs_dir / "daily")
-    cfg.weather_std.local.raw_hourly_dir = str(obs_dir / "hourly")
-    cfg.weather_std.local.std_daily_dir  = str(obs_dir / "daily_std")
-    cfg.weather_std.local.std_hourly_dir = str(obs_dir / "hourly_std")
-    cfg.weather_std.local.mapping_file   = str(obs_dir / "mapping.yaml")
-
-    return cfg
 
 
 def _run_era5(cfg: Config, resolution: str) -> None:
@@ -154,7 +110,7 @@ def main(argv=None) -> int:
                         help="local source 매핑 YAML (YAML weather_std.local.mapping_file 오버라이드)")
     args = parser.parse_args(argv)
 
-    cfg = _load_or_default(args.config)
+    cfg = load_effective_config(args.config)
 
     print("=" * 64)
     print("  기상자료 SWAT 표준 포맷 변환")

@@ -12,6 +12,7 @@ CLI:       picaso-hydro-init /data/MyProject
 ------
     config/
       picaso-hydro.yaml  swat_py.yaml  acidwg_py.yaml     ← 샘플 config 3종
+      util_py.yaml                                       ← util_py 패키지 템플릿에서 생성
     0_database/gis/admin/country_boundary.csv             ← 샘플 국가 경계(대상 국가로 교체)
     0_database/ …  1_acidwg/ …  2_qswat/  3_swatplus/ …  4_drought_risk/ …  reports/
 """
@@ -52,6 +53,10 @@ FIXED_DIRS: List[str] = [
 ]
 
 _CONFIG_FILES = ["picaso-hydro.yaml", "swat_py.yaml", "acidwg_py.yaml"]
+
+#: util_py.yaml 은 util_py 패키지가 정본 템플릿을 갖고 있으므로 복사본을 두지 않고
+#: 설치된 util_py 에서 직접 읽어 생성한다(사본이 갈라지는 것을 막는다).
+_UTIL_PY_CONFIG = "util_py.yaml"
 _BOUNDARY_REL = "0_database/gis/admin/country_boundary.csv"
 _ROOT_PLACEHOLDER = "__PROJECT_ROOT__"
 
@@ -70,6 +75,27 @@ def _write_config(name: str, dest: Path, project_root: Path, *, force: bool) -> 
         text = text.replace(_ROOT_PLACEHOLDER, project_root.as_posix())
     dest.write_text(text, encoding="utf-8")
     return f"config/{name}  ✓"
+
+
+def _write_util_py_config(dest: Path, project_root: Path, *, force: bool) -> str:
+    """``config/util_py.yaml`` 을 util_py 패키지의 정본 템플릿에서 생성한다.
+
+    ``project.root`` 를 초기화 경로로 확정해 두어, 사용자가 손대지 않아도
+    모든 경로가 곧바로 맞도록 한다. util_py 가 아직 설치돼 있지 않으면 건너뛴다
+    (그 경우에도 util_py 는 자신의 패키지 템플릿으로 동작한다).
+    """
+    if dest.exists() and not force:
+        return f"config/{_UTIL_PY_CONFIG}  (건너뜀: 이미 존재)"
+    try:
+        from util_py.config import PACKAGE_TEMPLATE
+    except Exception:
+        return (f"config/{_UTIL_PY_CONFIG}  (건너뜀: util_py 미설치 — "
+                f"설치 후 picaso-hydro-init 재실행 시 생성)")
+    text = Path(PACKAGE_TEMPLATE).read_text(encoding="utf-8")
+    text = text.replace('  root: "${env:PICASO_ROOT}"',
+                        f'  root: "${{env:PICASO_ROOT:{project_root.as_posix()}}}"')
+    dest.write_text(text, encoding="utf-8")
+    return f"config/{_UTIL_PY_CONFIG}  ✓"
 
 
 def initialize(project_root, *, force: bool = False) -> Path:
@@ -104,6 +130,8 @@ def initialize(project_root, *, force: bool = False) -> Path:
     cfg_dir = root / "config"
     for name in _CONFIG_FILES:
         print("  [config] " + _write_config(name, cfg_dir / name, root, force=force))
+    print("  [config] " + _write_util_py_config(
+        cfg_dir / _UTIL_PY_CONFIG, root, force=force))
 
     # ③ 샘플 country_boundary.csv
     bnd = root / _BOUNDARY_REL
@@ -115,9 +143,15 @@ def initialize(project_root, *, force: bool = False) -> Path:
 
     print("=" * 64)
     print("  완료. 다음 단계:")
-    print(f"    1) export PICASO_ROOT={root}   (Windows: set PICASO_ROOT=...)")
-    print(f"    2) {_BOUNDARY_REL} 를 대상 국가 경계(NAME/ISO3/ISO2/bbox)로 편집")
-    print("    3) util-gis-download → util-era5-download … 로 0_database 채우기")
+    print(f"    1) {_BOUNDARY_REL} 를 대상 국가 경계(NAME/ISO3/ISO2/bbox)로 교체")
+    print("       — config/*.yaml 은 그대로 두어도 동작합니다(경로는 이미 이 폴더 기준).")
+    print("    2) util-gis-download → util-era5-download … 로 0_database 채우기")
+    print()
+    print("  참고")
+    print(f"    · PICASO_ROOT 를 지정하지 않아도 이 폴더가 자동 인식됩니다"
+          f" (다른 위치에서 실행하려면 set PICASO_ROOT={root}).")
+    print("    · config/util_py.yaml 의 region.utc_offset 은 null(경도 기반 자동 추정)입니다.")
+    print("      법정 표준시가 경도 시간대와 다른 지역(예: 쿡 아일랜드 −10)은 직접 지정하세요.")
     print("=" * 64)
     return root
 

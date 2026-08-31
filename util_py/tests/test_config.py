@@ -33,7 +33,8 @@ def test_load_empty_yaml_returns_defaults(tmp_path) -> None:
     p = _write_yaml(tmp_path, "")
     cfg = load_config(p)
     assert cfg.project.root == ""
-    assert cfg.region.utc_offset == -10
+    # utc_offset 은 사이트 종속 값이라 코드 기본값을 두지 않는다(None → GIS 에서 자동 추정)
+    assert cfg.region.utc_offset is None
     assert cfg.region.buffer_deg == 0.25
     assert cfg.grid.era5_resolution == 0.25
     assert cfg.era5.start_year == 2022

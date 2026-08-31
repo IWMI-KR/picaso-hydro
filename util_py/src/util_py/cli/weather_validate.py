@@ -22,51 +22,11 @@ ERA5 vs 관측소 산점 검증 CLI
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
-from util_py.config import Config, find_config, load_config
+from util_py.config import load_effective_config
 from util_py.weather_validation import scatter_compare_era5_obs
-
-
-def _picaso_root() -> Path:
-    if env := os.environ.get("PICASO_ROOT"):
-        return Path(env)
-    cwd = Path.cwd().resolve()
-    for parent in [cwd, *cwd.parents]:
-        if (parent / "0_database").is_dir():
-            return parent
-    return cwd
-
-
-def _load_or_default(config_path: str | None) -> Config:
-    if config_path:
-        return load_config(config_path)
-    found = find_config()
-    if found:
-        return load_config(found)
-    cfg = Config()
-    root = _picaso_root()
-    cfg.project.root = str(root)
-    cfg.weather_validation.output_base = str(root / "reports")
-
-    # ERA5 격자점 메타 + std daily (extract / standardize 출력)
-    era5_dir = root / "0_database" / "era5"
-    cfg.extract.grid_file               = str(era5_dir / "grid_points-era5.csv")
-    cfg.weather_std.era5.std_daily_dir  = str(era5_dir / "grid_daily_std")
-
-    # GSOD station 메타 + std daily
-    gsod_dir = root / "0_database" / "gsod"
-    cfg.gsod.station_csv         = str(gsod_dir / "station-gsod.csv")
-    cfg.weather_std.gsod.std_dir = str(gsod_dir / "daily_std")
-
-    # local 관측 — std + stations.csv 위치 추론용 raw_daily_dir
-    obs_dir = root / "0_database" / "obs" / "weather"
-    cfg.weather_std.local.raw_daily_dir = str(obs_dir / "daily")
-    cfg.weather_std.local.std_daily_dir = str(obs_dir / "daily_std")
-
-    return cfg
 
 
 def main(argv=None) -> int:
@@ -94,7 +54,7 @@ def main(argv=None) -> int:
                         help="출력 폴더 (YAML weather_validation.output_base 오버라이드)")
     args = parser.parse_args(argv)
 
-    cfg = _load_or_default(args.config)
+    cfg = load_effective_config(args.config)
 
     out_base = Path(args.output_dir or cfg.weather_validation.output_base
                     or (Path(cfg.project.root) / "reports"))

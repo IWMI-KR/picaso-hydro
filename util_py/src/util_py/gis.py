@@ -476,3 +476,87 @@ def prepare_raster_for_swat(
             tmp_path.unlink(missing_ok=True)
 
     return output_path
+
+
+# ── UTC 오프셋 자동 추정 ──────────────────────────────────────────────────────
+
+def representative_lon(boundary_csv: Optional[str] = None,
+                       boundary_shp: Optional[str] = None) -> Optional[float]:
+    """대상 지역의 대표 경도(도)를 GIS 자료에서 구한다.
+
+    우선순위: boundary shapefile 의 도형 중심 → country_boundary.csv 의 bbox 중심.
+    날짜변경선을 걸치는 경우까지는 다루지 않는다(태평양 도서국은 단일 국가 내에서
+    걸치는 사례가 드묾).
+    """
+    if boundary_shp:
+        p = Path(boundary_shp)
+        if p.is_file():
+            try:
+                import geopandas as gpd
+                gdf = gpd.read_file(p)
+                if not gdf.empty:
+                    if gdf.crs is not None and gdf.crs.to_epsg() not in (4326, None):
+                        gdf = gdf.to_crs(4326)
+                    return float(gdf.geometry.union_all().centroid.x)
+            except Exception:
+                pass
+
+    if boundary_csv:
+        p = Path(boundary_csv)
+        if p.is_file():
+            try:
+                import pandas as pd
+                df = pd.read_csv(p)
+                if not df.empty and {"xmin", "xmax"} <= set(df.columns):
+                    return float((df["xmin"].astype(float).mean()
+                                  + df["xmax"].astype(float).mean()) / 2.0)
+            except Exception:
+                pass
+    return None
+
+
+def estimate_utc_offset(boundary_csv: Optional[str] = None,
+                        boundary_shp: Optional[str] = None) -> Optional[int]:
+    """대표 경도로부터 UTC 오프셋(정수 시)을 추정한다.
+
+    ``round(경도 / 15)`` — 이론적 시간대(nautical time)다. 각국의 **법정 표준시**는
+    이 값과 다를 수 있으므로(예: 쿡 아일랜드는 경도상 −11 이나 법정 −10),
+    정확한 값이 필요하면 ``util_py.yaml`` 의 ``region.utc_offset`` 에 직접 지정한다.
+
+    Returns
+    -------
+    int or None : 경도를 구하지 못하면 None
+    """
+    lon = representative_lon(boundary_csv, boundary_shp)
+    if lon is None:
+        return None
+    # -180~180 정규화 후 15도당 1시간
+    lon = ((float(lon) + 180.0) % 360.0) - 180.0
+    return int(round(lon / 15.0))
+
+
+def resolve_utc_offset(declared: Optional[int],
+                       boundary_csv: Optional[str] = None,
+                       boundary_shp: Optional[str] = None,
+                       verbose: bool = True) -> int:
+    """설정값이 있으면 그대로, 없으면(None) GIS 자료에서 추정한다.
+
+    추정값을 쓸 때는 **법정 표준시와 다를 수 있음**을 반드시 알린다.
+    추정도 실패하면 0(UTC)을 쓰고 경고한다.
+    """
+    if declared is not None:
+        return int(declared)
+
+    est = estimate_utc_offset(boundary_csv, boundary_shp)
+    if est is None:
+        if verbose:
+            print("  [경고] region.utc_offset 이 null 이고 경도도 구하지 못해 "
+                  "UTC(0) 로 진행합니다. util_py.yaml 에 직접 지정하세요.")
+        return 0
+    if verbose:
+        lon = representative_lon(boundary_csv, boundary_shp)
+        print(f"  [자동] region.utc_offset=null → 대표경도 {lon:+.2f}° 기준 {est:+d}h 로 추정")
+        print( "         ※ 경도 기반 근사치입니다. 법정 표준시와 다를 수 있으니"
+               " (예: 쿡 아일랜드 경도 −11 / 법정 −10)")
+        print( "         정확한 값은 util_py.yaml region.utc_offset 에 지정하세요.")
+    return int(est)

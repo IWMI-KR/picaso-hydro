@@ -27,12 +27,11 @@ SWAT 입력 GIS 자료 자동 다운로드 CLI
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 from typing import List
 
-from util_py.config import Config, find_config, load_config
+from util_py.config import load_effective_config
 from util_py.gis_download import (
     _read_bbox_iso,
     download_dem,
@@ -46,30 +45,6 @@ from util_py.gis_download import (
 
 
 _DATASETS = ["admin", "basin", "river", "dem", "soil", "swat_soil", "landuse"]
-
-
-def _picaso_root() -> Path:
-    if env := os.environ.get("PICASO_ROOT"):
-        return Path(env)
-    cwd = Path.cwd().resolve()
-    for parent in [cwd, *cwd.parents]:
-        if (parent / "0_database").is_dir():
-            return parent
-    return cwd
-
-
-def _load_or_default(config_path: str | None) -> Config:
-    if config_path:
-        return load_config(config_path)
-    found = find_config()
-    if found:
-        return load_config(found)
-    cfg = Config()
-    root = _picaso_root()
-    cfg.project.root = str(root)
-    cfg.region.boundary_csv = str(root / "0_database" / "gis" / "admin" / "country_boundary.csv")
-    cfg.gis.root = str(root / "0_database" / "gis")
-    return cfg
 
 
 def main(argv=None) -> int:
@@ -91,7 +66,7 @@ def main(argv=None) -> int:
                         help="HydroSHEDS 대륙 원본도 보관")
     args = parser.parse_args(argv)
 
-    cfg = _load_or_default(args.config)
+    cfg = load_effective_config(args.config)
     boundary_csv = args.boundary_csv or cfg.region.boundary_csv
     gis_root     = args.gis_root     or cfg.gis.root
     if not boundary_csv or not gis_root:
@@ -179,8 +154,7 @@ def main(argv=None) -> int:
             admin_shp = Path(gis_root) / "admin" / "admin.shp"
             paths = download_swat_soil(
                 gis_root=gis_root,
-                source=cfg.gis_download.swat_soil.source,
-                local_dir=cfg.gis_download.swat_soil.local_dir,
+                base_url=cfg.gis_download.swat_soil.base_url,
                 boundary_path=str(admin_shp) if admin_shp.is_file() else None,
                 bbox=bbox if not admin_shp.is_file() else None,
                 buffer_deg=cfg.gis.swat_buffer_deg,

@@ -1,8 +1,6 @@
 """WGEN 매개변수 산출 + weather-wgn.cli 작성/재읽기."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -15,6 +13,8 @@ from swat_py.io.weather_wgn import (
     write_weather_wgn,
     write_wgn_import_csv,
 )
+
+from ._paths import cook_path
 
 
 def _synthetic_daily(start="1990-01-01", end="2019-12-31", seed=0) -> pd.DataFrame:
@@ -223,7 +223,7 @@ def test_import_csv_name_whitespace_stripped(tmp_path) -> None:
 
 # ── Cook 918430 통합 (실제 자료 있을 때만) ─────────────────────────────────────
 
-COOK_CSV = Path("I:/2025-APCC_Cook/PICASO-Hydro/0_database/obs/weather/918430.csv")
+COOK_CSV = cook_path("0_database/obs/weather/918430.csv")
 
 
 @pytest.mark.skipif(not COOK_CSV.is_file(), reason="Cook 918430 자료 없음")

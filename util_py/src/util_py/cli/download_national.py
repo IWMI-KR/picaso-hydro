@@ -8,7 +8,7 @@
 
 사용법
 ------
-    util-download-national                          # ERA5 시작연도 2010, 전 단계
+    util-download-national                          # 전 단계 (연도는 util_py.yaml)
     util-download-national --start-year 2015
     util-download-national --no-validate --no-streamflow
     util-download-national --skip weather-validate streamflow-download
@@ -35,8 +35,8 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--config", default=None,
                         help="util_py.yaml 경로 (생략 시 자동 탐색)")
-    parser.add_argument("--start-year", type=int, default=2010,
-                        help="ERA5 다운로드 시작 연도 (기본 2010)")
+    parser.add_argument("--start-year", type=int, default=None,
+                        help="ERA5 다운로드 시작 연도 (생략 시 util_py.yaml era5.start_year)")
     parser.add_argument("--no-validate", action="store_true",
                         help="weather-validate(ERA5 vs 관측 검증) 생략")
     parser.add_argument("--no-streamflow", action="store_true",

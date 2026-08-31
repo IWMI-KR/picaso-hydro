@@ -4,17 +4,25 @@
 ----------
 1. boundary_csv 에서 ISO2 국가 코드 + bbox 추출
 2. NOAA isd-history.csv 다운로드 → FIPS 매핑 후 해당 국가 + bbox 내 관측소 필터
-3. 각 관측소의 연도별 GSOD .csv 수집 (로컬 archive 우선, URL 보조)
+3. 각 관측소의 연도별 GSOD .csv 를 NOAA 에서 **직접 다운로드**
+   (전세계 {year}.tar.gz 아카이브는 쓰지 않는다 — 관측소 1개당 필요한 연도만 받는다)
 4. 관측소별로 모든 연도 통합 → ``obs_dir/{STATION_ID}.csv``
 5. 처리 완료 관측소 메타를 ``station-gsod.csv`` 로 저장
 
 식별자 규약
 -----------
-- ``NOAA_ID``     : ``{USAF}{WBAN}`` (11자) — NOAA 측 archive/URL 의 파일명
+- ``NOAA_ID``     : ``{USAF}{WBAN}`` (11자) — NOAA 측 URL 의 파일명
 - ``STATION_ID``  : 로컬 파일명 (보통 6자 USAF, 일부 케이스만 11자)
     * 기본       : USAF (6자)  — 본 사업 대상 도서국·동남아 거의 모두 해당
     * fallback   : USAF=``999999`` 또는 같은 USAF 가 중복되는 경우 NOAA_ID (11자)
 NOAA 원본 파일 fetch 는 항상 NOAA_ID 사용, 로컬 저장만 STATION_ID 사용.
+
+증분 갱신
+---------
+NOAA 는 진행 중인 연도의 관측소 CSV 를 계속 덧붙여 갱신한다. 따라서 재실행 시
+**이미 받은 연도는 건너뛰고, 마지막으로 받은 연도와 그 이후만 다시 받아** 병합한다.
+(마지막 연도는 그 사이 행이 늘어났을 수 있으므로 항상 다시 받는다.)
+연도 범위는 isd-history 의 관측소별 BEGIN/END 로 좁혀 불필요한 404 요청을 줄인다.
 
 데이터 소스
 -----------
@@ -25,7 +33,7 @@ isd-history.csv
 
 GSOD 일자료 (CSV, 2020년 이후 표준)
     URL : https://www.ncei.noaa.gov/data/global-summary-of-the-day/access/{year}/{USAF}{WBAN}.csv
-    Tar : https://www.ncei.noaa.gov/data/global-summary-of-the-day/archive/{year}.tar.gz
+          (관측소·연도 단위 파일. 진행 중인 연도는 계속 갱신됨)
     주요 컬럼: STATION, DATE, LATITUDE, LONGITUDE, ELEVATION, NAME,
               TEMP, DEWP, SLP, STP, VISIB, WDSP, MXSPD, GUST, MAX, MIN,
               PRCP, SNDP, FRSHTT (모두 9999.9 등 결측 sentinel 사용)
@@ -39,7 +47,6 @@ isd-history.csv 의 CTRY 필드는 FIPS 10-4 코드를 사용해 ISO 3166 alpha-
 from __future__ import annotations
 
 import io
-import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -207,24 +214,48 @@ def _filter_stations(
 
 # ── 3. 단일 관측소-연도 데이터 가져오기 ──────────────────────────────────────
 
-def _extract_from_archive(
-    archive_path: Path, station_id: str
-) -> Optional[pd.DataFrame]:
-    """{year}.tar.gz 에서 {station_id}.csv 만 추출."""
-    if not archive_path.is_file():
-        return None
-    target_csv = f"{station_id}.csv"
+def _year_of(value) -> Optional[int]:
+    """isd-history 의 BEGIN/END(YYYYMMDD) 에서 연도만 뽑는다. 실패 시 None."""
     try:
-        with tarfile.open(archive_path, "r:gz") as tar:
-            for member in tar:
-                if member.name.endswith(target_csv):
-                    f = tar.extractfile(member)
-                    if f is None:
-                        continue
-                    return pd.read_csv(f)
-    except (tarfile.TarError, OSError) as e:
-        print(f"    [WARN] {archive_path.name} 열기 실패: {e}")
-    return None
+        v = int(value)
+    except (TypeError, ValueError):
+        return None
+    return v // 10000 if v > 9999 else (v if 1900 <= v <= 2200 else None)
+
+
+def _existing_years(out_path: Path) -> Tuple[Optional[pd.DataFrame], set]:
+    """기존 통합 CSV 를 읽어 (DataFrame, 이미 보유한 연도 집합) 을 돌려준다."""
+    if not out_path.is_file():
+        return None, set()
+    try:
+        df = pd.read_csv(out_path)
+    except Exception as e:
+        print(f"    [WARN] 기존 파일 읽기 실패({out_path.name}): {e} → 전체 재수집")
+        return None, set()
+    if "DATE" not in df.columns or df.empty:
+        return None, set()
+    years = set(pd.to_datetime(df["DATE"], errors="coerce").dt.year.dropna().astype(int))
+    return df, years
+
+
+def _years_to_fetch(requested: List[int], have: set,
+                    begin_year: Optional[int], end_year_meta: Optional[int]) -> List[int]:
+    """실제로 내려받을 연도 목록.
+
+    - isd-history 의 BEGIN/END 로 관측소가 보고한 기간 밖은 제외(불필요한 404 방지)
+    - 기존 파일이 있으면 **가장 최근 보유 연도부터 앞으로만** 받는다.
+      과거의 빈 연도는 GSOD 에 자료가 없어서 비어 있는 것이라 다시 물어도 404 이고,
+      과거 자료는 새로 추가되지 않으므로 매달 재요청할 이유가 없다.
+      (과거까지 전부 다시 받으려면 overwrite=True)
+    - 가장 최근 보유 연도는 항상 다시 받는다 — 진행 중이던 연도라면 행이 늘어났을 수 있음.
+    """
+    lo = max(requested[0], begin_year) if begin_year else requested[0]
+    hi = min(requested[-1], end_year_meta) if end_year_meta else requested[-1]
+    window = [y for y in requested if lo <= y <= hi]
+    if not have:
+        return window
+    newest_have = max(have)
+    return [y for y in window if y >= newest_have]
 
 
 def _download_station_year(
@@ -304,7 +335,6 @@ def download_gsod_country(
     obs_dir: str,
     station_csv: str,
     station_shp: Optional[str] = None,
-    archive_dir: Optional[str] = None,
     start_year: int = 1929,
     end_year: Optional[int] = None,
     country_code: Optional[str] = None,
@@ -322,12 +352,12 @@ def download_gsod_country(
     station_csv      : 처리된 관측소 메타 출력 경로 (예: station-gsod.csv)
     station_shp      : 관측소 위치 shapefile 경로 (None 이면 생성 안 함)
                        권장: $(gis.root)/gsod/station-gsod.shp
-    archive_dir      : 로컬 .tar.gz 보관 폴더 (있으면 우선 사용, 없으면 URL 다운로드)
-    start_year       : 시작 연도 (기본 1929 = NOAA archive 시작)
+    start_year       : 시작 연도 (기본 1929 = GSOD 최초 연도)
     end_year         : 종료 연도 (None → 현재 연도)
     country_code     : ISO2 또는 FIPS 코드 직접 지정 (None → boundary_csv 의 ISO2)
     use_bbox_filter  : True 면 국가 코드 + bbox 교집합으로 제한
-    overwrite        : 기존 통합 CSV 덮어쓰기
+    overwrite        : True 면 기존 통합 CSV 를 무시하고 전 연도를 다시 받는다.
+                       False(기본)면 **증분** — 없는 연도와 마지막 보유 연도만 받아 병합.
 
     Returns
     -------
@@ -346,8 +376,6 @@ def download_gsod_country(
     station_p = Path(station_csv)
     obs_dir.mkdir(parents=True, exist_ok=True)
     station_p.parent.mkdir(parents=True, exist_ok=True)
-    archive_p = Path(archive_dir) if archive_dir else None
-
     isd_cache = obs_dir.parent / ".cache" / "isd-history.csv"
     print("=" * 64)
     print("  NOAA GSOD 일자료 다운로드")
@@ -356,7 +384,8 @@ def download_gsod_country(
     print(f"  bbox         : lon [{bbox[0]:.3f}, {bbox[2]:.3f}], "
           f"lat [{bbox[1]:.3f}, {bbox[3]:.3f}]" if bbox else "  bbox: 사용 안함")
     print(f"  연도 범위    : {years[0]} ~ {years[-1]}  ({len(years)}개)")
-    print(f"  archive_dir  : {archive_p or '없음 (URL 다운로드)'}")
+    mode = "전체 재수집" if overwrite else "증분"
+    print(f"  수집 방식    : NOAA 관측소별 직접 다운로드 ({mode})")
     print(f"  obs_dir      : {obs_dir}")
     print(f"  station_csv  : {station_p}")
     print("=" * 64)
@@ -381,30 +410,42 @@ def download_gsod_country(
         sid     = st["STATION_ID"]   # 로컬 파일명 (보통 USAF 6자)
         noaa_id = st["NOAA_ID"]      # NOAA fetch 식별자 (USAF+WBAN 11자)
         out = obs_dir / f"{sid}.csv"
-        if out.exists() and not overwrite:
-            print(f"  [SKIP] {sid} (이미 존재 — overwrite=False)")
+
+        # ── 증분 판단 ────────────────────────────────────────────────────
+        prev, have = (None, set()) if overwrite else _existing_years(out)
+        prev_last = (str(prev["DATE"].iloc[-1])
+                     if prev is not None and not prev.empty else None)
+        begin_y = _year_of(st.get("BEGIN"))
+        end_y   = _year_of(st.get("END"))
+        targets = _years_to_fetch(years, have, begin_y, end_y)
+
+        if not targets:
+            print(f"  [SKIP] {sid} {st['STATION_NAME']} — "
+                  f"새로 받을 연도 없음 (~{prev_last})")
             row = st.to_dict()
-            row["n_records"] = -1
+            row["n_records"] = len(prev) if prev is not None else 0
+            if prev_last:
+                row["first_date"] = str(prev["DATE"].iloc[0])
+                row["last_date"]  = prev_last
             done_rows.append(row)
             continue
 
         yearly: List[pd.DataFrame] = []
-        for year in years:
-            df = None
-            if archive_p:
-                df = _extract_from_archive(archive_p / f"{year}.tar.gz", noaa_id)
-            if df is None:
-                df = _download_station_year(gsod_access_url, noaa_id, year)
+        for year in targets:
+            df = _download_station_year(gsod_access_url, noaa_id, year)
             if df is not None and not df.empty:
                 yearly.append(df)
 
-        if not yearly:
+        frames = ([prev] if prev is not None else []) + yearly
+        if not frames:
             print(f"  [NONE] {sid} {st['STATION_NAME']} — 자료 없음")
             continue
 
-        combined = pd.concat(yearly, ignore_index=True)
+        combined = pd.concat(frames, ignore_index=True)
         if "DATE" in combined.columns:
-            combined = combined.sort_values("DATE").reset_index(drop=True)
+            # 새로 받은 행이 뒤에 오므로 keep="last" 로 최신본을 남긴다
+            combined = (combined.drop_duplicates(subset="DATE", keep="last")
+                                .sort_values("DATE").reset_index(drop=True))
         combined.to_csv(out, index=False)
 
         row = st.to_dict()
@@ -413,8 +454,12 @@ def download_gsod_country(
             row["first_date"] = str(combined["DATE"].iloc[0])
             row["last_date"]  = str(combined["DATE"].iloc[-1])
         done_rows.append(row)
+
+        added = len(combined) - (len(prev) if prev is not None else 0)
+        mode  = "전체" if prev is None else f"증분 +{added:,}행"
+        span  = f"{targets[0]}~{targets[-1]}" if targets else "-"
         print(f"  [OK]   {sid} {st['STATION_NAME']}  "
-              f"{len(combined):,} 행  ({len(yearly)}개 연도)")
+              f"{len(combined):,} 행  ({mode}, 요청 연도 {span})")
 
     # station-gsod.csv 저장
     out_meta = pd.DataFrame(done_rows)

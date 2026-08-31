@@ -15,15 +15,16 @@ import pandas as pd
 import pytest
 
 from swat_py.config.env import _Observation
+from ._paths import palau_path
 from swat_py.calibration.analysis_swat_plus import (
     analyze_one_observation_plus,
     run_observation_analysis_plus,
     _resolve_obs_path,
 )
 
-_NGERI = Path(r"I:/2025-APCC_Palau/PICASO-Hydro/2_qswat/ngeri/Scenarios/Default/TxtInOut")
-_OBS   = Path(r"I:/2025-APCC_Palau/PICASO-Hydro/0_database/obs/flow/ngerimel.csv")
-_YAML  = Path(r"I:/2025-APCC_Palau/PICASO-Hydro/swat_py_apcc.yaml")
+_NGERI = palau_path("2_qswat/ngeri/Scenarios/Default/TxtInOut")
+_OBS   = palau_path("0_database/obs/flow/ngerimel.csv")
+_YAML  = palau_path("swat_py_apcc.yaml")
 
 
 # ── 합성 데이터 기반(항상 실행) ───────────────────────────────────────────────

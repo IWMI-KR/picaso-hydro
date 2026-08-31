@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from ._paths import palau_path
 from swat_py.output.reader_swat_plus import (
     parse_reservoir_day,
     extract_res_outtype,
@@ -121,7 +122,7 @@ def test_extract_unknown_outtype_raises(tmp_path):
 
 # ── 실제 Palau ngeri 자료 (있을 때만) ─────────────────────────────────────────
 
-_NGERI = Path(r"I:/2025-APCC_Palau/PICASO-Hydro/2_qswat/ngeri/Scenarios/Default/TxtInOut")
+_NGERI = palau_path("2_qswat/ngeri/Scenarios/Default/TxtInOut")
 
 
 @pytest.mark.skipif(not (_NGERI / "reservoir_day.txt").is_file(),

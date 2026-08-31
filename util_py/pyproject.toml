@@ -52,7 +52,7 @@ util-weather-validate    = "util_py.cli.weather_validate:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-util_py = ["py.typed", "templates/weather_mapping/*.yaml", "templates/weather_mapping/*.md"]
+util_py = ["py.typed", "templates/*.yaml", "templates/weather_mapping/*.yaml", "templates/weather_mapping/*.md"]
 
 [tool.black]
 line-length = 100
