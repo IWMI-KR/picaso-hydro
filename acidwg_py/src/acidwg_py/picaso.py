@@ -116,6 +116,7 @@ def build_picaso_forecast_csv(
     output_dir: str,
     season: str,
     year: int,
+    overwrite: bool = False,
 ) -> Optional[str]:
     """단일 season/year에 대한 acidwg_py 입력 CSV를 생성합니다.
 
@@ -129,11 +130,13 @@ def build_picaso_forecast_csv(
     season       : APCC 3개월 계절 코드 (예: "JFM", "DJF", "NDJ")
     year         : 예보 연도 — 시즌 첫 번째 월의 연도
                    예) JFM 2014 → year=2014,  NDJ 2025 → year=2025
+    overwrite    : False(기본)면 출력 파일이 이미 있을 때 **원본을 읽지 않고**
+                   기존 경로를 그대로 돌려준다. True 면 항상 다시 만든다.
 
     Returns
     -------
     str
-        생성된 파일 경로. 필요한 원본 파일이 없거나 해당 관측소 자료가
+        생성(또는 기존) 파일 경로. 필요한 원본 파일이 없거나 해당 관측소 자료가
         없으면 ``None``을 반환합니다.
     """
     season = season.upper()
@@ -146,6 +149,11 @@ def build_picaso_forecast_csv(
     months = SEASON_MONTHS[season]
     first_month = months[0]
     picaso_dir = Path(picaso_dir)
+
+    # 이미 만들어진 파일은 원본을 읽기 전에 건너뛴다(재실행 비용 절감)
+    out_path = Path(output_dir) / f"{year}_{season}_picaso.csv"
+    if out_path.is_file() and not overwrite:
+        return str(out_path)
 
     # 관측소 ID 로드 → PICASO stnid 로 해석(id 체계 상이 시 위경도 매핑)
     stn_df = pd.read_csv(stations_csv)
@@ -183,7 +191,6 @@ def build_picaso_forecast_csv(
     out_df = pd.DataFrame(rows, columns=["station_id", "month", "variable",
                                           "AN", "NN", "BN"])
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    out_path = Path(output_dir) / f"{year}_{season}_picaso.csv"
     out_df.to_csv(out_path, index=False)
     return str(out_path)
 
@@ -194,7 +201,8 @@ def build_all_picaso_forecasts(
     output_dir: str,
     seasons: Optional[List[str]] = None,
     years: Optional[List[int]] = None,
-) -> Tuple[List[str], List[str]]:
+    overwrite: bool = False,
+) -> Tuple[List[str], List[str], List[str]]:
     """모든 season/year 조합에 대해 일괄 변환합니다.
 
     Parameters
@@ -204,18 +212,27 @@ def build_all_picaso_forecasts(
     output_dir   : 출력 디렉토리
     seasons      : 변환할 계절 목록 (None → SEASON_MONTHS 전체 12개)
     years        : 변환할 연도 목록 (None → 각 시즌 첫 월 디렉토리로 자동 감지)
+    overwrite    : False(기본)면 출력 파일이 이미 있는 조합을 건너뛴다.
+                   True 면 전부 다시 만든다.
 
     Returns
     -------
-    (created, skipped)
-        created : 생성된 파일 경로 목록
-        skipped : 원본 파일 미존재로 건너뛴 "{year}_{season}" 목록
+    (created, missing, existing)
+        created  : 이번에 새로 만든 파일 경로 목록
+        missing  : 원본 파일이 없어 만들지 못한 "{year}_{season}" 목록
+        existing : 이미 있어서 건너뛴 "{year}_{season}" 목록
+
+    Notes
+    -----
+    반환값은 3-튜플이다. 기존 2-튜플 ``(created, skipped)`` 로 언패킹하던 코드는
+    ``created, missing, existing = ...`` 로 바꿔야 한다.
     """
     if seasons is None:
         seasons = list(SEASON_MONTHS.keys())
 
-    created: List[str] = []
-    skipped: List[str] = []
+    created:  List[str] = []
+    missing:  List[str] = []
+    existing: List[str] = []
 
     for season in seasons:
         season = season.upper()
@@ -234,12 +251,19 @@ def build_all_picaso_forecasts(
             candidate_years = sorted(years)
 
         for year in candidate_years:
+            tag = f"{year}_{season}"
+            dest = Path(output_dir) / f"{tag}_picaso.csv"
+            if dest.is_file() and not overwrite:
+                existing.append(tag)
+                continue
+
             out_path = build_picaso_forecast_csv(
-                picaso_dir, stations_csv, output_dir, season, year
+                picaso_dir, stations_csv, output_dir, season, year,
+                overwrite=overwrite,
             )
             if out_path:
                 created.append(out_path)
             else:
-                skipped.append(f"{year}_{season}")
+                missing.append(tag)
 
-    return created, skipped
+    return created, missing, existing

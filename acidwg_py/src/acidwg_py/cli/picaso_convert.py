@@ -75,6 +75,9 @@ def main() -> int:
     parser.add_argument("--years", nargs="+", type=int, default=None,
                         metavar="YEAR",
                         help="변환할 연도 (기본: 자동 감지). 예: 2014 2015 2016")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="이미 있는 출력 파일도 다시 만든다 "
+                             "(기본: 있으면 건너뜀)")
     args = parser.parse_args()
 
     print("=" * 62)
@@ -85,28 +88,38 @@ def main() -> int:
     print(f"  출력 폴더  : {args.output_dir}")
     print(f"  계절       : {args.seasons or '전체 12개'}")
     print(f"  연도       : {args.years or '자동 감지'}")
+    print(f"  기존 파일  : {'다시 생성' if args.overwrite else '건너뜀'}")
     print("=" * 62)
 
-    created, skipped = build_all_picaso_forecasts(
+    created, missing, existing = build_all_picaso_forecasts(
         picaso_dir   = args.picaso_dir,
         stations_csv = args.stations_csv,
         output_dir   = args.output_dir,
         seasons      = args.seasons,
         years        = args.years,
+        overwrite    = args.overwrite,
     )
 
     print(f"\n변환 완료: {len(created)}개 파일 생성")
-    for p in created:
-        print(f"  [OK] {os.path.basename(p)}")
+    for path in created:
+        print(f"  [OK] {os.path.basename(path)}")
 
-    if skipped:
-        print(f"\n건너뜀 (원본 파일 미존재): {len(skipped)}개")
-        for s in skipped[:10]:
-            print(f"  [SKIP] {s}")
-        if len(skipped) > 10:
-            print(f"  ... 외 {len(skipped) - 10}개")
+    if existing:
+        print(f"\n건너뜀 (이미 있음 — 다시 만들려면 --overwrite): {len(existing)}개")
+        for tag in existing[:10]:
+            print(f"  [SKIP] {tag}")
+        if len(existing) > 10:
+            print(f"  ... 외 {len(existing) - 10}개")
 
-    return 0 if created else 1
+    if missing:
+        print(f"\n건너뜀 (원본 파일 미존재): {len(missing)}개")
+        for tag in missing[:10]:
+            print(f"  [MISS] {tag}")
+        if len(missing) > 10:
+            print(f"  ... 외 {len(missing) - 10}개")
+
+    # 새로 만든 게 없어도 기존 파일로 충족돼 있으면 정상 종료
+    return 0 if (created or existing) else 1
 
 
 if __name__ == "__main__":
