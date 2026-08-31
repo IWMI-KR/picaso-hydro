@@ -232,6 +232,72 @@ def setup_acidwg_weather(cfg, work: Path) -> str:
     return station
 
 
+def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
+                                syear: int, eyear: int) -> Optional[str]:
+    """저수지 수원의 **월 평년(만수대비%)** 을 산출해 저장한다.
+
+    예측(dashboard_data)과 동일하게 ``reservoir_day.txt`` 의 저수지 유입 flo_in 으로
+    물수지를 돌린다. 채널유량을 유입으로 쓰면 용량이 작은 댐(Ngerimel: 용량 0.10 MCM ≪
+    채널 0.87 MCM/월)은 매월 만수로 재충전돼 예측과 기준이 어긋난다.
+
+    산출: ``reservoir_monthly_avg_{tag}.csv`` (month, {수원명}...) — 없으면 None.
+    """
+    dc = getattr(cfg, "Drought", None)
+    sources = [s for s in (getattr(dc, "sources", []) or [])
+               if getattr(s, "type", "") == "reservoir"]
+    res_txt = work / "reservoir_day.txt"
+    if not sources or not res_txt.is_file():
+        return None
+
+    from swat_py.drought.reservoir_forecast import (
+        build_reservoir_forecast_params,
+        monthly_capacity_series,
+    )
+    from swat_py.io.reservoir import load_stage_storage
+    from swat_py.output.reader_swat_plus import parse_reservoir_day
+
+    cols: Dict[str, Dict[int, float]] = {}
+    for s in sources:
+        rcfg = (getattr(cfg, "Reservoirs", {}) or {}).get(s.reservoir)
+        if not (rcfg and rcfg.stage_storage_file):
+            print(f"  [WARN] 저수지 '{s.name}' 평년 — 레지스트리/곡선 없음, 건너뜀")
+            continue
+        try:
+            curve = load_stage_storage(rcfg.stage_storage_file, name=s.reservoir)
+            params = build_reservoir_forecast_params(s, rcfg, curve)
+            gid = next(iter(s.outlets))
+            daily = parse_reservoir_day(res_txt, outlet=int(gid),
+                                        sdate=f"{syear}-01-01")
+            if daily is None or daily.empty:
+                continue
+            # 연도별로 만수에서 출발해 12개월 물수지 → 달력월 평균
+            daily["date"] = pd.to_datetime(daily["date"])
+            per_month: Dict[int, list] = {m: [] for m in range(1, 13)}
+            for yr, sub in daily.groupby(daily["date"].dt.year):
+                if yr < syear or yr > eyear:
+                    continue
+                ser = monthly_capacity_series(
+                    sub, full_m3=params.full_m3, init_m3=params.full_m3,
+                    withdrawal_m3s=params.withdrawal_m3s, dead_m3=params.dead_m3,
+                    curve=curve)
+                for m, v in ser.items():
+                    per_month[m].append(float(v["storage_pct"]))
+            name = next(iter(s.outlets.values()))
+            cols[name] = {m: (sum(v) / len(v) if v else float("nan"))
+                          for m, v in per_month.items()}
+        except Exception as e:
+            print(f"  [WARN] 저수지 '{s.name}' 평년 산출 실패({type(e).__name__}: {e})")
+
+    if not cols:
+        return None
+    df = pd.DataFrame({"month": range(1, 13)})
+    for name, mp in cols.items():
+        df[name] = df["month"].map(mp)
+    path = out_dir / f"reservoir_monthly_avg_{tag}.csv"
+    df.to_csv(path, index=False, encoding="utf-8-sig")
+    return str(path)
+
+
 def run_climatology(cfg, *, workdir: Optional[Path] = None,
                     timeout: int = 7200) -> Dict[str, str]:
     """장기 기후 SWAT+ 를 1회 실행하고 채널 **월유량** 2종 CSV(월/월평년)를 저장한다.
@@ -277,14 +343,24 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
         toks = pl[2].split()
         toks[0] = str(warmup)                       # nyskip 동기화(웜업 제외)
         pl[2] = "  ".join(toks)
+    # 저수지 수원이 있으면 reservoir 일단위 출력도 켠다 — 저수지 평년(만수대비%)은
+    # 예측과 **같은 소스**(reservoir_day.txt 의 저수지 유입 flo_in)로 산정해야 한다.
+    # 채널유량을 유입으로 쓰면 Ngerimel 처럼 용량≪채널유량인 댐은 매월 만수로 재충전되어
+    # 예측(저수지 flo_in 기반)과 기준이 어긋난다.
+    res_sources = [s for s in (getattr(dc, "sources", []) or [])
+                   if getattr(s, "type", "") == "reservoir"]
     try:
         hdr = next(i for i, ln in enumerate(pl) if ln.split()[:1] == ["objects"])
         for i in range(hdr + 1, len(pl)):
             t = pl[i].split()
             if len(t) < 5:
                 continue
-            mon = "y" if t[0] == "channel_sd" else "n"
-            pl[i] = f"{t[0]:<28} n             {mon}             n             n"
+            if t[0] == "channel_sd":
+                pl[i] = f"{t[0]:<28} n             y             n             n"
+            elif t[0] == "reservoir" and res_sources:
+                pl[i] = f"{t[0]:<28} y             n             n             n"
+            else:
+                pl[i] = f"{t[0]:<28} n             n             n             n"
     except StopIteration:
         pass
     pp.write_text("\n".join(pl) + "\n")
@@ -328,9 +404,14 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
     mavg_csv = out_dir / f"channel_monthly_avg_{tag}.csv"
     mavg.to_csv(mavg_csv, index=False, encoding="utf-8-sig")
 
+    # 저수지 수원 평년 — reservoir_day.txt 물수지를 예측과 동일하게 돌려 월 평년(만수대비%) 산출.
+    res_csv = write_reservoir_climatology(cfg, work, out_dir, tag, syear + warmup, eyear)
+
     print("\n저장:")
     print(f"  monthly      : {monthly_csv}  shape={monthly.shape}")
     print(f"  monthly_avg  : {mavg_csv}  shape={mavg.shape}")
+    if res_csv:
+        print(f"  reservoir_avg: {res_csv}")
     return {"monthly": str(monthly_csv), "monthly_avg": str(mavg_csv),
             "n_outlets": len(outlets)}
 

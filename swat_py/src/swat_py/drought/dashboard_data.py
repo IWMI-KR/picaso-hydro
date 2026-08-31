@@ -149,6 +149,26 @@ def _assert_forecast_weather_rows(base_dir: Path, fyear: int, jday0: int, jday1:
             f"  base={base_dir}")
 
 
+def reservoir_climatology_monthly(cfg, outlet: str) -> Dict[int, float]:
+    """저수지 수원의 월 평년(만수대비%) — climatology 산출물에서 읽는다.
+
+    ``4_drought_risk/climatology/reservoir_monthly_avg_{tag}.csv`` (climatology_run 이 생성).
+    파일·열이 없으면 빈 dict → hist_mean 은 NaN 으로 남는다(구 climatology 하위호환).
+    """
+    from swat_py.drought.climatology import climatology_tag
+    path = (Path(cfg.PrjDir) / "4_drought_risk" / "climatology"
+            / f"reservoir_monthly_avg_{climatology_tag(cfg)}.csv")
+    if not path.is_file():
+        return {}
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return {}
+    if outlet not in df.columns or "month" not in df.columns:
+        return {}
+    return {int(m): float(v) for m, v in zip(df["month"], df[outlet])}
+
+
 def ensemble_base_dir(cfg) -> Path:
     """앙상블 base TxtInOut 경로 — **프로젝트별로 분리**한다.
 
@@ -432,9 +452,12 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
             q185, q275, q355 = st["normal_watch"], st["watch_warning"], st["warning_crisis"]
             out_dir = out_root / outlet
             out_dir.mkdir(exist_ok=True)
-            # stream(Cook)과 동일 스키마: forecast_mean(=만수대비%) + hist_mean·observed(저수지 없음→NaN)
+            # stream(Cook)과 동일 스키마: forecast_mean(=만수대비%).
+            # hist_mean 은 climatology 가 산출한 저수지 월 평년(만수대비%)에서 가져온다
+            # (없으면 NaN — climatology 를 최신 코드로 재실행하면 생성된다).
             series = pd.DataFrame({"month": range(1, 13)})
-            series["hist_mean"] = float("nan")
+            series["hist_mean"] = series["month"].map(
+                reservoir_climatology_monthly(cfg, outlet))
             series["observed"] = float("nan")
             if mem is not None:
                 series["forecast_mean"] = series["month"].map(mem.mean(axis=0).to_dict())
