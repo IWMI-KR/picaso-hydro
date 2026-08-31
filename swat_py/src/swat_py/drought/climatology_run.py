@@ -97,6 +97,90 @@ def extract_all_outlets(cha_path: Path, outlets: dict, out_first: str) -> pd.Dat
     return wide[ordered]
 
 
+# ── master 기상파일 해석 ──────────────────────────────────────────────────────
+
+#: SWAT+ 관측 기상 확장자 5종 (weather-sta.cli 가 참조하는 순서)
+WEATHER_EXTS = ("pcp", "tmp", "slr", "hmd", "wnd")
+
+
+def _weather_set_ok(work: Path, prefix: str) -> bool:
+    """``{prefix}.{pcp,tmp,slr,hmd,wnd}`` 5종이 모두 존재하고 **비어 있지 않은가**.
+
+    크기 0 파일을 정상으로 보면 SWAT+ 가 조용히 기상발생기(wgn)로 대체해
+    관측이 아닌 합성 날씨로 모의하게 되므로 반드시 크기까지 확인한다.
+    """
+    return all((work / f"{prefix}.{e}").is_file()
+               and (work / f"{prefix}.{e}").stat().st_size > 0
+               for e in WEATHER_EXTS)
+
+
+def _pcp_lonlat(path: Path):
+    """SWAT+ ``.pcp`` 헤더 3행(nbyr tstep lat lon elev)에서 (lon, lat). 실패 시 None."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for _ in range(2):
+                fh.readline()
+            t = fh.readline().split()
+        return float(t[3]), float(t[2])
+    except Exception:
+        return None
+
+
+def resolve_master_weather_prefix(work: Path, station: str,
+                                  lon=None, lat=None) -> str:
+    """작업본(master 복사본)에서 실제로 사용할 기상파일 **접두어**를 찾는다.
+
+    ``stations-acidwg.csv`` 의 관측소 ID 와 SWAT+ master 안의 기상파일 이름이
+    서로 다른 체계일 수 있다(예: NOAA 11자리 ``91408040310`` vs SWAT 6자리 ``914080``).
+    이름이 어긋나면 SWAT+ 는 없는 파일을 빈 파일로 만들고 wgn 으로 대체해버려
+    **오류 없이 잘못된 결과**를 낸다. 그래서 여기서 미리 해석한다.
+
+    해석 순서
+    ---------
+    1. ``station`` 이름 그대로 5종이 모두 존재 → 그대로 사용
+    2. 부분 일치 — 한쪽이 다른 쪽의 접두어인 후보 (짧은 이름 우선)
+    3. 위경도 최근접 — ``.pcp`` 헤더 좌표가 ``lon``/``lat`` 과 0.05도 이내
+    4. 모두 실패 → :class:`FileNotFoundError` (후보 목록을 함께 안내)
+    """
+    if _weather_set_ok(work, station):
+        return station
+
+    cands = sorted({p.stem for p in work.glob("*.pcp")
+                    if _weather_set_ok(work, p.stem)})
+    if not cands:
+        raise FileNotFoundError(
+            f"master 에 사용 가능한 관측 기상파일이 없습니다: {work}\n"
+            f"  필요: {{ID}}.{{{','.join(WEATHER_EXTS)}}} 5종(크기 0 아님)")
+
+    # 2) 부분 일치 (짧은 쪽 우선 — 6자리 SWAT ID 가 11자리 NOAA ID 의 접두어인 사례)
+    partial = [c for c in cands if c.startswith(station) or station.startswith(c)]
+    if partial:
+        pick = min(partial, key=len)
+        print(f"  [해석] 관측소 '{station}' 기상파일 없음 → 이름 부분일치 '{pick}' 사용")
+        return pick
+
+    # 3) 위경도 최근접
+    if lon is not None and lat is not None:
+        best, best_d = None, None
+        for c in cands:
+            ll = _pcp_lonlat(work / f"{c}.pcp")
+            if ll is None:
+                continue
+            d = abs(ll[0] - float(lon)) + abs(ll[1] - float(lat))
+            if best_d is None or d < best_d:
+                best, best_d = c, d
+        if best is not None and best_d <= 0.05:
+            print(f"  [해석] 관측소 '{station}' 기상파일 없음 → 위경도 최근접 "
+                  f"'{best}' 사용 (Δ{best_d:.4f}°)")
+            return best
+
+    raise FileNotFoundError(
+        f"관측소 '{station}' 의 기상파일을 master 에서 찾지 못했습니다: {work}\n"
+        f"  후보: {cands}\n"
+        f"  → stations-acidwg.csv 의 ID 를 master 파일명과 맞추거나, "
+        f"master 에 {station}.{{{','.join(WEATHER_EXTS)}}} 를 추가하세요.")
+
+
 def setup_acidwg_weather(cfg, work: Path) -> str:
     """장기 평년 실행 기상 = stations-acidwg.csv(장기기록) 단일 관측소로 전 유역 재배정.
 
@@ -104,9 +188,24 @@ def setup_acidwg_weather(cfg, work: Path) -> str:
     .cli 인덱스를 장기 관측소만 나열하고 weather-sta.cli 의 전 subbasin 을 그 관측소
     기상파일(.pcp/.tmp/.slr/.hmd/.wnd)로 재배정한다. 해당 관측소 파일은 default 마스터에
     이미 존재하므로 그대로 재사용한다.
+
+    파일명은 :func:`resolve_master_weather_prefix` 로 해석하므로
+    ``stations-acidwg.csv`` 의 ID 체계가 master 파일명과 달라도 자동 대응한다
+    (예: NOAA 11자리 ``91408040310`` ↔ SWAT 6자리 ``914080``).
+    해석·검증에 실패하면 ``FileNotFoundError`` 로 중단한다 — 그대로 진행하면
+    SWAT+ 가 빈 파일을 만들고 wgn 으로 대체해 **오류 없이 잘못된 결과**를 내기 때문.
+
+    Returns
+    -------
+    str : 실제로 사용된 기상파일 접두어(관측소 ID 와 다를 수 있음).
     """
     stns = load_station_csv(Path(cfg.ObsDayDir) / "stations-acidwg.csv", [])  # 전체(=장기 관측소)
-    station = stns[0].id
+    stn = stns[0]
+    # master 안의 **실제 기상파일 이름**으로 해석 — ID 체계가 달라도 자동 대응.
+    # 해석 실패 시 여기서 중단한다. 그대로 SWAT+ 에 넘기면 없는 파일을 빈 파일로
+    # 만들고 wgn(기상발생기)으로 조용히 대체해 오류 없이 잘못된 결과를 낸다.
+    station = resolve_master_weather_prefix(
+        work, stn.id, lon=getattr(stn, "lon", None), lat=getattr(stn, "lat", None))
     # .cli 인덱스를 단일 관측소만 나열 (SWAT+ 가 단기 우량계 .pcp 를 읽지 않도록)
     for var in ("pcp", "tmp", "wnd", "hmd", "slr"):
         write_cli_index(var, [station], work)
@@ -124,6 +223,12 @@ def setup_acidwg_weather(cfg, work: Path) -> str:
         out.append(f"{t[0]:<28}{t[1]:<24}" + "".join(f"{x:<27}" for x in t[2:7])
                    + f"{'null':<10}null")
     p.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+    # 사후 검증 — 재작성한 참조가 실제 파일(크기 0 아님)로 해석되는지 확인.
+    if not _weather_set_ok(work, station):
+        raise FileNotFoundError(
+            f"기상 재배정 후 파일 확인 실패: {station}.* (work={work})\n"
+            f"  SWAT+ 가 빈 파일을 wgn 으로 대체해 잘못된 결과를 낼 수 있어 중단합니다.")
     return station
 
 
