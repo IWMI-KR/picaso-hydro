@@ -7,7 +7,27 @@
 
 `swat_py`는 PICASO-Hydro의 SWAT+ 모델 자동화 서브패키지다. QSWAT+로 구축한 SWAT+ 모델을 대상으로 **DDS 자동 검보정**, **장기 기후(평년·유황곡선) 재실행**, **앙상블 가뭄예측**, **저수지 물수지 모델링**, **집중형 3단 Tank 모형 검보정**, 그리고 이를 종합한 **가뭄위험 대시보드 산출물** 생성을 담당한다.
 
-모든 CLI는 콘솔 스크립트가 없으며 **`python -m swat_py.<module>`** 형태로 실행하고, 대부분 설정 파일 `config/swat_py.yaml`(공통값 `config/picaso-hydro.yaml` 자동 병합)만으로 구동된다.
+모든 CLI는 **콘솔 스크립트(`swat-*`)** 또는 **`python -m swat_py.<module>`** 두 방식으로 실행할 수 있고,
+대부분 설정 파일 `config/swat_py.yaml`(공통값 `config/picaso-hydro.yaml` 자동 병합)만으로 구동된다.
+
+| 콘솔 스크립트 | 모듈 |
+|---|---|
+| `swat-drought-run` | `swat_py.drought.run` |
+| `swat-drought-climatology` | `swat_py.drought.climatology_run` |
+| `swat-drought-ensemble-weather` | `swat_py.drought.ensemble_weather` |
+| `swat-drought-dashboard` | `swat_py.drought.dashboard_data` |
+| `swat-drought-figure` | `swat_py.drought.figure` |
+| `swat-drought-reclassify` | `swat_py.drought.reclassify` |
+| `swat-drought-historical-worst` | `swat_py.drought.historical_worst` |
+| `swat-calibration-finalize` | `swat_py.calibration.finalize` |
+| `swat-promote` | `swat_py.runner.promote` |
+| `swat-exe-fetch` | `swat_py.runner.fetch_exe` |
+| `swat-tank-calibrate` | `swat_py.tank.calibrate` |
+| `swat-tank-reservoir-calibrate` | `swat_py.tank.reservoir_calibrate` |
+| `swat-tank-compare` | `swat_py.tank.compare` |
+
+아래 §3 은 `python -m` 표기를 유지한다(두 방식 모두 동일하게 동작).
+콘솔 스크립트는 패키지를 재설치해야 생성된다: `pip install -e . --no-deps`
 
 ### 파이프라인 내 위치
 ```

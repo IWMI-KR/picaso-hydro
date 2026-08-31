@@ -36,6 +36,24 @@ dev = [
     "ruff>=0.1",
 ]
 
+[project.scripts]
+# 가뭄예측 (drought)
+swat-drought-run               = "swat_py.drought.run:main"
+swat-drought-climatology       = "swat_py.drought.climatology_run:main"
+swat-drought-ensemble-weather  = "swat_py.drought.ensemble_weather:main"
+swat-drought-dashboard         = "swat_py.drought.dashboard_data:main"
+swat-drought-figure            = "swat_py.drought.figure:main"
+swat-drought-reclassify        = "swat_py.drought.reclassify:main"
+swat-drought-historical-worst  = "swat_py.drought.historical_worst:main"
+# 검보정 · 모델 관리
+swat-calibration-finalize      = "swat_py.calibration.finalize:main"
+swat-promote                   = "swat_py.runner.promote:main"
+swat-exe-fetch                 = "swat_py.runner.fetch_exe:main"
+# Tank 모형
+swat-tank-calibrate            = "swat_py.tank.calibrate:main"
+swat-tank-reservoir-calibrate  = "swat_py.tank.reservoir_calibrate:main"
+swat-tank-compare              = "swat_py.tank.compare:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
