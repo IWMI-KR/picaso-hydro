@@ -1,7 +1,12 @@
-"""장기 채널 일유량 → outlet별 ① 월평년 + ④ FDC 임계선.
+"""장기 채널 **월유량** → outlet별 ① 월평년 + ④ FDC 임계선.
 
-`4_drought_risk/climatology/channel_daily_YYYY_YYYY.csv`(wide: date + outlet열)를 읽어
-각 outlet의 월별 평년유량(1~12월)과 유황곡선 임계유량(Q275/Q355 등)을 산정한다.
+`4_drought_risk/climatology/channel_monthly_{syear+warmup}_{eyear}.csv`
+(wide: date + outlet열)를 읽어 각 outlet의 월별 평년유량(1~12월)과
+유황곡선 임계유량(Q275/Q355 등)을 산정한다.
+
+climatology_run 이 시간 절약을 위해 **월단위만** 생산하므로 일유량 파일은 없다.
+과거 이름인 :func:`climatology_daily_path` 는 :func:`climatology_flow_path` 의
+별칭으로 남아 있으며 실제로는 위 월유량 파일 경로를 돌려준다.
 """
 from __future__ import annotations
 

@@ -2,7 +2,7 @@
 
 단계
   0. base 준비: calibrated(검보정 완료·지역화 포함) + time.sim(예측기간, 관측 선행) → 앙상블용
-  1. ① 평년 + ④ FDC : 장기 기후 CSV(channel_daily_YYYY.csv)
+  1. ① 평년 + ④ FDC : 장기 기후 CSV(channel_monthly_{syear+warmup}_{eyear}.csv)
   2. ② 관측/모의    : 장기 기후 CSV의 예측 직전월(예 2016 Jan–Mar) 모의(관측기상)
   3. ③⑤ 예측 앙상블 : ensemble_flow.run_ensemble → 수원별 [member×month]
        → SWAT+ 결과는 3_swatplus/forecast/{period}/{outlet}.csv 로 수원별 저장

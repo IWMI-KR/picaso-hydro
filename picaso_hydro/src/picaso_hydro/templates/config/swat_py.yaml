@@ -231,7 +231,8 @@ tank:
 drought:
   # 장기 기후(평년·FDC) 재실행 기간 — acidwg_py.yaml observation(syear/eyear)과 동일 값.
   # SWAT+ 웜업(공통 warm_up_years) 제외 후 출력. climatology 파일명은 syear+warmup~eyear
-  # 로 자동 산출된다(channel_daily/monthly/monthly_avg_{syear+warmup}_{eyear}.csv). 하드코딩 없음.
+  # 로 자동 산출된다(channel_monthly[_avg]_{syear+warmup}_{eyear}.csv). 하드코딩 없음.
+  # (일유량은 생산하지 않는다 — 가뭄단계 경계는 월유량 분포에서 산정)
   syear: 1982
   eyear: 2023
   # 급수 4단계 경계 (Normal|Watch, Watch|Warning, Warning|Crisis) — 사용자 변경 가능.
