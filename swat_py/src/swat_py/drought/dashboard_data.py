@@ -2,6 +2,8 @@
 
 단계
   0. base 준비: calibrated(검보정 완료·지역화 포함) + time.sim(예측기간, 관측 선행) → 앙상블용
+     기상은 예측 끝월까지 확보한다 — ①ERA5 실측 연결(전월까지 최신) 우선,
+     불가 시 ②wgn 연장(-99). 예측월 구간은 acidwg 멤버가 덮어써 실측+앙상블이 이어진다.
   1. ① 평년 + ④ FDC : 장기 기후 CSV(channel_monthly_{syear+warmup}_{eyear}.csv)
   2. ② 관측/모의    : 장기 기후 CSV의 예측 직전월(예 2016 Jan–Mar) 모의(관측기상)
   3. ③⑤ 예측 앙상블 : ensemble_flow.run_ensemble → 수원별 [member×month]
@@ -16,6 +18,8 @@ CLI: python -m swat_py.drought.dashboard_data [--forecast 2016_AMJ] [--members 1
 from __future__ import annotations
 
 import argparse
+import hashlib
+import re
 import shutil
 import tempfile
 import time
@@ -69,9 +73,165 @@ def _member_dir(cfg, fyear: int, season: str) -> Path:
     return base / "forecast" / key                    # 기본: 통합 forecast
 
 
+# SWAT+ 기상파일 결측 sentinel — 해당 일은 기상발생기(wgn)로 보완된다.
+WEATHER_MISSING = -99.0
+
+
+def _last_record_date(lines: List[str]):
+    """SWAT+ 기상파일(.pcp/.tmp) 의 마지막 자료 날짜. 자료가 없으면 None."""
+    for ln in reversed(lines[3:]):
+        t = ln.split()
+        if len(t) >= 2:
+            try:
+                return (pd.Timestamp(int(float(t[0])), 1, 1)
+                        + pd.Timedelta(days=int(float(t[1])) - 1))
+            except ValueError:
+                continue
+    return None
+
+
+def extend_weather_to(base_dir: Path, end: pd.Timestamp) -> Dict[str, int]:
+    """base 의 ``.pcp``/``.tmp`` 를 ``end`` 까지 결측(-99) 행으로 연장하고 nbyr 를 갱신한다.
+
+    예측기간이 관측 기록 밖(운영 예보)이면 그 구간의 행 자체가 없어
+    :func:`~swat_py.drought.ensemble_flow._overwrite_forecast_rows` 가 멤버 기상을
+    덮어쓸 대상을 찾지 못한다. 그러면 SWAT+ 가 전 멤버에 동일한 wgn 날씨를 쓰게 되어
+    **앙상블 스프레드가 0 이 되는데도 오류 없이 결과가 나온다.**
+
+    미리 자리표시자 행을 만들어 두면 멤버 forcing 이 정상 주입되고, 덮어쓰이지 않는
+    구간(관측 종료 ~ 예측 시작)은 -99 로 남아 SWAT+ 가 wgn 으로 보완한다.
+
+    Returns
+    -------
+    dict : {파일명: 추가된 행 수} — 이미 충분히 긴 파일은 포함되지 않는다.
+    """
+    added: Dict[str, int] = {}
+    for path in sorted(list(base_dir.glob("*.pcp")) + list(base_dir.glob("*.tmp"))):
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if len(lines) < 4:
+            continue
+        last = _last_record_date(lines)
+        if last is None or last >= end:
+            continue
+        first = _last_record_date(lines[:4])          # 첫 자료행
+        ncol = len(lines[3].split())                  # 3=pcp, 4=tmp
+        rows = pd.date_range(last + pd.Timedelta(days=1), end, freq="D")
+        for d in rows:
+            if ncol >= 4:
+                lines.append(f"  {d.year:4d} {d.dayofyear:5d} "
+                             f"{WEATHER_MISSING:9.3f} {WEATHER_MISSING:9.3f}")
+            else:
+                lines.append(f"  {d.year:4d} {d.dayofyear:5d} {WEATHER_MISSING:9.3f}")
+        # nbyr(헤더 3행 첫 토큰) 갱신 — 실제 자료 연수와 어긋나면 SWAT+ 가 정지할 수 있다.
+        if first is not None:
+            lines[2] = re.sub(r"^(\s*)\d+", lambda m: m.group(1) + str(end.year - first.year + 1),
+                              lines[2], count=1)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        added[path.name] = len(rows)
+    return added
+
+
+def _assert_forecast_weather_rows(base_dir: Path, fyear: int, jday0: int, jday1: int) -> None:
+    """예측기간 행이 실제로 존재하는지 확인. 없으면 중단(전 멤버 동일값 방지)."""
+    bad = []
+    for path in sorted(base_dir.glob("*.pcp")):
+        n = 0
+        for ln in path.read_text(encoding="utf-8", errors="replace").splitlines()[3:]:
+            t = ln.split()
+            if len(t) >= 2 and int(float(t[0])) == fyear and jday0 <= int(float(t[1])) <= jday1:
+                n += 1
+        if n == 0:
+            bad.append(path.name)
+    if bad:
+        raise SystemExit(
+            f"예측기간({fyear} doy {jday0}~{jday1}) 행이 없는 기상파일: {bad}\n"
+            f"  멤버 기상이 주입되지 않아 전 멤버가 동일한 wgn 날씨로 모의됩니다(스프레드 0).\n"
+            f"  base={base_dir}")
+
+
+def ensemble_base_dir(cfg) -> Path:
+    """앙상블 base TxtInOut 경로 — **프로젝트별로 분리**한다.
+
+    예전에는 ``%TEMP%/picaso_ens_base/TxtInOut`` 하나를 모든 프로젝트가 공유했다.
+    :func:`prepare_base` 가 시작 시 이 폴더를 통째로 지우므로, 두 프로젝트(예: 쿡·팔라우)를
+    동시에 돌리면 나중에 시작한 쪽이 앞선 실행의 base 를 삭제해 버렸다.
+    프로젝트 루트로 키를 만들어 서로 간섭하지 않게 한다.
+    """
+    root = Path(cfg.PrjDir).resolve()
+    key = re.sub(r"[^0-9A-Za-z._-]", "_", root.name) or "project"
+    digest = hashlib.md5(str(root).encode("utf-8")).hexdigest()[:8]
+    return Path(tempfile.gettempdir()) / "picaso_ens_base" / f"{key}-{digest}" / "TxtInOut"
+
+
+def resolve_era5_inputs(cfg) -> "Dict | None":
+    """ERA5 격자점 CSV + 표준 일자료 폴더 경로. 둘 다 있을 때만 dict, 없으면 None.
+
+    격자점 CSV 는 프로젝트마다 위치가 달라(``0_database/era5/`` 또는 ``0_database/gis/era5/``)
+    두 곳을 모두 확인한다.
+    """
+    root = Path(cfg.PrjDir) / "0_database"
+    std_dir = root / "era5" / "grid_daily_std"
+    if not std_dir.is_dir() or not any(std_dir.glob("*.csv")):
+        return None
+    for cand in (root / "era5" / "grid_points-era5.csv",
+                 root / "gis" / "era5" / "grid_points-era5.csv"):
+        if cand.is_file():
+            return {"grid_points_csv": str(cand), "grid_daily_std_dir": str(std_dir)}
+    return None
+
+
+def fill_base_weather(cfg, base_dir: Path, fyear: int, months: List[int],
+                      last: pd.Timestamp) -> str:
+    """base 기상을 예측 끝월까지 채운다 — **ERA5 우선, 실패 시 wgn 연장**.
+
+    1. **ERA5 실측 연결**(권장) — 관측소별 최근접 ERA5 격자의 표준 일자료로
+       warm-up ~ 예측 끝월 구간을 재구성한다. ERA5 는 ``util-era5-update`` 로 전월까지
+       최신화되므로, 관측 종료 ~ 예측 시작 사이 공백이 실측으로 메워진다.
+       예측월 구간은 뒤이어 acidwg 앙상블 멤버가 덮어쓴다(실측+앙상블 연결).
+    2. **wgn 연장**(폴백) — ERA5 가 없거나 격자점/일자료가 준비되지 않은 경우,
+       결측(-99) 행으로 예측 끝월까지 연장해 SWAT+ 기상발생기가 보완하게 한다.
+
+    어느 경로든 예측기간 행을 확보하는 것이 목적이다. 행이 없으면 멤버 forcing 이
+    주입되지 않아 전 멤버가 동일한 결과를 내기 때문이다.
+
+    Returns
+    -------
+    str : 사용한 방식 — ``"era5"`` 또는 ``"wgn"``
+    """
+    era5 = resolve_era5_inputs(cfg)
+    if era5:
+        try:
+            from swat_py.drought.warmup_era5 import write_era5_warmup
+            info = write_era5_warmup(
+                base_dir, era5["grid_points_csv"], era5["grid_daily_std_dir"],
+                fyear=fyear, warmup_years=int(cfg.CioNYSKIP), forecast_end=last)
+            cov = info.get("coverage", {})
+            newest = max((v for v in cov.values() if v != "(없음)"), default="(없음)")
+            print(f"[base] 기상 = ERA5 실측 연결 (격자 매칭 {len(cov)}개소, "
+                  f"실측 최신 {newest} → 이후 구간은 앙상블/wgn)")
+            if info.get("gap"):
+                print( "       ※ ERA5 실측이 예측 시작 직전까지 닿지 않는 구간이 있습니다. "
+                       "util-era5-update 로 최신화하면 공백이 줄어듭니다.")
+            return "era5"
+        except Exception as e:                        # 격자 불일치·자료 부족 등
+            print(f"[base] ERA5 연결 실패({type(e).__name__}: {e}) → wgn 연장으로 대체")
+    else:
+        print("[base] ERA5 표준 일자료/격자점 없음 → wgn 연장 사용 "
+              "(util-era5-update 로 준비하면 실측 연결)")
+
+    ext = extend_weather_to(base_dir, last)
+    if ext:
+        print(f"[base] 기상파일 {len(ext)}개를 {last.date()} 까지 wgn 연장 "
+              f"(총 {sum(ext.values()):,}행 추가, -99 → wgn 보완)")
+    return "wgn"
+
+
 def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
     """calibrated(검보정 완료·지역화 포함, 파라미터 baked-in) 복사 + time.sim(웜업 선행 ~
-    예측끝월) → 예측 앙상블 base TxtInOut. default+수동적용이 아닌 calibrated 를 그대로 사용."""
+    예측끝월) → 예측 앙상블 base TxtInOut. default+수동적용이 아닌 calibrated 를 그대로 사용.
+
+    예측기간이 관측 기록 밖이면 기상파일을 그 시점까지 연장한다(:func:`extend_weather_to`).
+    연장 후에도 예측기간 행이 없으면 중단한다."""
     if base_dir.parent.exists():
         # Windows: 삭제지연/읽기전용 대응 — 오류 무시 후 소멸 대기
         shutil.rmtree(base_dir.parent, ignore_errors=True)
@@ -113,6 +273,11 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
     except StopIteration:
         pass
     pp.write_text("\n".join(pl) + "\n")
+    # 기상을 예측 끝월까지 확보 — ERA5 실측 연결 우선, 불가 시 wgn 연장.
+    fill_base_weather(cfg, base_dir, fyear, months, last)
+    _assert_forecast_weather_rows(
+        base_dir, fyear,
+        pd.Timestamp(fyear, months[0], 1).dayofyear, last.dayofyear)
     # 실행파일: OS 자동 대응 + 미발견 시 자동 다운로드(공식 Releases → default·calibrated).
     from swat_py.runner.file_manager import resolve_swat_exe
     exe_src = resolve_swat_exe(cfg.Executable, cfg.DefaultDir,
@@ -177,12 +342,13 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
     # ── 예측 앙상블 (③⑤) ──
     # base·멤버 실행은 로컬(C:) — 프로젝트 루트(I:)는 네트워크 공유라 N멤버가 각자
     # base 를 네트워크에서 복사하면 극심히 느리다. 결과 CSV(소용량)만 I: 에 저장.
-    base = Path(tempfile.gettempdir()) / "picaso_ens_base" / "TxtInOut"
+    base = ensemble_base_dir(cfg)          # 프로젝트별 분리 — 동시 실행 시 충돌 방지
     print(f"[base] 예측 앙상블용 모델 준비 (fyear={fyear}, months={months})")
     exe_name = prepare_base(cfg, base, fyear, months)   # 해석/다운로드된 실행파일 이름
     print(f"[ensemble] {n_members} 멤버 SWAT+ 실행")
     print(f"[ensemble] 멤버 폴더: {member_dir}")
-    # (선택) warm-up 을 최근접 ERA5 격자로 재구성 — 운영 예보용(drought.era5_warmup=true).
+    # (선택) 멤버별 warm-up 재구성 — base 단계에서 이미 ERA5 를 연결하므로 보통 불필요.
+    #        멤버마다 다시 쓰고 싶을 때만 drought.era5_warmup=true 로 켠다.
     era5_warmup = None
     if dc and getattr(dc, "era5_warmup", False):
         era5_root = Path(cfg.PrjDir) / "0_database" / "era5"

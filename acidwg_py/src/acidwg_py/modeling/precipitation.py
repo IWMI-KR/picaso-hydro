@@ -71,9 +71,16 @@ def monthly_total_prcp(prcp_table: np.ndarray, site_names: list) -> dict:
                 total_prcp[yi, m - 1] = prcp_m[mask_yr].mean(axis=1).sum()
 
     # 1/3, 2/3 분위수 기반 범주 경계
+    #   결측일이 있는 달의 월합계는 NaN 이다. np.quantile 에 그대로 넣으면 경계가 NaN 이
+    #   되고, 이후 비교가 모두 False 라 그 달 전 연도가 AN 으로 오분류된다 → 유한값만 사용.
     breaks = np.zeros((12, 4))
     for m in range(12):
-        q13, q23 = np.quantile(total_prcp[:, m], [1 / 3, 2 / 3])
+        vals = total_prcp[:, m]
+        vals = vals[np.isfinite(vals)]
+        if len(vals) >= 3:
+            q13, q23 = np.quantile(vals, [1 / 3, 2 / 3])
+        else:
+            q13, q23 = 0.0, np.inf
         breaks[m] = [0.0, q13, q23, np.inf]
 
     # 각 날짜의 습윤범주 결정

@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -84,6 +85,11 @@ def _overwrite_forecast_rows(run_dir: Path, forcing: Dict[int, tuple],
         tmp.write_text("\n".join(lines) + "\n")
 
 
+#: 멤버 1개의 SWAT+ 실행 제한(초). 10초는 느린 워커·디스크 경합에서 잘려나가
+#: 멤버 손실(=앙상블 축소)을 만든다. 환경변수 SWAT_MEMBER_TIMEOUT 로 조정 가능.
+MEMBER_TIMEOUT = int(os.environ.get("SWAT_MEMBER_TIMEOUT", "300"))
+
+
 def _run_one(args) -> Dict:
     """(member_csv, base_dir, exe, fyear, months, outlets, era5_warmup, reservoirs)
     → 채널 월유량 + 저수지 월 만수대비% dict|None.
@@ -118,7 +124,7 @@ def _run_one(args) -> Dict:
                 pass
         try:
             r = subprocess.run([str(exe_path)], cwd=str(run),
-                               capture_output=True, timeout=10)
+                               capture_output=True, timeout=MEMBER_TIMEOUT)
         except subprocess.TimeoutExpired:
             return {"_member": member_csv.parent.name, "_error": "timeout"}
         if r.returncode != 0:

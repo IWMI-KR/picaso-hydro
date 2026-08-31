@@ -208,6 +208,11 @@ def _build_obs_monthly_pool(obs_data: dict, param_list: dict,
                     continue
                 stn_totals.append(float(prcp_table[mask, 3+j].sum()))
                 stn_tmeans.append(float(tavg_vals[mask, j].mean()))
+            # 결측일이 있는 달은 월합계/월평균이 NaN 이다. 그대로 np.quantile 에 넣으면
+            # 경계가 통째로 NaN 이 되고, 이후 비교가 모두 False 라 **그 달 전 연도가
+            # AN 으로 오분류**된다. 유한값만으로 경계를 산정한다.
+            stn_totals = [v for v in stn_totals if np.isfinite(v)]
+            stn_tmeans = [v for v in stn_tmeans if np.isfinite(v)]
             if len(stn_totals) >= 3:
                 q13, q23 = np.quantile(stn_totals, [1/3, 2/3])
             else:
@@ -236,23 +241,32 @@ def _build_obs_monthly_pool(obs_data: dict, param_list: dict,
                 if not mask.any():
                     continue
 
-                # 관측소 j 월합계
+                # 관측소 j 월합계 — 결측일이 하나라도 있으면 그 달은 pool 에서 제외.
+                #   numpy sum 은 NaN 을 전파하므로 결측월 합계는 NaN 이 된다.
+                #   NaN 은 아래 두 비교가 모두 False 라 else 분기(AN)로 떨어져
+                #   AN pool 을 오염시키고,
+                #   그 값을 뽑은 멤버는 target=NaN → scale=NaN → 그 달 강수 전체가 NaN 이 된다.
+                #   (실측: 쿡 918430 의 2·3·4월 126개월 중
+                #    13개월(10.3%)에 결측일 존재
+                #    → 앙상블 1000멤버 중 126개가 월 단위로 NaN)
                 pt_j = float(prcp_table[mask, 3+j].sum())
-                if pt_j <= br_p[1]:
-                    pool["prcp"][j][m]["BN"].append(pt_j)
-                elif pt_j <= br_p[2]:
-                    pool["prcp"][j][m]["NN"].append(pt_j)
-                else:
-                    pool["prcp"][j][m]["AN"].append(pt_j)
+                if np.isfinite(pt_j):
+                    if pt_j <= br_p[1]:
+                        pool["prcp"][j][m]["BN"].append(pt_j)
+                    elif pt_j <= br_p[2]:
+                        pool["prcp"][j][m]["NN"].append(pt_j)
+                    else:
+                        pool["prcp"][j][m]["AN"].append(pt_j)
 
-                # 관측소 j 월평균 기온
+                # 관측소 j 월평균 기온 — 동일하게 결측월 제외
                 tm_j = float(tavg_vals[mask, j].mean())
-                if tm_j <= br_t[1]:
-                    pool["temp"][j][m]["BN"].append(tm_j)
-                elif tm_j <= br_t[2]:
-                    pool["temp"][j][m]["NN"].append(tm_j)
-                else:
-                    pool["temp"][j][m]["AN"].append(tm_j)
+                if np.isfinite(tm_j):
+                    if tm_j <= br_t[1]:
+                        pool["temp"][j][m]["BN"].append(tm_j)
+                    elif tm_j <= br_t[2]:
+                        pool["temp"][j][m]["NN"].append(tm_j)
+                    else:
+                        pool["temp"][j][m]["AN"].append(tm_j)
 
     return pool
 
@@ -300,6 +314,10 @@ def calibrate_monthly_categories(
             if pool_p:
                 target_j = float(np.random.choice(pool_p))
                 current_j = float(prcp[mask_p, 2+j].sum())
+                # 2차 방어 — 목표/현재값이 유한하지 않으면 조정하지 않는다.
+                # (조정하면 그 달 강수 전체가 NaN 이 되어 SWAT+ 멤버가 통째로 실패한다)
+                if not np.isfinite(target_j):
+                    continue
                 if current_j > 0:
                     scale_j = target_j / current_j
                     prcp[mask_p, 2+j] = np.round(
