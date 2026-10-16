@@ -391,6 +391,24 @@ def acid_modeling(obs_data: dict, model_file: str = None,
 # 메인 실행 함수 (R의 acid.run 대체 — 핵심 변경)
 # ---------------------------------------------------------------------------
 
+def assert_full_ensemble(success: int, n_ensemble: int, attempt: int,
+                         out_path) -> None:
+    """요청한 멤버 수를 채웠는지 확인 — 모자라면 **실패**로 끝낸다.
+
+    예전에는 최대 시도 횟수를 넘기면 경고만 찍고 정상 종료(exit 0)했다.
+    그러면 멤버가 모자란 채로 하류(SWAT+ 앙상블)가 그대로 받아 써서,
+    앙상블 수가 줄어든 것을 아무도 모른다.
+
+    요청(최기섭 2026-10-02): "예측월 결과가 비면 0 이 아닌 종료 코드로
+    실패하게 해 주세요. 지금은 exit 0 으로 끝나서 틀린 결과를 감지할 수 없습니다."
+    """
+    if success >= n_ensemble:
+        return
+    raise RuntimeError(
+        f"앙상블 생성 실패: 요청 {n_ensemble}개 중 {success}개만 생성"
+        f"(시도 {attempt}회) → {out_path}")
+
+
 def acid_run(
     station_csv: str,
     obs_dir: str,
@@ -478,7 +496,7 @@ def acid_run(
         while success < n_ensemble:
             attempt += 1
             if attempt > n_ensemble * 5:
-                print(f"[acidwg_py] 경고: 최대 시도 횟수 초과. {success}개 생성 완료.")
+                print(f"[acidwg_py] 최대 시도 횟수 초과 — {success}/{n_ensemble}개만 생성.")
                 break
 
             try:
@@ -510,6 +528,7 @@ def acid_run(
                     tqdm.write(traceback.format_exc())
                 continue
 
+    assert_full_ensemble(success, n_ensemble, attempt, out_path)
     print(f"[acidwg_py] 완료: {success}개 시나리오 → {out_path}")
     return out_path
 

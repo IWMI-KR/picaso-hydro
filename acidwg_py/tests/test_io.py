@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from acidwg_py.io import acid_data_loading, load_obs_csv
+from acidwg_py.io import acid_data_loading, load_obs_csv, write_scenario
 
 
 # ── 표준 포맷 fixture ────────────────────────────────────────────────────────
@@ -145,3 +145,58 @@ def test_acid_data_loading_with_standard_format(tmp_path) -> None:
     assert out["prcp_table"][0, 3] == pytest.approx(0.0)
     # 관측소 2 첫날 prec
     assert out["prcp_table"][0, 4] == pytest.approx(0.5)
+
+
+# ── write_scenario: 해 넘기는 계절(NDJ·DJF)의 행별 연도 ──────────────────────
+
+def _scenario_arrays(months, *, d: int = 2) -> np.ndarray:
+    """sim_period 순서의 (n_days, 2+d) 시나리오 배열 — [Month, Day, stn1..]."""
+    rows = []
+    for m in months:
+        for day in (1, 15, 28):
+            rows.append([m, day] + [float(m)] * d)
+    return np.array(rows, dtype=float)
+
+
+def _write_and_read(tmp_path, months, forecast_year):
+    arr = _scenario_arrays(months)
+    result = {"prcp_scenario": arr, "tmax_scenario": arr, "tmin_scenario": arr}
+    write_scenario(result, str(tmp_path), 1, ["A", "B"],
+                   station_ids=["918430", "427608"], forecast_year=forecast_year)
+    return pd.read_csv(tmp_path / "member_0001" / "918430.csv")
+
+
+@pytest.mark.parametrize("months,forecast_year,expected", [
+    # 한 해 안의 계절 — 전 행 동일 연도
+    ([2, 3, 4],   2026, {2: 2026, 3: 2026, 4: 2026}),
+    ([10, 11, 12], 2025, {10: 2025, 11: 2025, 12: 2025}),
+    # 해를 넘기는 계절 — 넘어간 달에 forecast_year + 1
+    ([11, 12, 1], 2025, {11: 2025, 12: 2025, 1: 2026}),
+    ([12, 1, 2],  2025, {12: 2025, 1: 2026, 2: 2026}),
+])
+def test_write_scenario_year_spans_year_boundary(
+        tmp_path, months, forecast_year, expected) -> None:
+    """NDJ·DJF 의 다음 해 달(1·2월)에 다음 연도가 붙어야 한다.
+
+    회귀 방지 — 과거에는 전 행에 forecast_year 하나를 찍어 2025_DJF 의 1·2월이
+    2025년으로 기록됐다(실제 2026년). 하류 swat_py 가 이 연도로 날짜를 만든다.
+    """
+    df = _write_and_read(tmp_path, months, forecast_year)
+    got = {int(m): sorted(set(g["year"].astype(int)))
+           for m, g in df.groupby("mon")}
+    assert got == {m: [y] for m, y in expected.items()}
+
+
+def test_write_scenario_year_is_monotonic_for_cross_year_season(tmp_path) -> None:
+    """DJF 는 시간순으로 연도가 줄어들지 않아야 한다(날짜 역행 방지)."""
+    df = _write_and_read(tmp_path, [12, 1, 2], 2025)
+    years = df["year"].astype(int).tolist()
+    assert years == sorted(years)
+    dates = pd.to_datetime(dict(year=df["year"], month=df["mon"], day=df["day"]))
+    assert dates.is_monotonic_increasing
+
+
+def test_write_scenario_without_forecast_year_has_no_year_column(tmp_path) -> None:
+    """forecast_year 미지정 시 year 컬럼 자체가 없다(기존 동작 유지)."""
+    df = _write_and_read(tmp_path, [12, 1, 2], None)
+    assert "year" not in df.columns

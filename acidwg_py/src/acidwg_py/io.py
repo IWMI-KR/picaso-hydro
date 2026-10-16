@@ -339,6 +339,33 @@ def _interpolate_missing(series: np.ndarray, missing_val: float = -99.0,
 # 출력 함수
 # ---------------------------------------------------------------------------
 
+def _row_years(months, forecast_year: int) -> np.ndarray:
+    """행별 연도 — 해를 넘기는 계절(NDJ·DJF)의 다음 해 달에 다음 연도를 부여한다.
+
+    시나리오 배열은 sim_period 순서로 정렬돼 있다(DJF → 12월…, 1월…, 2월…).
+    따라서 **월 번호가 작아지는 지점(12→1)이 해가 바뀌는 경계**다. 그 이후 행의
+    연도를 1 올린다. 계절이 한 해 안에 있으면(FMA 등) 전 행이 forecast_year 로 같다.
+
+    예) forecast_year=2025, DJF
+        12월 행 → 2025 · 1월 행 → 2026 · 2월 행 → 2026
+
+    Parameters
+    ----------
+    months        : 월 번호 배열 (시간순)
+    forecast_year : 계절 **시작월**의 연도 (예보 라벨 연도)
+
+    Returns
+    -------
+    ndarray(int) — months 와 같은 길이의 연도 배열
+    """
+    months = np.asarray(months, dtype=int)
+    if months.size == 0:
+        return np.empty(0, dtype=int)
+    # diff < 0 인 지점이 연도 경계. 누적합으로 "지금까지 넘어간 해의 수"를 만든다.
+    wraps = np.concatenate(([0], np.cumsum(np.diff(months) < 0)))
+    return int(forecast_year) + wraps.astype(int)
+
+
 def write_scenario(result: dict, output_dir: str, ensemble_idx: int,
                    site_names: list, station_ids: list = None,
                    forecast_year: int = None):
@@ -351,7 +378,9 @@ def write_scenario(result: dict, output_dir: str, ensemble_idx: int,
     ensemble_idx  : 앙상블 번호 (1-based)
     site_names    : 관측소 영문 이름 목록 (시나리오 배열 컬럼 순서)
     station_ids   : 관측소 ID 목록 (파일명에 사용; None이면 site_names 사용)
-    forecast_year : 예보 연도 (CSV에 year 컬럼 추가; None이면 생략)
+    forecast_year : 예보 연도 = 계절 **시작월**의 연도 (CSV에 year 컬럼 추가; None이면 생략).
+                    해를 넘기는 계절(NDJ·DJF)은 다음 해로 넘어간 달에 ``forecast_year + 1``
+                    이 붙는다 (:func:`_row_years`). 예) 2025_DJF → 12월 2025 · 1·2월 2026
 
     출력 구조
     ---------
@@ -373,12 +402,17 @@ def write_scenario(result: dict, output_dir: str, ensemble_idx: int,
     tmax = result["tmax_scenario"]  # (n_days, 2+d): Month, Day, stn1...
     tmin = result["tmin_scenario"]  # (n_days, 2+d): Month, Day, stn1...
 
+    mon = prcp[:, 0].astype(int)
+    day = prcp[:, 1].astype(int)
+    # 해를 넘기는 계절(NDJ·DJF)은 행마다 연도가 다르다. 한 해 안의 계절은 전 행 동일.
+    years = _row_years(mon, forecast_year) if forecast_year is not None else None
+
     for j, stn_id in enumerate(ids):
         data: dict = {}
-        if forecast_year is not None:
-            data["year"] = int(forecast_year)
-        data["mon"]  = prcp[:, 0].astype(int)
-        data["day"]  = prcp[:, 1].astype(int)
+        if years is not None:
+            data["year"] = years
+        data["mon"]  = mon
+        data["day"]  = day
         data["prcp"] = np.round(prcp[:, 2 + j], 1)
         data["tmax"] = np.round(tmax[:, 2 + j], 1)
         data["tmin"] = np.round(tmin[:, 2 + j], 1)
