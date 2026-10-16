@@ -27,7 +27,8 @@ from swat_py.drought.ensemble_weather import generate_ensemble_weather
 
 
 def run_pipeline(cfg, *, forecast=None, n_members=None, n_workers=4,
-                 with_climatology=False, acidwg_config=None, skip_acidwg=False) -> dict:
+                 with_climatology=False, acidwg_config=None, skip_acidwg=False,
+                 strict=True) -> dict:
     dc = cfg.Drought
     forecast = forecast or dc.forecast
     n = int(n_members or dc.n_members)
@@ -58,9 +59,13 @@ def run_pipeline(cfg, *, forecast=None, n_members=None, n_workers=4,
 
     # ③ SWAT+ 앙상블 + Drought Risk 대시보드
     print("[3/3] SWAT+ 앙상블 + Drought Risk 대시보드 …")
-    from swat_py.drought.dashboard_data import build
+    from swat_py.drought.dashboard_data import ForecastIncomplete, build
     from swat_py.drought.figure import make_all_figures
-    res = build(cfg, forecast, n_members=n, n_workers=n_workers)
+    try:
+        res = build(cfg, forecast, n_members=n, n_workers=n_workers, strict=strict)
+    except ForecastIncomplete as e:
+        make_all_figures(Path(e.out_root))      # 진단용 그림은 그려 두고 실패를 올린다
+        raise
     make_all_figures(Path(res["out_root"]))
     print(f"\n✔ 완료 — {res['out_root']}")
     return res
@@ -75,13 +80,21 @@ def main(argv=None) -> int:
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--with-climatology", action="store_true", help="장기 기후 SWAT+ 선행 실행")
     ap.add_argument("--skip-acidwg", action="store_true", help="acidwg 상세화 생략(기존 멤버 사용)")
+    ap.add_argument("--allow-incomplete", action="store_true",
+                    help="예측월 결과가 비어도 성공(0)으로 끝낸다 — 기본은 실패(1)")
     ap.add_argument("--acidwg-config", default=None)
     args = ap.parse_args(argv)
     from swat_py.config import load_config
     cfg = load_config(args.config)
-    run_pipeline(cfg, forecast=args.forecast, n_members=args.members,
-                 n_workers=args.workers, with_climatology=args.with_climatology,
-                 acidwg_config=args.acidwg_config, skip_acidwg=args.skip_acidwg)
+    from swat_py.drought.dashboard_data import ForecastIncomplete
+    try:
+        run_pipeline(cfg, forecast=args.forecast, n_members=args.members,
+                     n_workers=args.workers, with_climatology=args.with_climatology,
+                     acidwg_config=args.acidwg_config, skip_acidwg=args.skip_acidwg,
+                     strict=not args.allow_incomplete)
+    except ForecastIncomplete as e:
+        print(f"\n✖ 실패 — {e}")
+        return 1                                # 0 이 아닌 종료코드(요청 P2-B)
     return 0
 
 

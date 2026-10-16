@@ -158,7 +158,8 @@ def test_member_monthly_weather():
     dates = pd.date_range("2016-04-01", "2016-06-30", freq="D")
     pd.DataFrame({"year": dates.year, "mon": dates.month, "day": dates.day,
                   "prcp": 2.0, "tmax": 30.0, "tmin": 24.0}).to_csv(csv, index=False)
-    w = _member_monthly_weather(csv, 2016, [4, 5, 6])
+    from swat_py.drought.season import period_ym
+    w = _member_monthly_weather(csv, period_ym(2016, [4, 5, 6]))
     assert set(w) == {4, 5, 6}
     assert w[4] == pytest.approx((60.0, 30.0, 24.0))   # 4월 30일×2mm=60, 기온 평균
     assert w[6][0] == pytest.approx(60.0)              # 6월 30일×2mm

@@ -283,6 +283,11 @@ def reservoir_daily_balance(daily_res: pd.DataFrame, *, params, init_msl: float,
     init_msl 초기수위에서 시작해 매일:
         S = clip(S + flo_in (+precip−evap−seep) − 취수, dead, full).
     Returns [date, storage_pct, storage_m3, water_level_ft].
+
+    ※ 여기의 ``water_level_ft`` 는 **곡선 datum(MSL)** 이다 — 이 모듈은 관측을
+    MSL 로 변환해(obs − obs_datum_offset_ft) 비교하기 때문이다. 예측 경로
+    (reservoir_forecast)는 현장 자 눈금(staff gauge)으로 내보낸다. 관측 수위를
+    대시보드에 연결할 때(P3-C) 두 기준면을 맞춰야 한다.
     """
     curve = params.curve
     full, dead = params.full_m3, params.dead_m3

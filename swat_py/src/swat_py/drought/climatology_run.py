@@ -240,7 +240,11 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
     물수지를 돌린다. 채널유량을 유입으로 쓰면 용량이 작은 댐(Ngerimel: 용량 0.10 MCM ≪
     채널 0.87 MCM/월)은 매월 만수로 재충전돼 예측과 기준이 어긋난다.
 
-    산출: ``reservoir_monthly_avg_{tag}.csv`` (month, {수원명}...) — 없으면 None.
+    산출: ``reservoir_monthly_avg_{tag}.csv``
+    (month, {수원명}=저수량%, {수원명}_level_ft=수위) — 없으면 None.
+
+    수위 열은 **관측 눈금**(staff gauge) 기준이다 — 대시보드가 수위 기준
+    (thresholds.method=level_fraction)일 때 평년선이 된다.
     """
     dc = getattr(cfg, "Drought", None)
     sources = [s for s in (getattr(dc, "sources", []) or [])
@@ -256,7 +260,8 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
     from swat_py.io.reservoir import load_stage_storage
     from swat_py.output.reader_swat_plus import parse_reservoir_day
 
-    cols: Dict[str, Dict[int, float]] = {}
+    cols: Dict[str, Dict[int, float]] = {}        # 수원 → {월: 저수량%}
+    cols_lvl: Dict[str, Dict[int, float]] = {}    # 수원 → {월: 수위 ft(관측 눈금)}
     for s in sources:
         rcfg = (getattr(cfg, "Reservoirs", {}) or {}).get(s.reservoir)
         if not (rcfg and rcfg.stage_storage_file):
@@ -273,18 +278,25 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
             # 연도별로 만수에서 출발해 12개월 물수지 → 달력월 평균
             daily["date"] = pd.to_datetime(daily["date"])
             per_month: Dict[int, list] = {m: [] for m in range(1, 13)}
+            per_month_lvl: Dict[int, list] = {m: [] for m in range(1, 13)}
             for yr, sub in daily.groupby(daily["date"].dt.year):
                 if yr < syear or yr > eyear:
                     continue
                 ser = monthly_capacity_series(
                     sub, full_m3=params.full_m3, init_m3=params.full_m3,
                     withdrawal_m3s=params.withdrawal_m3s, dead_m3=params.dead_m3,
-                    curve=curve)
+                    curve=curve, datum_offset_ft=params.datum_offset_ft)
                 for m, v in ser.items():
                     per_month[m].append(float(v["storage_pct"]))
+                    per_month_lvl[m].append(float(v["water_level_ft"]))
             name = next(iter(s.outlets.values()))
-            cols[name] = {m: (sum(v) / len(v) if v else float("nan"))
-                          for m, v in per_month.items()}
+
+            def _avg(per):
+                return {m: (sum(v) / len(v) if v else float("nan"))
+                        for m, v in per.items()}
+
+            cols[name] = _avg(per_month)
+            cols_lvl[name] = _avg(per_month_lvl)
         except Exception as e:
             print(f"  [WARN] 저수지 '{s.name}' 평년 산출 실패({type(e).__name__}: {e})")
 
@@ -292,7 +304,9 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
         return None
     df = pd.DataFrame({"month": range(1, 13)})
     for name, mp in cols.items():
-        df[name] = df["month"].map(mp)
+        df[name] = df["month"].map(mp)                       # 저수량 %
+    for name, mp in cols_lvl.items():
+        df[f"{name}_level_ft"] = df["month"].map(mp)         # 수위 ft(관측 눈금)
     path = out_dir / f"reservoir_monthly_avg_{tag}.csv"
     df.to_csv(path, index=False, encoding="utf-8-sig")
     return str(path)

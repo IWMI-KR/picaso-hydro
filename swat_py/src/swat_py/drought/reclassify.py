@@ -64,7 +64,10 @@ def reclassify_stages(cfg, forecast: str, *, n_ensemble: int = 0,
         for _, r in fc.iterrows():
             sp = stage_probabilities4_from_quantiles(
                 [lv for _, lv in QCOLS], [r[c] for c, _ in QCOLS], q185, q275, q355)
-            stage_rows.append({"month": int(r["month"]), **sp})
+            row = {"month": int(r["month"]), **sp}
+            if "ym" in fc.columns:          # series 의 연-월을 그대로 물려준다
+                row = {"month": row.pop("month"), "ym": str(r["ym"]), **row}
+            stage_rows.append(row)
         pd.DataFrame(stage_rows).to_csv(outlet_dir / "stage_prob.csv", index=False,
                                         encoding="utf-8-sig")
         # ④ thresholds (설정 method + 입력값 + 앙상블수 + 경계유량 + 참조 유황유량)
@@ -88,7 +91,8 @@ def reclassify_stages(cfg, forecast: str, *, n_ensemble: int = 0,
         make_outlet_figure(outlet_dir)
         make_stage_gauges(outlet_dir)
         for sr in stage_rows:
-            summary.append({"outlet": outlet, "month": sr["month"],
+            summary.append({"outlet": outlet, "ym": sr.get("ym", ""),
+                            "month": sr["month"],
                             "most_likely": sr["most_likely"],
                             **{s: sr[s] for s in STAGES4}})
         print(f"  ✔ {outlet:<12s} {[s['most_likely'] for s in stage_rows]}")

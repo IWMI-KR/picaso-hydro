@@ -23,6 +23,7 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
+from swat_py.drought.season import daykey_month, in_ym, period_end, period_ym
 from swat_py.output.reader_swat_plus import parse_channel_sd_day
 
 # 12 outlet 채널 (gis_id → 이름)
@@ -33,24 +34,53 @@ OUTLETS = {
 }
 
 
-def _member_forcing(member_csv: Path) -> Dict[int, tuple]:
-    """멤버 918430.csv → {jday: (prcp, tmax, tmin)} (예측연도)."""
+def _member_forcing(member_csv: Path) -> Dict[tuple, tuple]:
+    """멤버 918430.csv → ``{(year, jday): (prcp, tmax, tmin)}``.
+
+    키에 **연도를 포함**한다. 연중일(jday)만으로는 해를 넘는 계절(NDJ·DJF)에서
+    12월과 다음 해 1월을 구분할 수 없다.
+    """
     df = pd.read_csv(member_csv)
-    out = {}
+    out: Dict[tuple, tuple] = {}
     for _, r in df.iterrows():
         d = pd.Timestamp(int(r["year"]), int(r["mon"]), int(r["day"]))
-        out[d.dayofyear] = (float(r["prcp"]), float(r["tmax"]), float(r["tmin"]))
+        out[(int(d.year), int(d.dayofyear))] = (
+            float(r["prcp"]), float(r["tmax"]), float(r["tmin"]))
     return out
 
 
-def _member_monthly_weather(member_csv: Path, fyear: int,
-                            months: List[int]) -> Dict[int, tuple]:
+def _member_coverage(forcing: Dict[tuple, tuple], daykeys: Dict[tuple, int],
+                     ym: List[tuple]) -> List[str]:
+    """멤버 forcing 이 예측 각 월을 덮는지 확인 → 부족한 월 설명 목록.
+
+    해를 넘는 계절에서 멤버 CSV 의 연도가 틀리면(옛 acidwg 산출물) 그 달은
+    **한 날도 맞지 않아** 기상이 주입되지 않는다. 예전에는 이것이 조용히
+    '전 멤버 동일값'으로 나타났으므로 여기서 명시적으로 잡는다.
+
+    2월은 acidwg 가 항상 28일만 생성하므로(윤년 미생성) 하루 부족을 허용한다.
+    """
+    have: Dict[int, int] = {}
+    for k, m in daykeys.items():
+        if k in forcing:
+            have[m] = have.get(m, 0) + 1
+    short: List[str] = []
+    for y, m in ym:
+        ndays = (pd.Timestamp(y, m, 1) + pd.offsets.MonthEnd(0)).day
+        got = have.get(m, 0)
+        if got < ndays - 1:             # -1 = 윤년 2/29 미생성 허용
+            short.append(f"{y}-{m:02d} ({got}/{ndays}일)")
+    return short
+
+
+def _member_monthly_weather(member_csv: Path, ym: List[tuple]) -> Dict[int, tuple]:
     """멤버 918430.csv → {month: (precip_mm 합, tmax_c 평균, tmin_c 평균)} (예측월).
 
     이 멤버를 구동한 앙상블 forcing(918430 예측)을 예측월별로 집계 — 지역별
-    결과 CSV 의 강수·기온 칼럼용. 섬 단일예측이라 전 수원에 동일 적용."""
+    결과 CSV 의 강수·기온 칼럼용. 섬 단일예측이라 전 수원에 동일 적용.
+    ``ym`` 으로 걸러 해를 넘는 달도 포함한다(월 번호는 그대로 키로 쓴다)."""
     df = pd.read_csv(member_csv)
-    df = df[(df["year"].astype(int) == fyear) & (df["mon"].astype(int).isin(months))]
+    key = df["year"].astype(int) * 100 + df["mon"].astype(int)
+    df = df[key.isin({y * 100 + m for y, m in ym})]
     out: Dict[int, tuple] = {}
     for m, sub in df.groupby(df["mon"].astype(int)):
         out[int(m)] = (float(pd.to_numeric(sub["prcp"], errors="coerce").sum()),
@@ -59,9 +89,19 @@ def _member_monthly_weather(member_csv: Path, fyear: int,
     return out
 
 
-def _overwrite_forecast_rows(run_dir: Path, forcing: Dict[int, tuple],
-                             fyear: int, jday0: int, jday1: int) -> None:
-    """예측월(fyear, jday0..jday1) 의 모든 .pcp/.tmp 를 멤버 forcing 으로 덮어씀."""
+def _overwrite_forecast_rows(run_dir: Path, forcing: Dict[tuple, tuple],
+                             daykeys: Dict[tuple, int]) -> int:
+    """예측기간의 모든 ``.pcp``/``.tmp`` 행을 멤버 forcing 으로 덮어쓴다.
+
+    ``daykeys`` 는 :func:`~swat_py.drought.season.daykey_month` 가 만든
+    ``{(year, jday): month}`` 조회표다. 연중일 **범위 비교**(``jday0 <= jd <= jday1``)
+    는 해를 넘으면 시작>끝으로 뒤집혀 한 행도 고르지 못하므로 쓰지 않는다.
+
+    Returns
+    -------
+    int : 덮어쓴 행 수(.pcp + .tmp 합계)
+    """
+    n = 0
     for pcp in run_dir.glob("*.pcp"):
         lines = pcp.read_text().splitlines()
         for i in range(3, len(lines)):
@@ -69,8 +109,9 @@ def _overwrite_forecast_rows(run_dir: Path, forcing: Dict[int, tuple],
             if len(p) < 3:
                 continue
             yr, jd = int(float(p[0])), int(float(p[1]))
-            if yr == fyear and jday0 <= jd <= jday1 and jd in forcing:
-                lines[i] = f"  {yr:4d} {jd:5d} {forcing[jd][0]:9.3f}"
+            if (yr, jd) in daykeys and (yr, jd) in forcing:
+                lines[i] = f"  {yr:4d} {jd:5d} {forcing[(yr, jd)][0]:9.3f}"
+                n += 1
         pcp.write_text("\n".join(lines) + "\n")
     for tmp in run_dir.glob("*.tmp"):
         lines = tmp.read_text().splitlines()
@@ -79,10 +120,12 @@ def _overwrite_forecast_rows(run_dir: Path, forcing: Dict[int, tuple],
             if len(p) < 4:
                 continue
             yr, jd = int(float(p[0])), int(float(p[1]))
-            if yr == fyear and jday0 <= jd <= jday1 and jd in forcing:
-                _, tx, tn = forcing[jd]
+            if (yr, jd) in daykeys and (yr, jd) in forcing:
+                _, tx, tn = forcing[(yr, jd)]
                 lines[i] = f"  {yr:4d} {jd:5d} {tx:9.3f} {tn:9.3f}"
+                n += 1
         tmp.write_text("\n".join(lines) + "\n")
+    return n
 
 
 #: 멤버 1개의 SWAT+ 실행 제한(초). 10초는 느린 워커·디스크 경합에서 잘려나가
@@ -100,9 +143,10 @@ def _run_one(args) -> Dict:
      reservoirs) = args
     reservoirs = reservoirs or {}
     member_csv, base_dir = Path(member_csv), Path(base_dir)
-    jday0 = pd.Timestamp(fyear, months[0], 1).dayofyear
-    last = pd.Timestamp(fyear, months[-1], 1) + pd.offsets.MonthEnd(0)
-    jday1 = last.dayofyear
+    # 예측 구간을 (연도, 월) 로 풀어 쓴다 — NDJ·DJF 는 끝월이 다음 해다.
+    ym = period_ym(fyear, months)
+    last = period_end(fyear, months)
+    daykeys = daykey_month(ym)          # {(year, jday): month} — 범위비교 대신 조회표
     tmp = Path(tempfile.mkdtemp(prefix="ens_"))
     try:
         run = tmp / "TxtInOut"
@@ -115,7 +159,16 @@ def _run_one(args) -> Dict:
                               era5_warmup["grid_daily_std_dir"], fyear=fyear,
                               warmup_years=int(era5_warmup["warmup_years"]),
                               forecast_end=last)
-        _overwrite_forecast_rows(run, _member_forcing(member_csv), fyear, jday0, jday1)
+        forcing = _member_forcing(member_csv)
+        # 멤버 기상이 예측 각 월을 덮지 못하면 SWAT+ 가 wgn 으로 조용히 대체해
+        # 전 멤버가 같은 값이 된다 → 실행하지 않고 실패로 돌린다.
+        short = _member_coverage(forcing, daykeys, ym)
+        if short:
+            return {"_member": member_csv.parent.name,
+                    "_error": f"멤버 기상 부족 {', '.join(short)}"}
+        if _overwrite_forecast_rows(run, forcing, daykeys) == 0:
+            return {"_member": member_csv.parent.name,
+                    "_error": "예측기간 기상행 없음(base 미연장)"}
         exe_path = run / exe_name
         if exe_path.is_file():
             try:
@@ -131,7 +184,7 @@ def _run_one(args) -> Dict:
             return {"_member": member_csv.parent.name, "_error": r.returncode}
         res: Dict = {"_member": member_csv.parent.name}
         # 이 멤버를 구동한 예측월 강수·기온(지역별 CSV 칼럼용) — 섬 단일예측이라 공통.
-        res["_weather"] = _member_monthly_weather(member_csv, fyear, months)
+        res["_weather"] = _member_monthly_weather(member_csv, ym)
         for gid, name in outlets.items():
             if gid in reservoirs:
                 # 저수지 수원 — reservoir_day.txt 물수지 → 월 만수대비% + 월말 저수위(ft)
@@ -149,7 +202,7 @@ def _run_one(args) -> Dict:
                                       sdate=f"{fyear}-01-01")
             if df is None:
                 continue
-            df = df[(df["date"].dt.year == fyear) & (df["date"].dt.month.isin(months))]
+            df = df[in_ym(df["date"], ym).values]   # 연도별 월 — 해를 넘는 계절 포함
             mon = df.groupby(df["date"].dt.month)["flo_out"].mean()
             res[name] = {int(m): float(v) for m, v in mon.items()}
         return res

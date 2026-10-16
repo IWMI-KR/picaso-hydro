@@ -72,24 +72,48 @@ def fdc_thresholds(daily_q) -> Dict[str, float]:
 #   근거: 4_drought_risk/가뭄단계_임계값_산정_방법_보고서.md (USDM·WMO·Van Loon).
 DEFAULT_STAGE_EXCEEDANCE = [70.0, 90.0, 95.0]
 
-# capacity_fraction 별칭 (저수지 만수위 저수량 대비 % 방법)
+# capacity_fraction 별칭 (저수지 만수위 **저수량**(부피) 대비 % 방법)
 _CAPACITY_FRACTION_ALIASES = ("capacity_fraction", "pool_fraction", "fill_fraction")
+
+# level_fraction 별칭 (저수지 만수 **수위** 대비 % 방법 — 자 눈금 기준)
+_LEVEL_FRACTION_ALIASES = ("level_fraction", "stage_fraction", "wlevel_fraction")
+
+# level_ft 별칭 (수위 경계를 ft 로 직접 지정)
+_LEVEL_FT_ALIASES = ("level_ft", "fixed_level", "stage_ft", "wlevel_ft")
+
+
+def is_level_method(method: str) -> bool:
+    """임계 방법이 **수위(ft) 기준**인가 — 아니면 유량/저수량 기준이다.
+
+    저수지 대시보드가 어느 물리량을 주 지표로 쓸지 이 판정으로 갈린다
+    (수위 기준: series·stage_prob·dashboard.json 이 모두 ft).
+    """
+    m = str(method).lower()
+    return m in _LEVEL_FRACTION_ALIASES or m in _LEVEL_FT_ALIASES
 
 
 def stage_thresholds(daily_q, method: str = "fdc_exceedance",
-                     values=None, capacity: "float | None" = None) -> Dict[str, float]:
+                     values=None, capacity: "float | None" = None,
+                     full_level_ft: "float | None" = None) -> Dict[str, float]:
     """설정에 따라 4단계 경계값 {normal_watch, watch_warning, warning_crisis} 산정.
 
-    하천(유량) method 는 유량(m³/s), 저수지(capacity_fraction) method 는 저수량(m³) 또는
-    저수량-%(capacity 미지정) 단위의 경계를 반환. 항상 normal_watch ≥ watch_warning ≥
-    warning_crisis (고→저=습윤→고갈) 순.
+    하천(유량) method 는 유량(m³/s), 저수지는 **두 기준** 중 하나다 —
+    ``capacity_fraction`` 은 만수 **저수량**(부피) 대비 %, ``level_fraction``·
+    ``level_ft`` 는 만수 **수위** 기준이다. 수위-내용적 곡선은 직선이 아니므로
+    같은 "85%" 가 서로 다른 물리량을 가리킨다. 현장 운영자가 보는 것은 자(staff
+    gauge) 눈금이라 팔라우 Ngerimel 은 수위 기준을 쓴다
+    (설계 화면도 23.0/19.6/15.0 ft = 23.0 × [100,85,65]%).
+
+    항상 normal_watch ≥ watch_warning ≥ warning_crisis (고→저=습윤→고갈) 순.
 
     Parameters
     ----------
     daily_q  : 유량(하천) 또는 저수량(저수지) 일 계열.
-    method   : fdc_exceedance | nonexceed_percentile | fixed_flow | capacity_fraction.
+    method   : fdc_exceedance | nonexceed_percentile | fixed_flow |
+               capacity_fraction | level_fraction | level_ft.
     values   : [Normal|Watch, Watch|Warning, Warning|Crisis] 경계(method별 의미 상이).
     capacity : capacity_fraction 전용 — 만수위 저수량(m³). 지정 시 % → 절대 저수량 환산.
+    full_level_ft : level_fraction 전용 — 만수 수위(ft, 관측 눈금). % → ft 환산 기준.
     """
     v = list(values) if values else DEFAULT_STAGE_EXCEEDANCE
     if len(v) != 3:
@@ -110,7 +134,17 @@ def stage_thresholds(daily_q, method: str = "fdc_exceedance",
             nw, ww, wc = ((float(x) / 100.0) * cap for x in v)
         else:
             nw, ww, wc = (float(x) for x in v)
+    elif m in _LEVEL_FRACTION_ALIASES:
+        # 만수 **수위** 대비 % 경계. full_level_ft 지정 시 ft, 아니면 % 그대로.
+        lvl = float(full_level_ft) if full_level_ft else None
+        if lvl is not None:
+            nw, ww, wc = ((float(x) / 100.0) * lvl for x in v)
+        else:
+            nw, ww, wc = (float(x) for x in v)
+    elif m in _LEVEL_FT_ALIASES:
+        nw, ww, wc = (float(x) for x in v)          # ft 로 직접 지정
     else:
         raise ValueError(f"미지원 threshold method '{method}' "
-                         "(fdc_exceedance | nonexceed_percentile | fixed_flow | capacity_fraction)")
+                         "(fdc_exceedance | nonexceed_percentile | fixed_flow | "
+                         "capacity_fraction | level_fraction | level_ft)")
     return {"normal_watch": nw, "watch_warning": ww, "warning_crisis": wc}

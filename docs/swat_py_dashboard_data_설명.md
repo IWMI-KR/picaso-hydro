@@ -92,7 +92,7 @@ swat-drought-dashboard --demo 5              # 5멤버만 (검증용 빠른 실�
 | `thresholds.csv` | 4단계 경계값 |
 | `stage_prob.csv` | 월별 단계확률 |
 | `stage_prob_season.csv` | 계절 전체 단계확률(1행) |
-| `ensemble_members.csv` | 멤버별 원자료 |
+| `ensemble_members.csv` | 멤버별 원자료 (열 이름 = 연-월 `2025-12`·`2026-01`) |
 | `dashboard.json` | 대시보드용 통합 JSON(NaN→null) |
 
 상위 폴더에 `summary.csv` 를 함께 저장한다.

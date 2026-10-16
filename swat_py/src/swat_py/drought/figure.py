@@ -26,11 +26,41 @@ _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
 _STAGE_COLOR = STAGE_COLORS   # Normal(녹)-Watch(황)-Warning(주)-Crisis(적)
 
 
-def _fit_ylim_above_legend(fig, ax, leg, floor, data_max, *, pad=0.06, max_reserve=0.5):
-    """레전드(upper-left)와 데이터 선이 겹치지 않도록 log-Y 상한을 자동 확대.
+def _x_axis(series):
+    """series → (x 좌표, 눈금 라벨). **행 순서**가 x 좌표다.
+
+    series 가 달력 1~12월 고정에서 '예측을 품은 연속 12개월' 창으로 바뀌었다
+    (dashboard_data._series_frame). 창이 해를 넘으면 월 번호가 5…12,1…4 로
+    **되돌아가므로** 월 번호를 좌표로 쓰면 선이 뒤로 접힌다. 그래서 행 순서를
+    좌표로 쓰고, 첫 칸과 해가 바뀌는 1월 칸에만 연도를 덧붙여 표시한다.
+    ``ym`` 열이 없는 옛 series.csv 도 월 이름만으로 그대로 그려진다.
+    """
+    months = [int(m) for m in series["month"]]
+    x = np.arange(len(months), dtype=float)
+    if "ym" in series.columns:
+        labels = [f"{_MONTHS[m - 1]}\n{str(v)[:4]}" if (i == 0 or m == 1)
+                  else _MONTHS[m - 1]
+                  for i, (v, m) in enumerate(zip(series["ym"], months))]
+    else:
+        labels = [_MONTHS[m - 1] for m in months]
+    return x, labels
+
+
+def _month_label(r) -> str:
+    """단계확률 행 → 달 이름. ``ym`` 이 있으면 연도까지(2026-01 Jan)."""
+    m = int(r["month"])
+    ym = str(r.get("ym", "") or "")
+    return (f"{ym} ({_MONTHS[m - 1]})" if ym and ym != "nan"
+            else f"{m}월 ({_MONTHS[m - 1]})")
+
+
+def _fit_ylim_above_legend(fig, ax, leg, floor, data_max, *, pad=0.06,
+                           max_reserve=0.5, log=True):
+    """레전드(upper-left)와 데이터 선이 겹치지 않도록 Y 상한을 자동 확대.
 
     레전드 박스의 하단 위치를 측정해, 최대 데이터값이 그 아래에 오도록 ymax를 키운다.
     데이터 범위·레전드 크기와 무관하게 동작(범용). max_reserve 로 상단 과확대 방지.
+    ``log=False`` 면 선형축으로 계산한다(저수지 수위 ft).
     """
     fig.canvas.draw()
     try:
@@ -39,14 +69,20 @@ def _fit_ylim_above_legend(fig, ax, leg, floor, data_max, *, pad=0.06, max_reser
         return
     y_bottom = ax.transAxes.inverted().transform((bb.x0, bb.y0))[1]  # 레전드 하단(축 비율)
     target = max(1.0 - max_reserve, y_bottom - pad)                  # 데이터 최대가 놓일 상한 비율
-    lo = float(np.log10(floor))
-    dm = float(np.log10(max(data_max, floor * 1.01)))
-    hi = float(np.log10(ax.get_ylim()[1]))
+    if log:
+        lo = float(np.log10(floor))
+        dm = float(np.log10(max(data_max, floor * 1.01)))
+        hi = float(np.log10(ax.get_ylim()[1]))
+    else:
+        lo = float(floor)
+        dm = float(max(data_max, floor + 1e-9))
+        hi = float(ax.get_ylim()[1])
     if hi <= lo:
         return
     frac = (dm - lo) / (hi - lo)
     if frac > target and target > 0:
-        ax.set_ylim(floor, 10 ** (lo + (dm - lo) / target))
+        top = lo + (dm - lo) / target
+        ax.set_ylim(floor, 10 ** top if log else top)
 
 
 def _criterion_label(method, value) -> str:
@@ -65,7 +101,11 @@ def _criterion_label(method, value) -> str:
     if m.startswith("fixed"):
         return f"{v:g} m³/s"
     if m.startswith("pool") or m.startswith("capacity") or m.startswith("fill"):
-        return f"{v:g}%"          # 저수지 만수 대비 %
+        return f"{v:g}%"          # 저수지 만수 **저수량** 대비 %
+    if m in ("level_fraction", "stage_fraction", "wlevel_fraction"):
+        return f"{v:g}% of full level"
+    if m in ("level_ft", "fixed_level", "stage_ft", "wlevel_ft"):
+        return f"{v:g} ft"
     return f"{v:g}"
 
 
@@ -109,8 +149,7 @@ def make_stage_gauges(out_dir) -> "Path":
         axes = [axes]
     for ax, (_, r) in zip(axes, sp.iterrows()):
         probs = {s: float(r.get(s, 0.0)) for s in STAGES4}
-        _draw_gauge(ax, probs, r["most_likely"],
-                    f"{int(r['month'])}월  ({_MONTHS[int(r['month'])-1]})")
+        _draw_gauge(ax, probs, r["most_likely"], _month_label(r))
     fig.suptitle(f"⑤ Water Supply Forecast — {outlet}", fontsize=14, fontweight="bold", y=1.02)
     from matplotlib.patches import Patch
     fig.legend(handles=[Patch(color=STAGE_COLORS[s], label=s) for s in STAGES4],
@@ -123,10 +162,24 @@ def make_stage_gauges(out_dir) -> "Path":
 _CAPACITY_METHODS = ("capacity_fraction", "pool_fraction", "fill_fraction")
 
 
+_LEVEL_METHODS = ("level_fraction", "stage_fraction", "wlevel_fraction",
+                  "level_ft", "fixed_level", "stage_ft", "wlevel_ft")
+
+
 def _is_reservoir_outlet(thr) -> bool:
-    """thresholds.csv 행이 저수지(만수대비% capacity)인지 판별."""
-    return (str(thr.get("variable", "")).lower() == "capacity_pct"
-            or str(thr.get("method", "")).lower() in _CAPACITY_METHODS)
+    """thresholds.csv 행이 저수지인지 판별(저수량% 또는 수위 ft)."""
+    return (str(thr.get("variable", "")).lower() in ("capacity_pct", "water_level_ft")
+            or str(thr.get("method", "")).lower() in _CAPACITY_METHODS + _LEVEL_METHODS)
+
+
+def _is_level_outlet(thr) -> bool:
+    """주 지표가 **수위(ft)** 인가 — 선형축·ft 라벨로 그린다(저수량%는 로그축).
+
+    수위는 사수위~만수 사이의 좁은 범위(Ngerimel 1.34~23.0 ft)라 로그축이
+    맞지 않고, 로그 하한 클립(floor)이 낮은 수위를 잘라 버린다.
+    """
+    return (str(thr.get("variable", "")).lower() == "water_level_ft"
+            or str(thr.get("method", "")).lower() in _LEVEL_METHODS)
 
 
 def _plot_stage_table(axt, stage) -> None:
@@ -135,7 +188,7 @@ def _plot_stage_table(axt, stage) -> None:
     if not len(stage):
         return
     stage_cols = [s for s in STAGES4 if s in stage.columns]
-    cell = [[f"{int(r['month'])}월"] +
+    cell = [[_month_label(r)] +
             [f"{r[c]:.0f}%" for c in stage_cols] +
             [r["most_likely"]] for _, r in stage.iterrows()]
     tb = axt.table(cellText=cell,
@@ -151,6 +204,8 @@ def _plot_stage_table(axt, stage) -> None:
 
 def _plot_reservoir_timeseries(ax, series, thr, outlet, fc_period) -> None:
     """저수지 만수 대비 저수량 %(capacity_fraction) 시계열 — 선형축, 단계 배경대."""
+    series = series.reset_index(drop=True)       # 행 번호 = x 좌표
+    x, xlabels = _x_axis(series)
     nw = float(thr.get("normal_watch", 100.0))   # 만수 100
     ww = float(thr.get("watch_warning", 85.0))
     wc = float(thr.get("warning_crisis", 65.0))
@@ -171,18 +226,18 @@ def _plot_reservoir_timeseries(ax, series, thr, outlet, fc_period) -> None:
         ax.axhline(y, ls="--", lw=1.6, color=STAGE_COLORS[s], label=lbl)
 
     if len(fc):
-        ax.plot(fc["month"], fc["forecast_capacity_pct"], "-o", color="#ff7f0e",
+        ax.plot(fc.index.values, fc["forecast_capacity_pct"], "-o", color="#ff7f0e",
                 lw=2.5, ms=6, label=f"Forecast Mean ({n_ens} ens)", zorder=5)
         if {"p5", "p25", "p50", "p75", "p95"} <= set(fc.columns):
             bx = [{"med": r["p50"], "q1": r["p25"], "q3": r["p75"],
                    "whislo": r["p5"], "whishi": r["p95"], "fliers": []}
                   for _, r in fc.iterrows()]
-            ax.bxp(bx, positions=fc["month"].values, widths=0.25, showfliers=False,
+            ax.bxp(bx, positions=fc.index.values, widths=0.25, showfliers=False,
                    boxprops=dict(color="#ff7f0e"), medianprops=dict(color="#ff7f0e"),
                    whiskerprops=dict(color="#ff7f0e"), capprops=dict(color="#ff7f0e"),
                    manage_ticks=False, zorder=2)
-    ax.set_xticks(range(1, 13)); ax.set_xticklabels(_MONTHS)
-    ax.set_xlim(0.5, 12.5); ax.set_ylim(0, top)
+    ax.set_xticks(x); ax.set_xticklabels(xlabels)
+    ax.set_xlim(x[0] - 0.5, x[-1] + 0.5); ax.set_ylim(0, top)
     ax.set_ylabel("Reservoir storage (% of full capacity)")
     ax.set_title(f"Drought-Risk Reservoir Outlook — {outlet}  ({fc_period})",
                  fontweight="bold")
@@ -210,7 +265,7 @@ def make_stage_pie(out_dir) -> "Path":
     out_dir = Path(out_dir)
     sp = pd.read_csv(out_dir / "stage_prob.csv")
     outlet = out_dir.name
-    panels = [(f"{int(r['month'])}월 ({_MONTHS[int(r['month'])-1]})",
+    panels = [(_month_label(r),
                {s: float(r.get(s, 0.0)) for s in STAGES4}, r["most_likely"])
               for _, r in sp.iterrows()]
     season = _season_panel(out_dir)     # 3개월 평균 파이(있으면 마지막)
@@ -284,7 +339,7 @@ def make_season_pie(out_dir) -> "Path | None":
 
 
 def make_outlet_figure(out_dir: Path) -> Path:
-    series = pd.read_csv(out_dir / "series.csv")
+    series = pd.read_csv(out_dir / "series.csv").reset_index(drop=True)
     thr = pd.read_csv(out_dir / "thresholds.csv").iloc[0]
     stage = pd.read_csv(out_dir / "stage_prob.csv") if (out_dir / "stage_prob.csv").is_file() else pd.DataFrame()
     outlet = out_dir.name
@@ -295,7 +350,8 @@ def make_outlet_figure(out_dir: Path) -> Path:
                   left=0.08, right=0.97, top=0.92, bottom=0.08)
     ax = fig.add_subplot(gs[0])
     is_res = _is_reservoir_outlet(thr)   # 저수지도 우선 stream(Cook)과 동일 형식 사용
-    x = series["month"].values
+    is_lvl = _is_level_outlet(thr)       # 수위(ft) → 선형축 (저수량%·유량은 로그축)
+    x, xlabels = _x_axis(series)        # 행 순서 = x 좌표(해를 넘는 창도 단조)
 
     # 임계 경계유량 + 레전드용 기준값(Q값 등)
     nw = thr.get("normal_watch", thr.get("Q185_normal_watch"))
@@ -314,8 +370,17 @@ def make_outlet_figure(out_dir: Path) -> Path:
     for col in ["hist_mean", "observed", "forecast_mean", "p5", "p25", "p50", "p75", "p95"]:
         if col in series:
             data_pos += [v for v in series[col].dropna().tolist() if v > 0]
-    floor = (min(thr_pos) * 0.3) if thr_pos else ((min(data_pos) * 0.5) if data_pos else 1e-4)
-    ymax = (max(data_pos + thr_pos) * 1.6) if (data_pos or thr_pos) else 1.0
+    if is_lvl:
+        # 수위(ft): 사수위~만수의 좁은 범위라 0 에서 시작하는 선형축이 읽기 쉽다.
+        # 만수 수위(thresholds.full_level_ft)를 상한 기준으로 삼는다.
+        full_ft = thr.get("full_level_ft")
+        full_ft = float(full_ft) if full_ft and full_ft == full_ft else 0.0
+        floor = 0.0
+        ymax = max(data_pos + thr_pos + [full_ft]) * 1.25 if (data_pos or thr_pos) else 1.0
+    else:
+        floor = (min(thr_pos) * 0.3) if thr_pos else (
+            (min(data_pos) * 0.5) if data_pos else 1e-4)
+        ymax = (max(data_pos + thr_pos) * 1.6) if (data_pos or thr_pos) else 1.0
 
     def _c(v):    # 스칼라 floor 클립
         return max(float(v), floor) if v == v else np.nan
@@ -326,18 +391,18 @@ def make_outlet_figure(out_dir: Path) -> Path:
     # ── ② 관측 ──
     obs = series.dropna(subset=["observed"])
     if len(obs):
-        ax.plot(obs["month"], obs["observed"].clip(lower=floor), "-", color="black", lw=3,
+        ax.plot(obs.index.values, obs["observed"].clip(lower=floor), "-", color="black", lw=3,
                 label="Observed", zorder=4)
     # ── ③ 예측평균 + 박스플롯 ──
     if "forecast_mean" in series:
         fc = series.dropna(subset=["forecast_mean"])
-        ax.plot(fc["month"], fc["forecast_mean"].clip(lower=floor), "-o", color="#ff7f0e",
+        ax.plot(fc.index.values, fc["forecast_mean"].clip(lower=floor), "-o", color="#ff7f0e",
                 lw=2.5, ms=5, label=f"Forecast Mean ({n_ens} ens)", zorder=5)
         bx = [{"med": _c(r["p50"]), "q1": _c(r["p25"]), "q3": _c(r["p75"]),
                "whislo": _c(r["p5"]), "whishi": _c(r["p95"]), "fliers": []}
               for _, r in fc.iterrows()]
         if bx:
-            ax.bxp(bx, positions=fc["month"].values, widths=0.25, showfliers=False,
+            ax.bxp(bx, positions=fc.index.values, widths=0.25, showfliers=False,
                    boxprops=dict(color="#ff7f0e"), medianprops=dict(color="#ff7f0e"),
                    whiskerprops=dict(color="#ff7f0e"), capprops=dict(color="#ff7f0e"),
                    manage_ticks=False, zorder=2)
@@ -347,23 +412,26 @@ def make_outlet_figure(out_dir: Path) -> Path:
     ax.axhline(_c(ww), ls="--", color="#f5c518", lw=2.0, label=f"Watch–Warning ({lbl_ww})")
     ax.axhline(_c(wc), ls="--", color="#d62728", lw=2.0, label=f"Warning–Crisis ({lbl_wc})")
 
-    ax.set_yscale("log")
-    # log 눈금 십진 표기 (한글폰트의 위첨자 마이너스 미지원 회피)
-    from matplotlib.ticker import FuncFormatter, LogLocator
-    ax.yaxis.set_major_locator(LogLocator(base=10.0))
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
-    ax.yaxis.set_minor_formatter(FuncFormatter(lambda v, _: ""))
-    ax.set_xticks(range(1, 13)); ax.set_xticklabels(_MONTHS)
-    ax.set_ylabel("storage (% of full capacity, log)" if is_res else "flow (m³/s, log)")
-    ax.set_xlim(0.5, 12.5)
+    if not is_lvl:
+        ax.set_yscale("log")
+        # log 눈금 십진 표기 (한글폰트의 위첨자 마이너스 미지원 회피)
+        from matplotlib.ticker import FuncFormatter, LogLocator
+        ax.yaxis.set_major_locator(LogLocator(base=10.0))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+        ax.yaxis.set_minor_formatter(FuncFormatter(lambda v, _: ""))
+    ax.set_xticks(x); ax.set_xticklabels(xlabels)
+    ax.set_ylabel("water level (ft, staff gauge)" if is_lvl else
+                  ("storage (% of full capacity, log)" if is_res else "flow (m³/s, log)"))
+    ax.set_xlim(x[0] - 0.5, x[-1] + 0.5)
     ax.set_ylim(floor, ymax)
-    _kind = "Reservoir Storage" if is_res else "Hydrological"
+    _kind = ("Reservoir Water Level" if is_lvl else
+             "Reservoir Storage" if is_res else "Hydrological")
     ax.set_title(f"Drought-Risk {_kind} Outlook — {outlet}  ({fc_period})",
                  fontweight="bold")
     leg = ax.legend(loc="upper left", fontsize=8, frameon=True, framealpha=0.85, ncol=2)
     # 레전드와 데이터(특히 Historical Mean) 비중첩 — Y 상한 자동 확대(범용)
     data_max = max(data_pos + thr_pos) if (data_pos or thr_pos) else 1.0
-    _fit_ylim_above_legend(fig, ax, leg, floor, data_max)
+    _fit_ylim_above_legend(fig, ax, leg, floor, data_max, log=not is_lvl)
 
     # ⑤ 단계확률 표 — 월별 + (맨 아래) 3개월 평균 행
     axt = fig.add_subplot(gs[1]); axt.axis("off")
@@ -371,7 +439,7 @@ def make_outlet_figure(out_dir: Path) -> Path:
     rows_tbl = []
     stage_cols = [s for s in STAGES4 if s in stage.columns] if len(stage) else list(STAGES4)
     for _, r in stage.iterrows():
-        rows_tbl.append((f"{int(r['month'])}월",
+        rows_tbl.append((_month_label(r),
                          {c: float(r.get(c, 0.0)) for c in stage_cols}, r["most_likely"]))
     season = _season_panel(out_dir)   # 3개월 평균 행(있으면 마지막)
     if season is not None:

@@ -24,7 +24,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -33,13 +33,45 @@ from swat_py.dashboard.json_writers import dumps_json   # NaN→null 표준 JSON
 from swat_py.drought.climatology import (
     climatology_daily_path, load_daily_flow, outlet_climatology_and_thresholds,
 )
-from swat_py.drought.fdc import stage_thresholds
+from swat_py.drought.fdc import is_level_method, stage_thresholds
 from swat_py.drought.ensemble_flow import OUTLETS, run_ensemble
+from swat_py.drought.reservoir_forecast import (
+    capacity_pct_to_level_ft, full_level_ft,
+)
+from swat_py.drought.season import (
+    SEASON_MONTHS, assert_period_sane, daykey_month, in_ym, period_end,
+    period_end_year, period_ym, preceding_ym, season_months, series_ym, ym_labels,
+)
 from swat_py.drought.stages import stage_probabilities4
 
-SEASON_MONTHS = {"JFM": [1, 2, 3], "FMA": [2, 3, 4], "MAM": [3, 4, 5], "AMJ": [4, 5, 6],
-                 "MJJ": [5, 6, 7], "JJA": [6, 7, 8], "JAS": [7, 8, 9], "ASO": [8, 9, 10],
-                 "SON": [9, 10, 11], "OND": [10, 11, 12], "NDJ": [11, 12, 1], "DJF": [12, 1, 2]}
+__all__ = ["SEASON_MONTHS", "ForecastIncomplete", "build", "empty_forecast_months",
+           "main", "member_detail_rows", "members_wide"]   # SEASON_MONTHS 는 season.py 가 정본
+
+
+class ForecastIncomplete(RuntimeError):
+    """예측월 결과가 비었다 — 산출물은 남기되 **실패(0 아닌 종료코드)로** 끝낸다.
+
+    요청(최기섭 2026-10-02): "예측월 결과가 비면 0 이 아닌 종료 코드로 실패하게
+    해 주세요. 지금은 exit 0 으로 끝나서 틀린 결과를 감지할 수 없습니다."
+    실제로 2015_DJF 는 12월이 ``n=0, most_likely="NA"`` 인데도 파일이 정상
+    생성되고 성공으로 끝났다.
+
+    파일을 지우지 않는 이유: 어디가 비었는지 보려면 산출물이 있어야 한다.
+    """
+
+    def __init__(self, problems, out_root):
+        self.problems = [tuple(x) for x in problems]
+        self.out_root = str(out_root)
+        head = self.problems[:12]
+        detail = "\n".join(f"    - {o:<12s} {ym}: {why}" for o, ym, why in head)
+        more = (f"\n    … 외 {len(self.problems) - 12}건"
+                if len(self.problems) > len(head) else "")
+        super().__init__(
+            f"예측월 결과가 빈 곳 {len(self.problems)}건\n{detail}{more}\n"
+            f"  산출물은 진단용으로 남겼다 → {self.out_root}\n"
+            f"  (비어도 괜찮은 실행이라면 --allow-incomplete)")
+
+
 QLEVELS = [0.05, 0.25, 0.50, 0.75, 0.95]
 
 
@@ -131,25 +163,38 @@ def extend_weather_to(base_dir: Path, end: pd.Timestamp) -> Dict[str, int]:
     return added
 
 
-def _assert_forecast_weather_rows(base_dir: Path, fyear: int, jday0: int, jday1: int) -> None:
-    """예측기간 행이 실제로 존재하는지 확인. 없으면 중단(전 멤버 동일값 방지)."""
-    bad = []
+def _assert_forecast_weather_rows(base_dir: Path, ym: List[tuple]) -> None:
+    """예측기간 행이 실제로 존재하는지 확인. 없으면 중단(전 멤버 동일값 방지).
+
+    ``ym`` 은 (연도, 월) 쌍 목록이라 해를 넘는 계절(NDJ·DJF)도 그대로 다룬다.
+    **월 단위로** 확인한다 — 한 달이라도 통째로 비면 그 달 앙상블이 wgn 으로
+    대체되어 스프레드가 0 이 된다.
+    """
+    daykeys = daykey_month(ym)
+    want = {m for _, m in ym}
+    bad: Dict[str, List[int]] = {}
     for path in sorted(base_dir.glob("*.pcp")):
-        n = 0
+        seen = set()
         for ln in path.read_text(encoding="utf-8", errors="replace").splitlines()[3:]:
             t = ln.split()
-            if len(t) >= 2 and int(float(t[0])) == fyear and jday0 <= int(float(t[1])) <= jday1:
-                n += 1
-        if n == 0:
-            bad.append(path.name)
+            if len(t) >= 2:
+                k = (int(float(t[0])), int(float(t[1])))
+                if k in daykeys:
+                    seen.add(daykeys[k])
+        miss = sorted(want - seen)
+        if miss:
+            bad[path.name] = miss
     if bad:
+        span = f"{ym[0][0]}-{ym[0][1]:02d} ~ {ym[-1][0]}-{ym[-1][1]:02d}"
+        detail = ", ".join(f"{f}(월 {m})" for f, m in list(bad.items())[:5])
         raise SystemExit(
-            f"예측기간({fyear} doy {jday0}~{jday1}) 행이 없는 기상파일: {bad}\n"
+            f"예측기간({span}) 행이 없는 기상파일 {len(bad)}개: {detail}\n"
             f"  멤버 기상이 주입되지 않아 전 멤버가 동일한 wgn 날씨로 모의됩니다(스프레드 0).\n"
             f"  base={base_dir}")
 
 
-def reservoir_climatology_monthly(cfg, outlet: str) -> Dict[int, float]:
+def reservoir_climatology_monthly(cfg, outlet: str, *,
+                                  column: Optional[str] = None) -> Dict[int, float]:
     """저수지 수원의 월 평년(만수대비%) — climatology 산출물에서 읽는다.
 
     ``4_drought_risk/climatology/reservoir_monthly_avg_{tag}.csv`` (climatology_run 이 생성).
@@ -164,9 +209,10 @@ def reservoir_climatology_monthly(cfg, outlet: str) -> Dict[int, float]:
         df = pd.read_csv(path)
     except Exception:
         return {}
-    if outlet not in df.columns or "month" not in df.columns:
+    col = column or outlet
+    if col not in df.columns or "month" not in df.columns:
         return {}
-    return {int(m): float(v) for m, v in zip(df["month"], df[outlet])}
+    return {int(m): float(v) for m, v in zip(df["month"], df[col])}
 
 
 def ensemble_base_dir(cfg) -> Path:
@@ -246,6 +292,23 @@ def fill_base_weather(cfg, base_dir: Path, fyear: int, months: List[int],
     return "wgn"
 
 
+def time_sim_line(start_yr: int, fyear: int, months: List[int]) -> str:
+    """``time.sim`` 3행 — ``day_start yr_start day_end yr_end step``.
+
+    모의 종료는 예측 **끝월의 말일**이고, 끝나는 **해**도 함께 넘겨야 한다.
+    NDJ·DJF 는 끝월이 다음 해라, 종료 연도를 ``fyear`` 로 두면 종료가 시작보다
+    앞서는 구간이 되어 예측월이 통째로 모의되지 않는다.
+
+    >>> time_sim_line(2022, 2025, [12, 1, 2]).split()
+    ['1', '2022', '59', '2026', '0']
+    >>> time_sim_line(2023, 2026, [2, 3, 4]).split()
+    ['1', '2023', '120', '2026', '0']
+    """
+    last = period_end(fyear, months)
+    end_yr = period_end_year(fyear, months)
+    return f"       1      {start_yr}       {last.dayofyear}      {end_yr}         0"
+
+
 def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
     """calibrated(검보정 완료·지역화 포함, 파라미터 baked-in) 복사 + time.sim(웜업 선행 ~
     예측끝월) → 예측 앙상블 base TxtInOut. default+수동적용이 아닌 calibrated 를 그대로 사용.
@@ -262,10 +325,9 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
     shutil.copytree(Path(cfg.CalibratedDir), base_dir)
     nyskip = int(cfg.CioNYSKIP)                   # 마스터 warm_up_years (단일 관리)
     start_yr = fyear - nyskip                      # 웜업 nyskip년 → 출력 fyear
-    last = pd.Timestamp(fyear, months[-1], 1) + pd.offsets.MonthEnd(0)
     ts = base_dir / "time.sim"
     lines = ts.read_text().splitlines()
-    lines[2] = f"       1      {start_yr}       {last.dayofyear}      {fyear}         0"
+    lines[2] = time_sim_line(start_yr, fyear, months)
     ts.write_text("\n".join(lines) + "\n")
     # print.prt: nyskip 동기화 + 채널을 월단위(mon)로만 출력, 그 외 객체 출력 전부 off.
     #   예측은 월유량(채널)만 필요 → 일단위 대용량 출력(90채널×일 + HRU·hyd 등) 제거로 대폭 가속.
@@ -294,10 +356,9 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
         pass
     pp.write_text("\n".join(pl) + "\n")
     # 기상을 예측 끝월까지 확보 — ERA5 실측 연결 우선, 불가 시 wgn 연장.
-    fill_base_weather(cfg, base_dir, fyear, months, last)
-    _assert_forecast_weather_rows(
-        base_dir, fyear,
-        pd.Timestamp(fyear, months[0], 1).dayofyear, last.dayofyear)
+    #   끝월은 해를 넘을 수 있다(NDJ·DJF) → period_end 로 구한다.
+    fill_base_weather(cfg, base_dir, fyear, months, period_end(fyear, months))
+    _assert_forecast_weather_rows(base_dir, period_ym(fyear, months))
     # 실행파일: OS 자동 대응 + 미발견 시 자동 다운로드(공식 Releases → default·calibrated).
     from swat_py.runner.file_manager import resolve_swat_exe
     exe_src = resolve_swat_exe(cfg.Executable, cfg.DefaultDir,
@@ -312,11 +373,99 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
     return exe_src.name
 
 
-def _observed_monthly(daily: pd.DataFrame, outlet: str, fyear: int,
-                      obs_months: List[int]) -> Dict[int, float]:
-    """예측 직전월(관측기상 모의) 월평균 유량."""
+def member_detail_rows(mem_df: pd.DataFrame, mon_year: Dict[int, int], *,
+                       weather: Optional[Dict] = None,
+                       wlevel: Optional[pd.DataFrame] = None):
+    """멤버×월 결과 표 → long format ``(행 목록, 열 순서)``.
+
+    각 행에 **year** 를 붙인다 — 해를 넘는 계절(NDJ·DJF)에서 1·2월이 다음 해임을
+    월 번호만으로는 알 수 없다(요청: 최기섭 2026-10-02 "멤버 CSV 의 year 열이
+    다음 해 달에 올바르게 붙는지 확인 부탁드립니다").
+
+    ``wlevel`` 을 주면 저수지(수위 ft + 만수대비%), 없으면 하천(유량 m³/s)이다.
+    """
+    weather = weather or {}
+
+    def _cell(df, member, month):
+        if df is not None and member in df.index and month in df.columns:
+            return float(df.loc[member, month])
+        return float("nan")
+
+    is_res = wlevel is not None
+    rows = []
+    for member, row in mem_df.iterrows():
+        for month in mem_df.columns:
+            m = int(month)
+            rec = {"member": member, "year": mon_year[m], "month": m,
+                   "precip_mm": _cell(weather.get("precip_mm"), member, month),
+                   "tmax_c": _cell(weather.get("tmax_c"), member, month),
+                   "tmin_c": _cell(weather.get("tmin_c"), member, month)}
+            if is_res:
+                rec["water_level_ft"] = _cell(wlevel, member, month)
+                rec["storage_pct"] = float(row[month])   # 만수대비 저수량%
+            else:
+                rec["flo_m3s"] = float(row[month])
+            rows.append(rec)
+    cols = ["member", "year", "month", "precip_mm", "tmax_c", "tmin_c"] + (
+        ["water_level_ft", "storage_pct"] if is_res else ["flo_m3s"])
+    return rows, cols
+
+
+def members_wide(mem: pd.DataFrame, mon_ym: Dict[int, str]) -> pd.DataFrame:
+    """멤버×월 표의 **열 이름을 연-월로** 바꾼다 (``12, 1, 2`` → ``2025-12, 2026-01, 2026-02``).
+
+    월 번호만 열 이름이면 DJF 의 ``1``·``2`` 가 어느 해인지 파일만 봐서는 알 수 없다
+    (요청: 최기섭 2026-10-02). 가로 형식은 그대로 두고 머리글만 바꾼다 —
+    1,000행 × 3열이라 세로로 펴면 3,000행이 되고, 읽는 쪽도 바뀌어야 한다.
+    """
+    return (mem.rename(columns={m: mon_ym.get(int(m), str(m)) for m in mem.columns})
+               .rename_axis("member"))
+
+
+def empty_forecast_months(outlet: str, stage_rows: List[Dict],
+                          months: List[int], mon_ym: Dict[int, str]) -> List[tuple]:
+    """예측월 중 **유효 멤버가 없는 달** → ``[(수원, "YYYY-MM", 사유)]``.
+
+    `stage_rows` 의 ``n`` 은 그 달 분류에 실제로 쓰인 멤버 수다(결측 제외).
+    행 자체가 없으면 "결과 없음", 행은 있는데 ``n=0`` 이면 "유효 멤버 0" 이다.
+    둘 다 **조용히 넘어가면 안 되는** 상태다 — 2015_DJF 의 12월이 그랬다.
+    """
+    got = {int(r["month"]): int(r.get("n", 0)) for r in stage_rows}
+    return [(outlet, mon_ym[m], "유효 멤버 0" if m in got else "결과 없음")
+            for m in months if got.get(m, 0) <= 0]
+
+
+def _series_frame(fyear: int, months: List[int]) -> pd.DataFrame:
+    """대시보드 series 의 바탕 틀 — ``ym``(연-월) + ``month`` 두 열.
+
+    달력 1~12월 고정이었던 것을 **예측 계절을 품은 연속 12개월 창**으로 바꾼 것이다
+    (직전 6 + 예측 3 + 이후 3). NDJ·DJF 는 두 해에 걸치므로 월 번호만으로는
+    어느 해인지 알 수 없다 — 그래서 ``ym`` 열이 짝으로 붙는다
+    (요청: 최기섭 2026-10-02 "series 에 ym 배열을 넣어 달라").
+
+    ``month`` 열은 그대로 남긴다 — 평년·관측·예측 매핑이 월 번호 키를 쓰고,
+    기존 소비자(figure·reclassify)도 이 열을 읽는다. 12개월 창 안에서 월 번호는
+    중복되지 않으므로 키로서 여전히 안전하다.
+
+    >>> _series_frame(2025, [11, 12, 1])["ym"].tolist()[:2]
+    ['2025-05', '2025-06']
+    >>> _series_frame(2025, [11, 12, 1])["month"].tolist()
+    [5, 6, 7, 8, 9, 10, 11, 12, 1, 2, 3, 4]
+    """
+    yms = series_ym(fyear, months)
+    return pd.DataFrame({"ym": ym_labels(yms), "month": [m for _, m in yms]})
+
+
+def _observed_monthly(daily: pd.DataFrame, outlet: str,
+                      obs_ym: List[tuple]) -> Dict[int, float]:
+    """예측 **직전** 달들(관측기상 모의)의 월평균 유량.
+
+    ``obs_ym`` 은 (연도, 월) 쌍이라 전년도로 넘어가는 달을 포함한다
+    (예: 2026_JFM → 2025-07 ~ 2025-12). 반환 키는 월 번호다 — 직전 6개월과
+    예측 3개월은 겹치지 않으므로 충돌하지 않는다.
+    """
     s = daily[["date", outlet]].copy()
-    s = s[(s["date"].dt.year == fyear) & (s["date"].dt.month.isin(obs_months))]
+    s = s[in_ym(s["date"], obs_ym).values]
     return {int(m): float(v) for m, v in s.groupby(s["date"].dt.month)[outlet].mean().items()}
 
 
@@ -339,10 +488,14 @@ def _seasonal_stage_row(mem, months, q185, q275, q355, season):
     return {"season": season, **sp}
 
 
-def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Dict:
+def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
+          strict: bool = True) -> Dict:
     fyear = int(forecast.split("_")[0]); season = forecast.split("_")[1]
-    months = SEASON_MONTHS[season]
-    obs_months = [m for m in range(1, months[0]) if m >= 1] or []   # 예측 시작 이전월(동일 연도)
+    months = season_months(season)
+    ym = assert_period_sane(fyear, months)   # [(연,월)…] — 뒤집힌 구간이면 여기서 중단
+    obs_ym = preceding_ym(fyear, months)     # 예측 시작 직전 6개월(전년도 포함)
+    mon_ym = {m: lbl for (_, m), lbl in zip(ym, ym_labels(ym))}   # 예측월 → "YYYY-MM"
+    mon_year = {m: y for y, m in ym}                              # 예측월 → 연도
     dc = getattr(cfg, "Drought", None)
     outlets = (dict(dc.outlets) if dc and dc.outlets else OUTLETS)
     station = (dc.forecast_station if (dc and dc.forecast_station)
@@ -363,7 +516,8 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
     # base·멤버 실행은 로컬(C:) — 프로젝트 루트(I:)는 네트워크 공유라 N멤버가 각자
     # base 를 네트워크에서 복사하면 극심히 느리다. 결과 CSV(소용량)만 I: 에 저장.
     base = ensemble_base_dir(cfg)          # 프로젝트별 분리 — 동시 실행 시 충돌 방지
-    print(f"[base] 예측 앙상블용 모델 준비 (fyear={fyear}, months={months})")
+    print(f"[base] 예측 앙상블용 모델 준비 — 예측기간 "
+          f"{ym[0][0]}-{ym[0][1]:02d} ~ {ym[-1][0]}-{ym[-1][1]:02d}")
     exe_name = prepare_base(cfg, base, fyear, months)   # 해석/다운로드된 실행파일 이름
     print(f"[ensemble] {n_members} 멤버 SWAT+ 실행")
     print(f"[ensemble] 멤버 폴더: {member_dir}")
@@ -405,36 +559,20 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
 
     # SWAT+ 앙상블 예측 결과 → 3_swatplus/forecast/{period[+ic]} 의 수원별 파일.
     #   각 파일 = long format (member×month), 유량/저수량 칼럼 앞에 앙상블 강수·기온.
-    #   하천  {outlet}.csv : member,month,precip_mm,tmax_c,tmin_c,flo_m3s
-    #   저수지 {outlet}.csv : member,month,precip_mm,tmax_c,tmin_c,water_level_ft,storage_pct
+    #   하천  {outlet}.csv : member,year,month,precip_mm,tmax_c,tmin_c,flo_m3s
+    #   저수지 {outlet}.csv : member,year,month,…,water_level_ft,storage_pct
+    #   year 는 해를 넘는 계절(NDJ·DJF)에서 1·2월이 다음 해임을 나타낸다
+    #   (요청: 최기섭 2026-10-02 "멤버 CSV 의 year 열이 올바르게 붙는지 확인").
     swat_fc = Path(cfg.PrjDir) / "3_swatplus" / "forecast" / period_label
     swat_fc.mkdir(parents=True, exist_ok=True)
     weather = aux.get("weather", {})     # {var: DataFrame[member×month]}
     wlevel = aux.get("wlevel", {})       # {name: DataFrame[member×month]} (저수지)
 
-    def _cell(df, member, month):
-        if df is not None and member in df.index and month in df.columns:
-            return float(df.loc[member, month])
-        return float("nan")
-
     n_valid = max((m.shape[0] for m in ens.values()), default=0)
     for name, mem_df in ens.items():
-        is_res = name in res_name_gid
-        rows = []
-        for member, row in mem_df.iterrows():
-            for month in mem_df.columns:
-                rec = {"member": member, "month": int(month),
-                       "precip_mm": _cell(weather.get("precip_mm"), member, month),
-                       "tmax_c": _cell(weather.get("tmax_c"), member, month),
-                       "tmin_c": _cell(weather.get("tmin_c"), member, month)}
-                if is_res:
-                    rec["water_level_ft"] = _cell(wlevel.get(name), member, month)
-                    rec["storage_pct"] = float(row[month])   # 만수대비 저수량%
-                else:
-                    rec["flo_m3s"] = float(row[month])
-                rows.append(rec)
-        cols = ["member", "month", "precip_mm", "tmax_c", "tmin_c"] + (
-            ["water_level_ft", "storage_pct"] if is_res else ["flo_m3s"])
+        rows, cols = member_detail_rows(
+            mem_df, mon_year, weather=weather,
+            wlevel=wlevel.get(name) if name in res_name_gid else None)
         pd.DataFrame(rows, columns=cols).to_csv(
             swat_fc / f"{name}.csv", index=False, encoding="utf-8-sig")
     print(f"[forecast] SWAT+ 앙상블 결과(수원 {len(ens)}종 × 유효멤버 {n_valid}"
@@ -442,34 +580,50 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
 
     summary_rows = []
     season_summary_rows = []            # 계절(3개월 평균) 단일 리스크
+    incomplete: List[tuple] = []        # (수원, "YYYY-MM", 사유) — 비면 실패로 끝낸다
+    skipped_outlets: List[str] = []     # 평년 자료에 없어 건너뛴 수원(경고만)
+
     for outlet in outlets.values():
-        # ── 저수지 수원: 유량 대신 만수 대비 저수량 %(capacity_fraction) 기반 ──
+        # ── 저수지 수원: 수위(ft) 또는 만수 대비 저수량 % 기반 ──
+        #    어느 쪽인지는 thresholds.method 가 정한다(level_fraction/level_ft → 수위).
+        #    요청(유진호 2026-08-26): "output 이 저수량인데 수위로 나와야 합니다."
         res_gid = res_name_gid.get(outlet)
         if res_gid is not None:
-            mem = ens.get(outlet)   # [member × month] 만수대비%
-            thr_method, thr_values = dc.threshold_for(res_gid)   # capacity_fraction, [100,85,65]
-            st = stage_thresholds([], thr_method, thr_values)
+            rp = reservoirs_params.get(res_gid)
+            thr_method, thr_values = dc.threshold_for(res_gid)
+            level_based = is_level_method(thr_method)
+            # 주 지표: 수위 기준이면 월말 수위(ft, 관측 눈금), 아니면 만수대비 저수량%
+            mem = (wlevel.get(outlet) if level_based else ens.get(outlet))
+            full_ft = full_level_ft(rp)              # 만수 수위(ft) — % → ft 환산 기준
+            variable = "water_level_ft" if level_based else "capacity_pct"
+            st = stage_thresholds([], thr_method, thr_values, full_level_ft=full_ft)
             q185, q275, q355 = st["normal_watch"], st["watch_warning"], st["warning_crisis"]
             out_dir = out_root / outlet
             out_dir.mkdir(exist_ok=True)
-            # stream(Cook)과 동일 스키마: forecast_mean(=만수대비%).
-            # hist_mean 은 climatology 가 산출한 저수지 월 평년(만수대비%)에서 가져온다
-            # (없으면 NaN — climatology 를 최신 코드로 재실행하면 생성된다).
-            series = pd.DataFrame({"month": range(1, 13)})
-            series["hist_mean"] = series["month"].map(
-                reservoir_climatology_monthly(cfg, outlet))
+            # stream(Cook)과 동일 스키마: forecast_mean(= 주 지표).
+            # hist_mean 은 climatology 산출물에서. 수위 기준이면 level 열을 쓰고,
+            # 없으면 저수량% 평년을 **같은 곡선으로** 수위로 되돌린다(곡선은 직선이 아니다).
+            series = _series_frame(fyear, months)
+            clim_res = reservoir_climatology_monthly(cfg, outlet)
+            if level_based:
+                lvl = reservoir_climatology_monthly(cfg, outlet,
+                                                    column=f"{outlet}_level_ft")
+                clim_res = lvl or {m: capacity_pct_to_level_ft(v, rp)
+                                   for m, v in clim_res.items()}
+            series["hist_mean"] = series["month"].map(clim_res)
             series["observed"] = float("nan")
             if mem is not None:
                 series["forecast_mean"] = series["month"].map(mem.mean(axis=0).to_dict())
                 for q in QLEVELS:
                     series[f"p{int(q*100)}"] = series["month"].map(
                         mem.quantile(q, axis=0).to_dict())
-                mem.rename_axis("member").to_csv(out_dir / "ensemble_members.csv",
+                members_wide(mem, mon_ym).to_csv(out_dir / "ensemble_members.csv",
                                                  encoding="utf-8-sig")
             series.to_csv(out_dir / "series.csv", index=False, encoding="utf-8-sig")
             tv = list(thr_values) if thr_values else [None, None, None]
-            pd.DataFrame([{"method": thr_method, "variable": "capacity_pct",
+            pd.DataFrame([{"method": thr_method, "variable": variable,
                            "nw_input": tv[0], "ww_input": tv[1], "wc_input": tv[2],
+                           "full_level_ft": full_ft,
                            "n_ensemble": int(mem.shape[0]) if mem is not None else 0,
                            "normal_watch": q185, "watch_warning": q275,
                            "warning_crisis": q355}]
@@ -480,9 +634,10 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
                 for m in months:
                     if m in mem.columns:
                         sp = stage_probabilities4(mem[m].dropna().values, q185, q275, q355)
-                        stage_rows.append({"month": m, **sp})
+                        stage_rows.append({"month": m, "ym": mon_ym[m], **sp})
             pd.DataFrame(stage_rows).to_csv(out_dir / "stage_prob.csv", index=False,
                                             encoding="utf-8-sig")
+            incomplete += empty_forecast_months(outlet, stage_rows, months, mon_ym)
             # 계절(3개월 평균 저수량%) 단일 단계확률
             season_row = _seasonal_stage_row(mem, months, q185, q275, q355, season)
             if season_row:
@@ -493,23 +648,33 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
                     "Watch": season_row["Watch"], "Warning": season_row["Warning"],
                     "Crisis": season_row["Crisis"]})
             (out_dir / "dashboard.json").write_text(dumps_json({
-                "outlet": outlet, "type": "reservoir", "unit": "capacity_pct",
-                "forecast": forecast, "months": months,
+                "outlet": outlet, "type": "reservoir",
+                "unit": "ft" if level_based else "capacity_pct",
+                "variable": variable,
+                # 수위는 **관측 눈금**(staff gauge) 기준 — 곡선 datum(MSL)에
+                # registry obs_datum_offset_ft 를 더한 값이다(Ngerimel 만수 23.00 ft).
+                "datum": "staff_gauge" if level_based else None,
+                "full_level_ft": full_ft if level_based else None,
+                "forecast": forecast, "months": months, "months_ym": ym_labels(ym),
                 "thresholds": {"normal_watch": q185, "watch_warning": q275,
                                "warning_crisis": q355},
                 "series": series.to_dict(orient="list"),   # NaN→null 은 dumps_json 이 처리
                 "stages": stage_rows, "season_stage": season_row,
             }, indent=1), encoding="utf-8")
             for sr in stage_rows:
-                summary_rows.append({"outlet": outlet, "month": sr["month"],
+                summary_rows.append({"outlet": outlet, "ym": sr["ym"],
+                                     "month": sr["month"],
                                      "most_likely": sr["most_likely"],
                                      "Normal": sr["Normal"], "Watch": sr["Watch"],
                                      "Warning": sr["Warning"], "Crisis": sr["Crisis"]})
-            print(f"  ✔ {outlet:<12s} [저수지] 만수대비% 단계="
+            unit_txt = (f"수위 ft (만수 {full_ft:.2f}, 경계 {q185:.2f}/{q275:.2f}/{q355:.2f})"
+                        if level_based else "만수대비%")
+            print(f"  ✔ {outlet:<12s} [저수지] {unit_txt} 단계="
                   f"{[s['most_likely'] for s in stage_rows]}")
             continue
 
         if outlet not in daily.columns:
+            skipped_outlets.append(outlet)      # 평년 자료에 없음 — 경고만
             continue
         ct = outlet_climatology_and_thresholds(daily, outlet)
         thr = ct["thresholds"]     # 참조용 유황유량(Q95/Q185/Q275/Q355)
@@ -522,11 +687,11 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
         q185, q275, q355 = st["normal_watch"], st["watch_warning"], st["warning_crisis"]
         clim = ct["monthly"].set_index("month")
 
-        obs = _observed_monthly(daily, outlet, fyear, obs_months)
+        obs = _observed_monthly(daily, outlet, obs_ym)
         mem = ens.get(outlet)   # DataFrame [member × month]
 
-        # ① 평년(1~12), ② 관측(직전월), ③ 예측 평균+분위(예측월)
-        series = pd.DataFrame({"month": range(1, 13)})
+        # ① 평년(창 12개월), ② 관측(예측 직전월), ③ 예측 평균+분위(예측월)
+        series = _series_frame(fyear, months)
         series["hist_mean"] = series["month"].map(clim["mean"])
         series["observed"] = series["month"].map(obs)
         if mem is not None:
@@ -548,7 +713,7 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
                      ).to_csv(out_dir / "thresholds.csv", index=False, encoding="utf-8-sig")
         # 원시 앙상블 멤버 유량(member×month) 저장 → 재분류 시 SWAT 재실행 불필요
         if mem is not None:
-            mem.rename_axis("member").to_csv(out_dir / "ensemble_members.csv",
+            members_wide(mem, mon_ym).to_csv(out_dir / "ensemble_members.csv",
                                              encoding="utf-8-sig")
 
         # ⑤ 단계확률 (예측월) — 4단계(Normal/Watch/Warning/Crisis)
@@ -557,9 +722,10 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
             for m in months:
                 if m in mem.columns:
                     sp = stage_probabilities4(mem[m].dropna().values, q185, q275, q355)
-                    stage_rows.append({"month": m, **sp})
+                    stage_rows.append({"month": m, "ym": mon_ym[m], **sp})
         pd.DataFrame(stage_rows).to_csv(out_dir / "stage_prob.csv", index=False,
                                         encoding="utf-8-sig")
+        incomplete += empty_forecast_months(outlet, stage_rows, months, mon_ym)
         # 계절(3개월 평균 유출량) 단일 단계확률
         season_row = _seasonal_stage_row(mem, months, q185, q275, q355, season)
         if season_row:
@@ -573,6 +739,7 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
         # dashboard.json
         (out_dir / "dashboard.json").write_text(dumps_json({
             "outlet": outlet, "forecast": forecast, "months": months,
+            "months_ym": ym_labels(ym),
             "thresholds": {"normal_watch": q185, "watch_warning": q275,
                            "warning_crisis": q355},
             "series": series.to_dict(orient="list"),   # NaN→null 은 dumps_json 이 처리
@@ -580,7 +747,8 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
         }, indent=1), encoding="utf-8")
 
         for sr in stage_rows:
-            summary_rows.append({"outlet": outlet, "month": sr["month"],
+            summary_rows.append({"outlet": outlet, "ym": sr["ym"],
+                                 "month": sr["month"],
                                  "most_likely": sr["most_likely"],
                                  "Normal": sr["Normal"], "Watch": sr["Watch"],
                                  "Warning": sr["Warning"], "Crisis": sr["Crisis"]})
@@ -592,8 +760,17 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6) -> Di
     # 계절(3개월 평균) 단일 리스크 요약
     pd.DataFrame(season_summary_rows).to_csv(out_root / "summary_season.csv",
                                              index=False, encoding="utf-8-sig")
+    if skipped_outlets:
+        print(f"  ⚠ 평년 자료에 없어 건너뛴 수원 {len(skipped_outlets)}개: "
+              f"{', '.join(skipped_outlets)}")
     print(f"\n산출물 → {out_root}")
-    return {"out_root": str(out_root), "n_outlets": len(outlets)}
+    if incomplete and strict:
+        raise ForecastIncomplete(incomplete, out_root)
+    if incomplete:
+        print(f"  ⚠ 예측월 결과가 빈 곳 {len(incomplete)}건 "
+              f"(--allow-incomplete 라 계속 진행)")
+    return {"out_root": str(out_root), "n_outlets": len(outlets),
+            "incomplete": incomplete, "skipped_outlets": skipped_outlets}
 
 
 def main(argv=None) -> int:
@@ -606,6 +783,8 @@ def main(argv=None) -> int:
                     help="앙상블 수 (기본: config 의 ensemble.n_members)")
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--demo", type=int, default=0, help=">0 이면 그 수만큼만(검증)")
+    ap.add_argument("--allow-incomplete", action="store_true",
+                    help="예측월 결과가 비어도 성공(0)으로 끝낸다 — 기본은 실패(1)")
     args = ap.parse_args(argv)
     from swat_py.config import load_config
     cfg = load_config(args.config)
@@ -624,8 +803,14 @@ def main(argv=None) -> int:
     print(f"[config] {args.config} → forecast={forecast} "
           f"({'CLI' if args.forecast else 'yaml'}) · members={n} "
           f"({'demo' if args.demo else ('CLI' if args.members is not None else 'yaml')})")
-    res = build(cfg, forecast, n_members=n, n_workers=args.workers)
     from swat_py.drought.figure import make_all_figures
+    try:
+        res = build(cfg, forecast, n_members=n, n_workers=args.workers,
+                    strict=not args.allow_incomplete)
+    except ForecastIncomplete as e:
+        make_all_figures(Path(e.out_root))      # 진단용 그림은 그려 둔다
+        print(f"\n✖ 실패 — {e}")
+        return 1                                # 0 이 아닌 종료코드(요청 P2-B)
     make_all_figures(Path(res["out_root"]))
     return 0
 

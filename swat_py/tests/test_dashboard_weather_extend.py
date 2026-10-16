@@ -18,6 +18,10 @@ from swat_py.drought.dashboard_data import (
     _assert_forecast_weather_rows,
     extend_weather_to,
 )
+from swat_py.drought.season import period_ym
+
+FMA26 = period_ym(2026, [2, 3, 4])        # [(2026,2), (2026,3), (2026,4)]
+DJF25 = period_ym(2025, [12, 1, 2])       # [(2025,12), (2026,1), (2026,2)]
 
 
 def _write_pcp(path: Path, first_year: int, last_year: int, nbyr: int | None = None) -> None:
@@ -108,26 +112,26 @@ def test_extends_all_station_files(tmp_path) -> None:
 def test_assert_passes_after_extend(tmp_path) -> None:
     _write_pcp(tmp_path / "918430.pcp", 2023, 2024)
     extend_weather_to(tmp_path, pd.Timestamp("2026-04-30"))
-    _assert_forecast_weather_rows(tmp_path, 2026, 32, 120)     # 예외 없음
+    _assert_forecast_weather_rows(tmp_path, FMA26)     # 예외 없음
 
 
 def test_assert_raises_when_forecast_year_absent(tmp_path) -> None:
     """연장하지 않으면 중단 — 이번 사고를 실행 전에 잡아낸다."""
     _write_pcp(tmp_path / "918430.pcp", 2023, 2024)
     with pytest.raises(SystemExit, match="예측기간"):
-        _assert_forecast_weather_rows(tmp_path, 2026, 32, 120)
+        _assert_forecast_weather_rows(tmp_path, FMA26)
 
 
 def test_assert_reports_only_offending_files(tmp_path) -> None:
     _write_pcp(tmp_path / "ok.pcp", 2023, 2026)
     _write_pcp(tmp_path / "bad.pcp", 2023, 2024)
     with pytest.raises(SystemExit) as ei:
-        _assert_forecast_weather_rows(tmp_path, 2026, 32, 120)
+        _assert_forecast_weather_rows(tmp_path, FMA26)
     assert "bad.pcp" in str(ei.value) and "ok.pcp" not in str(ei.value)
 
 
 def test_partial_year_coverage_still_flagged(tmp_path) -> None:
-    """쿡 427608 처럼 2026 자료가 34일뿐이면 예측 창(doy 32~120) 밖일 수 있다."""
+    """쿡 427608 처럼 2026 자료가 1월뿐이면 예측월(2~4월)이 비어 걸러져야 한다."""
     p = tmp_path / "partial.pcp"
     _write_pcp(p, 2023, 2025)
     lines = p.read_text(encoding="utf-8").splitlines()
@@ -135,4 +139,4 @@ def test_partial_year_coverage_still_flagged(tmp_path) -> None:
         lines.append(f"  {2026:4d} {doy:5d} {1.0:9.3f}")
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="partial.pcp"):
-        _assert_forecast_weather_rows(tmp_path, 2026, 32, 120)
+        _assert_forecast_weather_rows(tmp_path, FMA26)

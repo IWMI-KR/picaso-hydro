@@ -79,7 +79,7 @@ python -m swat_py.drought.dashboard_data [--forecast 2016_AMJ] [--members 100] [
 - base(calibrated + 예측기간 time.sim) 준비 → 앙상블 SWAT+ 실행 → 수원별 series/thresholds/stage_prob/dashboard.json + summary.
 - 인자: `--forecast`(기본 config forecast.period), `--members`(기본 config n_members), `--workers`(6), `--demo N`(>0이면 N멤버만, 검증용).
 - **입력**: climatology CSV, 앙상블 멤버(`1_acidwg/forecast/{year}_{season}/member_*`), `calibrated/`.
-- **출력**: `3_swatplus/forecast/{period}/{outlet}.csv`(하천: `member,month,precip_mm,tmax_c,tmin_c,flo_m3s` / 저수지: `…,water_level_ft,storage_pct`). `4_drought_risk/forecast/{period}/{outlet}/`(series·thresholds·stage_prob·ensemble_members·dashboard.json) + `summary.csv`·`summary_season.csv` + 그림. (dashboard.json은 결측을 표준 JSON `null`로 출력.)
+- **출력**: `3_swatplus/forecast/{period}/{outlet}.csv`(하천: `member,year,month,precip_mm,tmax_c,tmin_c,flo_m3s` / 저수지: `…,water_level_ft,storage_pct`. `year` 는 NDJ·DJF 에서 1·2월이 다음 해임을 나타냄). `4_drought_risk/forecast/{period}/{outlet}/`(series·thresholds·stage_prob·ensemble_members·dashboard.json) + `summary.csv`·`summary_season.csv` + 그림. (dashboard.json은 결측을 표준 JSON `null`로 출력.)
 
 #### `swat_py.drought.historical_worst` — 계절/월 최저강수 worst 모의
 ```bash
