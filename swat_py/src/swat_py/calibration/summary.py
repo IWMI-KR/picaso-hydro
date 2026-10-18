@@ -186,13 +186,19 @@ def plot_scatter_top_n(
         ax.scatter(obs_v, sim_arr, s=15, alpha=0.5,
                    facecolors="none", edgecolors=c, label=lbl)
 
-    # 1:1 line
-    lim_max = max(obs_v.max(), max(np.max(np.asarray(s, dtype=float)[mask])
-                                    for s in sim_dict.values()))
-    lim_min = min(obs_v.min(), min(np.min(np.asarray(s, dtype=float)[mask])
-                                    for s in sim_dict.values()))
-    ax.plot([lim_min, lim_max], [lim_min, lim_max], "k-", lw=1.0, alpha=0.7)
-    ax.set_xlim(lim_min, lim_max); ax.set_ylim(lim_min, lim_max)
+    # 1:1 line — 겹치는 관측·모의가 없으면(예: 라우팅 불일치로 n=0) 축만 비워 둔다.
+    #  이전에는 빈 배열에서 ValueError 가 나 보정 전체가 요약표 저장 직후 중단됐다.
+    _vals = [obs_v] + [np.asarray(s, dtype=float)[mask] for s in sim_dict.values()]
+    _vals = [v[~np.isnan(v)] for v in _vals]
+    _vals = [v for v in _vals if v.size]
+    if _vals:
+        lim_max = max(float(v.max()) for v in _vals)
+        lim_min = min(float(v.min()) for v in _vals)
+        ax.plot([lim_min, lim_max], [lim_min, lim_max], "k-", lw=1.0, alpha=0.7)
+        ax.set_xlim(lim_min, lim_max); ax.set_ylim(lim_min, lim_max)
+    else:
+        ax.text(0.5, 0.5, "관측·모의 공통 자료 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=11)
     ax.set_xlabel("Observed"); ax.set_ylabel("Simulated")
     ax.set_title(title)
     ax.set_aspect("equal", adjustable="box")
