@@ -216,10 +216,20 @@ class _DroughtSource:
     #  단위: 수위내용적 곡선/registry 와 동일 datum(MSL, ft; 여수로 45·댐마루 51·바닥 23.34).
     init_water_level_ft: float = float("nan")  # 미지정 시 만수(cap)로 시작(기존 동작)
     measured:            bool = False           # true=실측 초기수위 / false=가정 시나리오
+    # ── 취수 시나리오(선택) — 레지스트리(§reservoirs)의 물리 제원을 **덮어쓴다** ──
+    #  미지정(None)이면 레지스트리 값을 그대로 쓴다. 지정하면 결과 폴더에 꼬리표가
+    #  붙어(_wdr…) 취수 시나리오끼리 덮어쓰지 않는다.
+    withdrawal_m3s:         Optional[float] = None        # 상수 취수(m³/s)
+    withdrawal_monthly_m3s: Optional[List[float]] = None  # 월별(1~12월), 상수보다 우선
 
     def has_initial_condition(self) -> bool:
         v = self.init_water_level_ft
         return self.type == "reservoir" and v == v  # NaN 이면 False
+
+    def has_withdrawal_scenario(self) -> bool:
+        """취수를 시나리오로 덮어썼는가 — 결과 폴더 꼬리표 판단용."""
+        return self.type == "reservoir" and (
+            self.withdrawal_m3s is not None or self.withdrawal_monthly_m3s is not None)
 
 
 @dataclass
@@ -283,14 +293,21 @@ class _DroughtCfg:
         """예측 결과 폴더/파일명 접미사 — 저수지 초기조건 시나리오 구분용.
 
         저수지 초기조건이 있으면 ``__ic{수위}ft-{scn|meas}`` (예 ``__ic44.0ft-scn``),
-        없으면 ``''`` (하천만 → Cook 하위호환, 접미사 없음).
-        여러 저수지면 ``_`` 로 연결.
+        취수 시나리오가 있으면 거기에 ``_wdr{값}`` (월별이면 ``_wdrmon``)이 붙는다
+        (예 ``__ic44.0ft-scn_wdr0.0300``). 없으면 ``''``
+        (하천만 → Cook 하위호환, 접미사 없음). 여러 저수지면 ``_`` 로 연결.
+
+        취수를 바꿔도 꼬리표가 같으면 **이전 시나리오 결과를 덮어쓴다** — 그래서
+        취수 시나리오도 꼬리표에 넣는다.
         """
         parts = []
         for s in self.sources:
             if s.has_initial_condition():
                 tag = "meas" if s.measured else "scn"
                 parts.append(f"ic{s.init_water_level_ft:.1f}ft-{tag}")
+            if s.has_withdrawal_scenario():
+                parts.append("wdrmon" if s.withdrawal_monthly_m3s is not None
+                             else f"wdr{s.withdrawal_m3s:.4f}")
         return ("__" + "_".join(parts)) if parts else ""
 
 
@@ -753,6 +770,8 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
         merged_outlets.update(souts)
         ic = sv.get("initial_condition", {}) or {}
         _iwl = ic.get("init_water_level_ft", None)
+        _wdr = ic.get("withdrawal_m3s", None)
+        _wdrm = ic.get("withdrawal_monthly_m3s", None)
         dr_sources.append(_DroughtSource(
             name=             str(sname),
             type=             str(sv.get("type", "stream") or "stream"),
@@ -763,6 +782,8 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
                                                   or [70.0, 90.0, 95.0])],
             init_water_level_ft= (float(_iwl) if _iwl is not None else float("nan")),
             measured=         _to_bool(ic.get("measured", False)),
+            withdrawal_m3s=   (float(_wdr) if _wdr is not None else None),
+            withdrawal_monthly_m3s= ([float(x) for x in _wdrm] if _wdrm else None),
         ))
 
     if dr_sources:

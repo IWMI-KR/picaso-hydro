@@ -285,7 +285,8 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
                 ser = monthly_capacity_series(
                     sub, full_m3=params.full_m3, init_m3=params.full_m3,
                     withdrawal_m3s=params.withdrawal_m3s, dead_m3=params.dead_m3,
-                    curve=curve, datum_offset_ft=params.datum_offset_ft)
+                    curve=curve, datum_offset_ft=params.datum_offset_ft,
+                    withdrawal_monthly_m3s=params.withdrawal_monthly_m3s)
                 for m, v in ser.items():
                     per_month[m].append(float(v["storage_pct"]))
                     per_month_lvl[m].append(float(v["water_level_ft"]))

@@ -43,6 +43,7 @@ class ReservoirForecastParams:
     dead_m3:        float          # 사수위 저수량(하한)
     init_m3:        float          # 예측시점 초기 저류량(init_water_level_ft 환산)
     withdrawal_m3s: float = 0.0    # 취수(상수)
+    withdrawal_monthly_m3s: Optional[List[float]] = None  # 월별(1~12월) 취수, 상수보다 우선
     curve:          object = None  # StageStorageCurve — 저류량→수위(ft) 환산용(선택)
     datum_offset_ft: float = 0.0   # 곡선(MSL) → 관측 눈금 보정. 모델 수위에 **더한다**
 
@@ -68,14 +69,23 @@ def build_reservoir_forecast_params(source, reservoir_cfg, curve) -> ReservoirFo
     iwl = getattr(source, "init_water_level_ft", float("nan"))
     init_m3 = water_level_to_storage(curve, iwl) if (iwl == iwl) else full_m3  # NaN → 만수
 
+    # 취수: 시나리오(source.initial_condition)가 있으면 레지스트리 물리 제원을 덮어쓴다.
     wdr = float(getattr(reservoir_cfg, "withdrawal_m3s", 0.0) or 0.0) if reservoir_cfg else 0.0
+    wmon = (list(getattr(reservoir_cfg, "withdrawal_monthly_m3s", None) or [])
+            if reservoir_cfg else []) or None
+    s_wdr = getattr(source, "withdrawal_m3s", None)
+    s_wmon = getattr(source, "withdrawal_monthly_m3s", None)
+    if s_wmon:
+        wmon = [float(x) for x in s_wmon]
+    elif s_wdr is not None:
+        wdr, wmon = float(s_wdr), None
     off = float(getattr(reservoir_cfg, "obs_datum_offset_ft", 0.0) or 0.0) if reservoir_cfg else 0.0
     gid = next(iter(source.outlets)) if source.outlets else (
         reservoir_cfg.gis_id if reservoir_cfg else 0)
     return ReservoirForecastParams(
         gis_id=int(gid), name=list(source.outlets.values())[0] if source.outlets else source.name,
         full_m3=full_m3, dead_m3=dead_m3, init_m3=init_m3, withdrawal_m3s=wdr,
-        curve=curve, datum_offset_ft=off,
+        withdrawal_monthly_m3s=wmon, curve=curve, datum_offset_ft=off,
     )
 
 
@@ -117,6 +127,7 @@ def monthly_capacity_series(
     months: Optional[List[int]] = None,
     curve: object = None,
     datum_offset_ft: float = 0.0,
+    withdrawal_monthly_m3s: Optional[List[float]] = None,
 ) -> Dict[int, Dict[str, float]]:
     """저수지 일자료(reservoir_day) → 월별 물수지 상세.
 
@@ -128,7 +139,13 @@ def monthly_capacity_series(
     - water_level_ft     : 거기에 ``datum_offset_ft`` 를 더한 **관측 눈금** 수위.
       현장 운영자가 보는 값이다(Ngerimel 만수 45.00 MSL → 23.00 ft).
     months 지정 시 그 월만 반환.
+
+    ``withdrawal_monthly_m3s`` (1~12월 12개)를 주면 **달마다 다른 취수**를 쓴다
+    (상수보다 우선). 건기에 취수를 줄이는 운영을 표현할 수 있다.
     """
+    wmon = list(withdrawal_monthly_m3s) if withdrawal_monthly_m3s else None
+    if wmon is not None and len(wmon) != 12:
+        raise ValueError(f"withdrawal_monthly_m3s 는 12개여야 한다: {len(wmon)}개")
     if full_m3 <= 0:
         return {}
     df = daily_res.copy()
@@ -152,7 +169,8 @@ def monthly_capacity_series(
     for ym, sub in df.groupby("ym", sort=True):
         s_start = min(S, full_m3)
         inflow = float(sub["_net"].sum())
-        wdr = withdrawal_m3s * _SECONDS_PER_DAY * len(sub)
+        w_m3s = wmon[int(ym.month) - 1] if wmon is not None else withdrawal_m3s
+        wdr = w_m3s * _SECONDS_PER_DAY * len(sub)
         supply = s_start + inflow - wdr
         pct = max(supply, dead_m3) / full_m3 * 100.0
         S = max(min(supply, full_m3), dead_m3)          # 월말 이월 저류량
@@ -212,6 +230,7 @@ def member_reservoir_series(
         withdrawal_m3s=params.withdrawal_m3s, dead_m3=params.dead_m3,
         months=months, curve=getattr(params, "curve", None),
         datum_offset_ft=getattr(params, "datum_offset_ft", 0.0),
+        withdrawal_monthly_m3s=getattr(params, "withdrawal_monthly_m3s", None),
     )
 
 
