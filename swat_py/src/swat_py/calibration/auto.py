@@ -232,7 +232,8 @@ def _extract_obs_from_swat_output(run_dir: Path, ctx: CalibrationContext) -> Dic
                 if raw is None:
                     out[obs.id] = _empty
                     continue
-                sim = build_reservoir_sim(raw, obs, outtype, reservoirs)
+                sim = build_reservoir_sim(raw, obs, outtype, reservoirs,
+                                          run_dir=run_dir, sdate=sdate)
                 sim_col = _SIM_COL[outtype]
                 out[obs.id] = (sim["date"].values, sim[sim_col].values)
             else:

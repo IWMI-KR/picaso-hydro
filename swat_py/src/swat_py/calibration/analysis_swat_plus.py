@@ -252,12 +252,19 @@ def build_reservoir_sim(
     obs,
     outtype: str,
     reservoirs: Optional[dict] = None,
+    run_dir=None,
+    sdate: Optional[str] = None,
+    chan_file: str = "channel_sd_day.txt",
 ) -> pd.DataFrame:
     """저수지 raw(reservoir_day) → 파생 시계열(wlevel_ft 등).
 
     obs.reservoir 레지스트리에서 **실측 수위-내용적 곡선**과 **취수 물수지**,
     **datum 오프셋**을 적용한다(있으면). analyze_one_observation_plus 와
     auto-calibration(_extract_obs_from_swat_output) 이 공유한다.
+
+    ``run_dir``·``sdate`` 를 주고 레지스트리에 전환유입이 설정돼 있으면 같은 폴더의
+    ``channel_sd_day.txt`` 에서 수원 일유량을 읽어 **예측 경로와 같은 운영 물수지**로
+    저류량을 재계산한다. 주지 않으면 전환유입 없이 계산한다(기존 거동).
     """
     curve = None
     datum_offset_ft = 0.0
@@ -287,8 +294,33 @@ def build_reservoir_sim(
             dead_m3 = float(curve.stage_to_storage(res.bottom_ft)) if not _math.isnan(res.bottom_ft) else 0.0
             init_m3 = float(curve.stage_to_storage(res.init_level_ft)) if not _math.isnan(res.init_level_ft) else cap_m3
             wdr = res.withdrawal_monthly_m3s or res.withdrawal_m3s
+            # 전환유입 — 예측 경로와 같은 규칙. run_dir·sdate 가 있을 때만 적용한다.
+            div_arr, div_tgt = None, float("nan")
+            if run_dir is not None and sdate and getattr(res, "diversion_from_outlet", None):
+                from swat_py.drought.reservoir_forecast import (
+                    ReservoirForecastParams, diversion_daily_m3,
+                )
+                _p = ReservoirForecastParams(
+                    gis_id=int(getattr(res, "gis_id", 0) or 0), name=res.name,
+                    full_m3=cap_m3 or 0.0, dead_m3=dead_m3, init_m3=init_m3 or 0.0,
+                    curve=curve,
+                    diversion_from_outlet=res.diversion_from_outlet,
+                    diversion_max_m3s=getattr(res, "diversion_max_m3s", 0.0),
+                    diversion_min_flow_m3s=getattr(res, "diversion_min_flow_m3s", 0.0),
+                )
+                _s = diversion_daily_m3(run_dir, _p, sdate=sdate, filename=chan_file)
+                if _s is None:
+                    print(f"[WARN] {res.name} 전환유입 설정됐으나 {chan_file} 없음 "
+                          f"→ 전환 없이 계산(대시보드와 불일치)")
+                else:
+                    # 저수지 자료 날짜에 맞춰 정렬 — 기간이 어긋나면 해당 날은 0
+                    div_arr = pd.to_datetime(raw["date"]).map(_s).fillna(0.0).to_numpy(float)
+                    _tgt_ft = float(getattr(res, "diversion_target_ft", float("nan")))
+                    div_tgt = (float(curve.stage_to_storage(_tgt_ft))
+                               if _tgt_ft == _tgt_ft else float("nan"))
             bal = simulate_managed_storage(
                 raw, withdrawal_m3s=wdr, cap_m3=cap_m3, dead_m3=dead_m3, init_m3=init_m3,
+                diversion_daily_m3=div_arr, diversion_target_m3=div_tgt,
             )
             storage_override = bal["storage_m3"]
         except Exception as e:
@@ -355,7 +387,9 @@ def analyze_one_observation_plus(
             print(f"[WARN] 저수지 {obs.outlet_id} 자료 없음: {sim_path}")
             return None
         # 곡선·취수·datum 반영 저수지 시계열 (공용 헬퍼)
-        sim_typed = build_reservoir_sim(raw, obs, outtype, reservoirs)
+        sim_typed = build_reservoir_sim(raw, obs, outtype, reservoirs,
+                                        run_dir=out_dir, sdate=sdate,
+                                        chan_file=f"channel_sd_day-{sim_type}.txt")
     else:
         sim_path = out_dir / f"channel_sd_day-{sim_type}.txt"
         raw = parse_channel_sd_day(sim_path, obs.outlet_id, sdate)

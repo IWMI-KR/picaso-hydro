@@ -291,20 +291,23 @@ def member_reservoir_series(
 
 
 def diversion_daily_m3(run_dir: Path, params: ReservoirForecastParams, *,
-                       sdate: str) -> Optional[pd.Series]:
+                       sdate: str,
+                       filename: str = "channel_sd_day.txt") -> Optional[pd.Series]:
     """수원 채널 일유량 → 그 날 전환 가능한 잉여수(m³). 미설정·자료 없으면 None.
 
     잉여수 = clip(유량 − ``diversion_min_flow_m3s``, 0, ``diversion_max_m3s``) × 86400.
     - min_flow : 수원 하천에 남겨야 하는 유량(하천유지유량) — 가뭄에 수원이 마르면
       잉여수가 0이 되어 보충이 끊긴다. 이것이 저수지 저하를 만드는 기제다.
     - max_m3s  : 전환 설비(펌프·도수로) 용량 상한.
-    ``channel_sd_day.txt`` 가 없으면 None → 호출부는 기존 월 단위 물수지로 돌아간다.
+    ``filename`` 이 없으면 None → 호출부는 전환유입 없이(기존 거동) 계산한다.
+    검보정 분석 경로는 출력 파일명에 접미가 붙으므로(``channel_sd_day-{sim}.txt``)
+    그 이름을 ``filename`` 으로 넘긴다.
     """
     gid = getattr(params, "diversion_from_outlet", None)
     cap = float(getattr(params, "diversion_max_m3s", 0.0) or 0.0)
     if not gid or cap <= 0:
         return None
-    f = Path(run_dir) / "channel_sd_day.txt"
+    f = Path(run_dir) / filename
     if not f.is_file():
         return None
     ch = parse_channel_sd_day(f, outlet=int(gid), sdate=sdate)

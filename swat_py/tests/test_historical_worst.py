@@ -171,3 +171,25 @@ def test_load_monthly_flow_and_season(tmp_path):
     fl = _season_flows(idx, "ngerikiil", 2015, (12, 13, 14))     # DJF 2015
     assert [f[2] for f in fl] == [11.0, 12.0, 13.0]              # Dec15,Jan16,Feb16
     assert _season_mean(fl) == pytest.approx(12.0)
+
+
+def test_reservoir_daily_balance_diversion():
+    """최악 시나리오 경로도 전환유입을 쓴다 — 보충되면 저하가 멈춘다."""
+    from swat_py.io.reservoir import StageStorageCurve
+    curve = StageStorageCurve(elev_ft=np.array([0.0, 100.0]),
+                              storage_m3=np.array([0.0, 100000.0]))
+    p = _P(full_m3=100000.0, dead_m3=0.0, withdrawal_m3s=0.05, curve=curve)
+    dates = pd.date_range("2018-03-01", "2018-04-30", freq="D")
+    rd = pd.DataFrame({"date": dates, "flo_in": 0.0, "precip": 0.0,
+                       "evap": 0.0, "seep": 0.0})
+    base = reservoir_daily_balance(rd, params=p, init_msl=100.0)
+    div = pd.Series([1e9] * len(dates), index=dates)      # 잉여수 충분
+    fed = reservoir_daily_balance(rd, params=p, init_msl=100.0,
+                                  diversion_daily_m3=div)
+    assert base["storage_pct"].iloc[-1] == 0.0            # 전환 없음 → 고갈
+    assert fed["storage_pct"].iloc[-1] == pytest.approx(100.0)   # 보충 → 만수 유지
+    # 잉여수 0 이면 전환 없음과 같다
+    zero = reservoir_daily_balance(rd, params=p, init_msl=100.0,
+                                   diversion_daily_m3=pd.Series([0.0] * len(dates),
+                                                                index=dates))
+    assert zero["storage_pct"].iloc[-1] == pytest.approx(base["storage_pct"].iloc[-1])

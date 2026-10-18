@@ -277,12 +277,17 @@ def reservoir_season_balance(flows: List[Tuple[int, int, float]], *, init_msl: f
 #    실제 유입 flo_in(가뭄시 ~0) + 취수 물수지를 써야 관측 강하가 재현된다.
 
 def reservoir_daily_balance(daily_res: pd.DataFrame, *, params, init_msl: float,
-                            use_losses: bool = True) -> pd.DataFrame:
+                            use_losses: bool = True,
+                            diversion_daily_m3=None) -> pd.DataFrame:
     """저수지 일자료(reservoir_day: flo_in·precip·evap·seep) → 일 물수지 저수량%/수위.
 
     init_msl 초기수위에서 시작해 매일:
-        S = clip(S + flo_in (+precip−evap−seep) − 취수, dead, full).
+        S = clip(S + flo_in (+precip−evap−seep) − 취수 (+전환유입 보충), dead, full).
     Returns [date, storage_pct, storage_m3, water_level_ft].
+
+    ``diversion_daily_m3`` (date 색인 Series, 그 날 전환 가능 잉여수 m³)를 주면
+    저류가 ``params.diversion_target_m3``(NaN → 만수) 아래일 때 부족분을 보충한다 —
+    예측·검보정 경로와 **같은 운영 규칙**이다. 주지 않으면 기존 거동 그대로다.
 
     ※ 여기의 ``water_level_ft`` 는 **곡선 datum(MSL)** 이다 — 이 모듈은 관측을
     MSL 로 변환해(obs − obs_datum_offset_ft) 비교하기 때문이다. 예측 경로
@@ -305,9 +310,20 @@ def reservoir_daily_balance(daily_res: pd.DataFrame, *, params, init_msl: float,
         net = net + col("precip") - col("evap") - col("seep")
     wdr = params.withdrawal_m3s * _SEC_PER_DAY
     S = float(curve.stage_to_storage(init_msl)) if curve is not None else float(init_msl)
+    # 전환유입 — 자료 날짜에 맞춰 정렬(없는 날은 0). 목표 미지정 시 만수.
+    if diversion_daily_m3 is not None:
+        dv = df["date"].map(pd.to_numeric(diversion_daily_m3, errors="coerce")
+                            ).fillna(0.0).clip(lower=0.0).to_numpy(float)
+        _t = float(getattr(params, "diversion_target_m3", float("nan")))
+        dtgt = max(min(_t if _t == _t else full, full), dead)
+    else:
+        dv, dtgt = None, 0.0
     out = []
-    for d, nv in zip(df["date"], net.to_numpy()):
-        S = min(max(S + float(nv) - wdr, dead), full)
+    for i, (d, nv) in enumerate(zip(df["date"], net.to_numpy())):
+        S = S + float(nv) - wdr
+        if dv is not None and S < dtgt and dv[i] > 0.0:
+            S += min(dtgt - S, dv[i])
+        S = min(max(S, dead), full)
         pct = S / full * 100.0 if full > 0 else np.nan
         lvl = float(curve.storage_to_stage(S)) if curve is not None else np.nan
         out.append((d, pct, S, lvl))
@@ -358,7 +374,14 @@ def reservoir_hindcast(cfg) -> Dict[str, str]:
     else:
         init_msl = _full_level(params, rcfg)
 
-    mod = reservoir_daily_balance(rd, params=params, init_msl=init_msl)
+    # 전환유입 — 예측·검보정 경로와 같은 운영 규칙. CalibratedDir 의 채널 일유량을 쓴다.
+    from swat_py.drought.reservoir_forecast import diversion_daily_m3 as _div
+    _d = _div(Path(cfg.CalibratedDir), params, sdate=sdate)
+    if getattr(params, "diversion_from_outlet", None) and _d is None:
+        print(f"  [WARN] 전환유입이 설정됐으나 {Path(cfg.CalibratedDir)/'channel_sd_day.txt'} "
+              f"없음 → 전환 없이 계산(대시보드와 불일치)")
+    mod = reservoir_daily_balance(rd, params=params, init_msl=init_msl,
+                                  diversion_daily_m3=_d)
     skill = {}
     if obs_daily is not None:
         mrg = mod.merge(obs_daily[["date", "obs_pct"]], on="date", how="inner")
@@ -438,7 +461,9 @@ def run_reservoir_daily(cfg, *, workdir=None, timeout: int = 7200,
         if not t:
             continue
         if t[0] == "channel_sd":
-            pl[i] = f"{t[0]:<28} n             y             n             n"
+            # 전환유입을 쓰면 수원 일유량이 필요하다 — 그때만 일단위 채널 출력을 켠다.
+            _d = "y" if getattr(params, "diversion_from_outlet", None) else "n"
+            pl[i] = f"{t[0]:<28} {_d}             y             n             n"
         elif t[0] == "reservoir":
             pl[i] = f"{t[0]:<28} y             n             n             n"
     pp.write_text("\n".join(pl) + "\n")
@@ -467,11 +492,22 @@ def run_reservoir_daily(cfg, *, workdir=None, timeout: int = 7200,
         raise SystemExit("reservoir_day.txt 파싱 실패/빈 결과")
     raw["date"] = pd.to_datetime(raw["date"])
     raw = raw[raw["date"] >= out_first].reset_index(drop=True)
+    # 전환유입 가용 잉여수를 같은 표에 실어 둔다 — 최악 시나리오(3b)가 저수지 일자료만
+    # 읽어 물수지를 돌리므로, 여기서 함께 저장하지 않으면 그 경로가 전환유입을 쓸 수 없다.
+    if getattr(params, "diversion_from_outlet", None):
+        from swat_py.drought.reservoir_forecast import diversion_daily_m3 as _div
+        _s = _div(work, params, sdate=f"{syear}-01-01")
+        if _s is None:
+            print("      [WARN] 전환유입 설정됐으나 channel_sd_day.txt 없음 "
+                  "→ diversion_avail_m3 열 생략(최악 시나리오가 전환 없이 계산)")
+        else:
+            raw["diversion_avail_m3"] = raw["date"].map(_s).fillna(0.0).to_numpy(float)
+            print(f"      전환유입 가용 잉여수 평균 {raw['diversion_avail_m3'].mean():,.0f} m³/일")
     print(f"[4/4] reservoir_day gis_id={params.gis_id} n={len(raw)} "
           f"{raw['date'].min().date()}~{raw['date'].max().date()}")
     if save_path:
         cols = [c for c in ("date", "flo_in", "precip", "evap", "seep", "flo_stor",
-                            "flo_out") if c in raw.columns]
+                            "flo_out", "diversion_avail_m3") if c in raw.columns]
         raw[cols].to_csv(save_path, index=False, encoding="utf-8-sig")
         print(f"      저장: {save_path}")
     return raw
@@ -603,7 +639,18 @@ def build_historical_worst(cfg, *, min_frac: float = 0.90,
         flo_in_csv = out_dir / f"reservoir_day_{years[0]}_{years[-1]}.csv"
         if flo_in_csv.is_file():
             rd = pd.read_csv(flo_in_csv, parse_dates=["date"])
-            daily = reservoir_daily_balance(rd, params=res_params, init_msl=full_lvl)
+            # 전환유입 — run_reservoir_daily 가 실어 둔 가용 잉여수 열을 쓴다(있으면).
+            _dv = None
+            if "diversion_avail_m3" in rd.columns:
+                _dv = pd.Series(rd["diversion_avail_m3"].to_numpy(float),
+                                index=pd.to_datetime(rd["date"]).to_numpy())
+            elif getattr(res_params, "diversion_from_outlet", None):
+                log_lines.append(
+                    f"[주의] 전환유입이 설정됐으나 {flo_in_csv.name} 에 "
+                    f"diversion_avail_m3 열이 없음 → 이 지표만 전환 없이 계산"
+                    f"(--gen-reservoir-daily 재실행으로 해소)")
+            daily = reservoir_daily_balance(rd, params=res_params, init_msl=full_lvl,
+                                            diversion_daily_m3=_dv)
             daily["year"] = daily["date"].dt.year
             daily["month"] = daily["date"].dt.month
             g = daily.groupby(["year", "month"])

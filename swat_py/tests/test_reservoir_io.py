@@ -238,3 +238,45 @@ def test_storage_to_capacity_fraction():
     assert storage_to_capacity_fraction(c, 850.0, 10.0) == pytest.approx(85.0)
     out = storage_to_capacity_fraction(c, np.array([1000.0, 650.0]), 10.0)
     np.testing.assert_allclose(out, [100.0, 65.0])
+
+
+# ── 전환유입(diversion) — 예측 경로와 같은 운영 규칙 ──────────────────────────────
+
+def test_managed_storage_diversion_tops_up():
+    """저류가 목표 아래면 잉여수 한도까지 보충 — 검보정 경로도 예측과 같은 규칙."""
+    from swat_py.io.reservoir import simulate_managed_storage
+    dates = pd.date_range("2018-03-01", "2018-03-31", freq="D")
+    df = pd.DataFrame({"date": dates, "flo_in": 0.0, "precip": 0.0,
+                       "evap": 0.0, "seep": 0.0})
+    # 취수 864 m³/day, 잉여수 10,000 m³/day → 목표 90,000 유지
+    out = simulate_managed_storage(df, withdrawal_m3s=0.01, cap_m3=100000.0,
+                                   dead_m3=0.0, init_m3=100000.0,
+                                   diversion_daily_m3=[10000.0] * len(dates),
+                                   diversion_target_m3=90000.0)
+    assert out["storage_m3"].iloc[-1] == pytest.approx(90000.0, abs=1.0)
+    assert out["diversion_m3"].sum() > 0
+
+
+def test_managed_storage_diversion_dry_source():
+    """수원이 마르면 보충이 끊겨 저하 — 전환 없음과 같은 결과여야 한다."""
+    from swat_py.io.reservoir import simulate_managed_storage
+    dates = pd.date_range("2018-03-01", "2018-03-31", freq="D")
+    df = pd.DataFrame({"date": dates, "flo_in": 0.0, "precip": 0.0,
+                       "evap": 0.0, "seep": 0.0})
+    kw = dict(withdrawal_m3s=0.01, cap_m3=100000.0, dead_m3=0.0, init_m3=100000.0)
+    dry = simulate_managed_storage(df, diversion_daily_m3=[0.0] * len(dates),
+                                   diversion_target_m3=90000.0, **kw)
+    none = simulate_managed_storage(df, **kw)
+    assert dry["storage_m3"].iloc[-1] == pytest.approx(none["storage_m3"].iloc[-1])
+    assert dry["diversion_m3"].sum() == pytest.approx(0.0)
+
+
+def test_managed_storage_diversion_length_mismatch():
+    """일별 잉여수 길이가 자료와 다르면 조용히 지나가지 않고 실패한다."""
+    from swat_py.io.reservoir import simulate_managed_storage
+    dates = pd.date_range("2018-03-01", "2018-03-31", freq="D")
+    df = pd.DataFrame({"date": dates, "flo_in": 0.0, "precip": 0.0,
+                       "evap": 0.0, "seep": 0.0})
+    with pytest.raises(ValueError, match="길이"):
+        simulate_managed_storage(df, withdrawal_m3s=0.01, cap_m3=100000.0,
+                                 init_m3=100000.0, diversion_daily_m3=[0.0] * 5)

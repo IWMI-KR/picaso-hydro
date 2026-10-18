@@ -223,6 +223,8 @@ def simulate_managed_storage(
     dead_m3: float = 0.0,
     init_m3: Optional[float] = None,
     use_losses: bool = True,
+    diversion_daily_m3: Optional[Sequence[float]] = None,
+    diversion_target_m3: float = float("nan"),
 ) -> pd.DataFrame:
     """SWAT+ 저수지 유입에서 취수를 뺀 관리 물수지로 저류량 재계산.
 
@@ -235,10 +237,18 @@ def simulate_managed_storage(
     dead_m3:         사수위 저류(하한). 하회 시 취수 제한(shortage 기록).
     init_m3:         초기 저류. None → cap_m3(만수) 있으면 그 값, 없으면 첫날 flo_stor.
     use_losses:      True 면 precip/evap/seep(m³/day) 포함, False 면 유입·취수만.
+    diversion_daily_m3:  전환유입 — 그 날 인접 하천에서 끌어올 수 있는 잉여수(m³, 일별).
+                     저류가 ``diversion_target_m3``(NaN → cap) 아래면 부족분을 이 한도까지
+                     보충한다. 운영 저수지(평상시 만수 유지, 수원 고갈 시 저하)를 표현한다.
+                     None 이면 기존 거동 그대로다. 예측 경로의
+                     :func:`swat_py.drought.reservoir_forecast.monthly_capacity_series`
+                     와 **같은 규칙**이어야 한다 — 검보정과 대시보드가 다른 물수지를 쓰면
+                     검보정 지표가 산출물을 설명하지 못한다.
+    diversion_target_m3: 보충 목표 저류량. NaN → cap_m3(만수).
 
     Returns
     -------
-    DataFrame(date, storage_m3, spill_m3, withdrawal_m3, shortage_m3)
+    DataFrame(date, storage_m3, spill_m3, withdrawal_m3, shortage_m3, diversion_m3)
     """
     lc = {c.lower(): c for c in df.columns}
 
@@ -272,9 +282,23 @@ def simulate_managed_storage(
     storage  = np.empty(n)
     spill    = np.zeros(n)
     shortage = np.zeros(n)
+    diversion = np.zeros(n)
+    # 전환유입 — 일별 잉여수 배열과 목표 저류량. 목표 미지정 시 만수(cap).
+    D = None
+    if diversion_daily_m3 is not None:
+        D = np.asarray(diversion_daily_m3, dtype=float)
+        if D.shape[0] != n:
+            raise ValueError(f"diversion_daily_m3 길이는 자료와 같아야 함: {D.shape[0]} vs {n}")
+        D = np.nan_to_num(D, nan=0.0).clip(min=0.0)
+        dtgt = float(diversion_target_m3) if diversion_target_m3 == diversion_target_m3 else (
+            cap_m3 if cap_m3 is not None else float("inf"))
     S = float(init_m3)
     for t in range(n):
         S = S + flo_in[t] + precip[t] - evap[t] - seep[t] - W[t]
+        if D is not None and S < dtgt and D[t] > 0.0:
+            take = min(dtgt - S, D[t])
+            S += take
+            diversion[t] = take
         if cap_m3 is not None and S > cap_m3:
             spill[t] = S - cap_m3
             S = cap_m3
@@ -289,6 +313,7 @@ def simulate_managed_storage(
         "spill_m3":      spill,
         "withdrawal_m3": W,
         "shortage_m3":   shortage,
+        "diversion_m3":  diversion,
     })
 
 
