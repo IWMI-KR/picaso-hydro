@@ -196,3 +196,77 @@ def test_build_params_init_default_full():
     rcfg = _Reservoir(name="ngerimel", gis_id=4, spillway_ft=45.0, bottom_ft=23.34)
     p = build_reservoir_forecast_params(src, rcfg, curve)
     assert p.init_m3 == pytest.approx(p.full_m3)    # 만수
+
+
+# ── 전환유입(diversion) — 인접 하천 잉여수 보충 운영 ─────────────────────────────
+
+def test_diversion_absent_keeps_monthly_lump():
+    """전환유입을 주지 않으면 기존 월 단위 물수지 그대로 — 쿡 동작 불변 보장."""
+    dates = pd.date_range("2016-01-01", "2016-01-31", freq="D")
+    df = _daily(dates, flo_in=0.0)
+    base = monthly_capacity_series(df, full_m3=100000.0, init_m3=100000.0,
+                                   withdrawal_m3s=0.01, dead_m3=0.0)
+    # diversion_target_m3 만 줘도(일별 잉여수 없이는) 월 단위 경로여야 한다
+    same = monthly_capacity_series(df, full_m3=100000.0, init_m3=100000.0,
+                                   withdrawal_m3s=0.01, dead_m3=0.0,
+                                   diversion_target_m3=90000.0)
+    assert same[1]["storage_m3"] == pytest.approx(base[1]["storage_m3"])
+    assert "diversion_m3" not in base[1]
+
+
+def test_diversion_tops_up_to_target():
+    """잉여수가 충분하면 목표 저류량까지 보충 — 평상시 만수 유지 운영."""
+    dates = pd.date_range("2016-01-01", "2016-01-31", freq="D")
+    df = _daily(dates, flo_in=0.0)                      # 자연 유입 0
+    div = pd.Series([10000.0] * len(dates), index=dates)  # 하루 10,000 m³ 전환 가능
+    out = monthly_capacity_series(df, full_m3=100000.0, init_m3=100000.0,
+                                  withdrawal_m3s=0.01, dead_m3=0.0,
+                                  diversion_daily_m3=div,
+                                  diversion_target_m3=90000.0)
+    # 취수 864 m³/day 를 전환이 매일 메우므로 목표(90,000) 아래로 내려가지 않는다
+    assert out[1]["storage_m3"] == pytest.approx(90000.0, abs=1.0)
+    assert out[1]["diversion_m3"] > 0
+
+
+def test_diversion_dry_source_lets_level_fall():
+    """수원이 마르면(잉여수 0) 보충이 끊겨 저수지가 저하 — 가뭄 경보의 기제."""
+    dates = pd.date_range("2016-01-01", "2016-01-31", freq="D")
+    df = _daily(dates, flo_in=0.0)
+    div = pd.Series([0.0] * len(dates), index=dates)
+    out = monthly_capacity_series(df, full_m3=100000.0, init_m3=100000.0,
+                                  withdrawal_m3s=0.01, dead_m3=0.0,
+                                  diversion_daily_m3=div,
+                                  diversion_target_m3=90000.0)
+    # 유입·보충 0, 취수만 31일 → 100000-864*31=73216
+    assert out[1]["storage_m3"] == pytest.approx(73216.0, abs=1.0)
+    assert out[1]["diversion_m3"] == pytest.approx(0.0)
+
+
+def test_diversion_partial_source_limits_topup():
+    """잉여수가 부족하면 그만큼만 보충된다(상한은 호출부에서 이미 반영)."""
+    dates = pd.date_range("2016-01-01", "2016-01-31", freq="D")
+    df = _daily(dates, flo_in=0.0)
+    div = pd.Series([400.0] * len(dates), index=dates)   # 취수 864 의 절반 미만
+    out = monthly_capacity_series(df, full_m3=100000.0, init_m3=100000.0,
+                                  withdrawal_m3s=0.01, dead_m3=0.0,
+                                  diversion_daily_m3=div,
+                                  diversion_target_m3=100000.0)
+    # 매일 864 빠지고 400 보충 → 31일간 순 -464/day
+    assert out[1]["storage_m3"] == pytest.approx(100000.0 - 464.0 * 31, abs=1.0)
+    assert out[1]["diversion_m3"] == pytest.approx(400.0 * 31, abs=1.0)
+
+
+def test_diversion_daily_series_from_channel(tmp_path):
+    """channel_sd_day.txt → 일별 전환 가능 잉여수(유지유량 차감·상한 적용)."""
+    from swat_py.drought.reservoir_forecast import diversion_daily_m3
+    p = ReservoirForecastParams(
+        gis_id=4, name="r", full_m3=1e5, dead_m3=0.0, init_m3=1e5,
+        diversion_from_outlet=1, diversion_max_m3s=0.10,
+        diversion_min_flow_m3s=0.02,
+    )
+    # 수원 채널 파일이 없으면 None → 호출부는 월 단위로 돌아간다
+    assert diversion_daily_m3(tmp_path, p, sdate="2016-01-01") is None
+    # 전환 미설정이면 파일이 있어도 None
+    p2 = ReservoirForecastParams(gis_id=4, name="r", full_m3=1e5, dead_m3=0.0,
+                                 init_m3=1e5)
+    assert diversion_daily_m3(tmp_path, p2, sdate="2016-01-01") is None

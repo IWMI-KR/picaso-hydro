@@ -141,6 +141,17 @@ class _Reservoir:
     withdrawal_monthly_m3s: Optional[List[float]] = None  # 월별(1~12월) 취수(선택, 상수보다 우선)
     cap_level_ft:       float = float("nan")  # 월류 임계 수위. 미지정 시 spillway_ft 사용
     init_level_ft:      float = float("nan")  # 초기 수위. 미지정 시 만수(cap)
+    # ── 전환유입(diversion) — 인접 하천 잉여수를 저수지로 보충하는 운영 ──────────
+    #  Ngerimel 은 평상시 여수로 마루로 유지되는 **운영 저수지**다. 수위가 낮아지면
+    #  Ngerikiil 잉여수를 전환해 보충한다(Periodic Inspection p.17).
+    #  이 운영이 없으면 유입이 용량의 3~6배라 어떤 가뭄에서도 만수로 복귀해 경보가
+    #  나오지 않고, 반대로 취수를 키우면 모든 건기가 Crisis 가 된다 — 상수 취수로는
+    #  1 MGD(경보 불능)와 3 MGD(과경보) 사이에 정답이 없다.
+    #  ※ 미설정(diversion_from_outlet=None)이면 기존 월 단위 물수지 그대로다(쿡 동작 불변).
+    diversion_from_outlet:   Optional[int] = None   # 전환 수원 채널 gis_id (Ngerikiil=1)
+    diversion_max_m3s:       float = 0.0            # 전환 상한(펌프 용량). 3 MGD=0.1314
+    diversion_min_flow_m3s:  float = 0.0            # 수원 하천에 남길 유량(하천유지유량)
+    diversion_target_ft:     float = float("nan")   # 보충 목표 수위(MSL). 미지정 시 만수
 
 
 @dataclass
@@ -708,6 +719,10 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
             withdrawal_monthly_m3s=([float(x) for x in wmon] if wmon else None),
             cap_level_ft=       float(rv.get("cap_level_ft", float("nan"))),
             init_level_ft=      float(rv.get("init_level_ft", float("nan"))),
+            diversion_from_outlet=(int(_dvo) if (_dvo := rv.get("diversion_from_outlet")) else None),
+            diversion_max_m3s=      float(rv.get("diversion_max_m3s", 0.0) or 0.0),
+            diversion_min_flow_m3s= float(rv.get("diversion_min_flow_m3s", 0.0) or 0.0),
+            diversion_target_ft=    float(rv.get("diversion_target_ft", float("nan"))),
         )
     flat["Reservoirs"] = reservoirs
 

@@ -29,7 +29,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from swat_py.drought.season import in_ym, period_ym
-from swat_py.output.reader_swat_plus import parse_reservoir_day
+from swat_py.output.reader_swat_plus import parse_channel_sd_day, parse_reservoir_day
 
 _SECONDS_PER_DAY = 86400.0
 
@@ -46,6 +46,11 @@ class ReservoirForecastParams:
     withdrawal_monthly_m3s: Optional[List[float]] = None  # 월별(1~12월) 취수, 상수보다 우선
     curve:          object = None  # StageStorageCurve — 저류량→수위(ft) 환산용(선택)
     datum_offset_ft: float = 0.0   # 곡선(MSL) → 관측 눈금 보정. 모델 수위에 **더한다**
+    # 전환유입(diversion) — 설정 시 **일 단위** 물수지로 전환된다. 미설정이면 기존 월 단위.
+    diversion_from_outlet: Optional[int] = None   # 전환 수원 채널 gis_id
+    diversion_max_m3s:      float = 0.0           # 전환 상한(펌프 용량)
+    diversion_min_flow_m3s: float = 0.0           # 수원 하천에 남길 유량
+    diversion_target_m3:    float = float("nan")  # 보충 목표 저류량. NaN → 만수
 
 
 def build_reservoir_forecast_params(source, reservoir_cfg, curve) -> ReservoirForecastParams:
@@ -82,10 +87,22 @@ def build_reservoir_forecast_params(source, reservoir_cfg, curve) -> ReservoirFo
     off = float(getattr(reservoir_cfg, "obs_datum_offset_ft", 0.0) or 0.0) if reservoir_cfg else 0.0
     gid = next(iter(source.outlets)) if source.outlets else (
         reservoir_cfg.gis_id if reservoir_cfg else 0)
+    # 전환유입 — registry 설정을 그대로 쓴다(시나리오 덮어쓰기 대상 아님).
+    dv_out = getattr(reservoir_cfg, "diversion_from_outlet", None) if reservoir_cfg else None
+    dv_tgt_ft = float(getattr(reservoir_cfg, "diversion_target_ft", float("nan"))) \
+        if reservoir_cfg else float("nan")
+    dv_tgt_m3 = (float(curve.stage_to_storage(dv_tgt_ft))
+                 if (dv_tgt_ft == dv_tgt_ft) else float("nan"))
     return ReservoirForecastParams(
         gis_id=int(gid), name=list(source.outlets.values())[0] if source.outlets else source.name,
         full_m3=full_m3, dead_m3=dead_m3, init_m3=init_m3, withdrawal_m3s=wdr,
         withdrawal_monthly_m3s=wmon, curve=curve, datum_offset_ft=off,
+        diversion_from_outlet=(int(dv_out) if dv_out else None),
+        diversion_max_m3s=float(getattr(reservoir_cfg, "diversion_max_m3s", 0.0) or 0.0)
+        if reservoir_cfg else 0.0,
+        diversion_min_flow_m3s=float(getattr(reservoir_cfg, "diversion_min_flow_m3s", 0.0) or 0.0)
+        if reservoir_cfg else 0.0,
+        diversion_target_m3=dv_tgt_m3,
     )
 
 
@@ -128,6 +145,8 @@ def monthly_capacity_series(
     curve: object = None,
     datum_offset_ft: float = 0.0,
     withdrawal_monthly_m3s: Optional[List[float]] = None,
+    diversion_daily_m3: Optional[pd.Series] = None,
+    diversion_target_m3: float = float("nan"),
 ) -> Dict[int, Dict[str, float]]:
     """저수지 일자료(reservoir_day) → 월별 물수지 상세.
 
@@ -142,6 +161,13 @@ def monthly_capacity_series(
 
     ``withdrawal_monthly_m3s`` (1~12월 12개)를 주면 **달마다 다른 취수**를 쓴다
     (상수보다 우선). 건기에 취수를 줄이는 운영을 표현할 수 있다.
+
+    ``diversion_daily_m3`` (date 색인, 그 날 전환 가능한 수원 잉여수 m³)를 주면
+    **일 단위 운영 물수지**로 바뀐다 — 매일 유입·취수를 적용하고, 저류가
+    ``diversion_target_m3``(NaN → 만수) 아래면 부족분을 그날 잉여수 한도까지 보충한 뒤
+    만수에서 자른다(월류는 그 자리에서 유실). 운영 저수지(Ngerimel: 평상시 여수로 마루
+    유지, 수위 저하 시 Ngerikiil 전환)를 표현하기 위한 것이다. 주지 않으면 **기존 월 단위
+    물수지 그대로**다 — 전환유입을 설정하지 않은 프로젝트(쿡)의 동작은 바뀌지 않는다.
     """
     wmon = list(withdrawal_monthly_m3s) if withdrawal_monthly_m3s else None
     if wmon is not None and len(wmon) != 12:
@@ -166,18 +192,44 @@ def monthly_capacity_series(
 
     out: Dict[int, Dict[str, float]] = {}
     S = float(init_m3)
+    use_div = diversion_daily_m3 is not None
+    if use_div:
+        # 목표 저류량 — 미지정이면 만수(= 평상시 여수로 마루 유지 운영)
+        tgt = float(diversion_target_m3) if diversion_target_m3 == diversion_target_m3 \
+            else float(full_m3)
+        tgt = max(min(tgt, full_m3), dead_m3)
+        div = pd.to_numeric(diversion_daily_m3, errors="coerce").fillna(0.0).clip(lower=0.0)
+        df["_div"] = df["date"].map(div).fillna(0.0).values
     for ym, sub in df.groupby("ym", sort=True):
-        s_start = min(S, full_m3)
-        inflow = float(sub["_net"].sum())
         w_m3s = wmon[int(ym.month) - 1] if wmon is not None else withdrawal_m3s
-        wdr = w_m3s * _SECONDS_PER_DAY * len(sub)
-        supply = s_start + inflow - wdr
-        pct = max(supply, dead_m3) / full_m3 * 100.0
-        S = max(min(supply, full_m3), dead_m3)          # 월말 이월 저류량
+        if use_div:
+            # 일 단위 운영 물수지 — 유입·취수 → 목표 미달 시 전환 보충 → 월류 즉시 유실.
+            wdr_day = w_m3s * _SECONDS_PER_DAY
+            S = min(S, full_m3)
+            div_sum = 0.0
+            for net, avail in zip(sub["_net"].values, sub["_div"].values):
+                S = S + float(net) - wdr_day
+                if S < tgt and avail > 0.0:
+                    take = min(tgt - S, float(avail))
+                    S += take
+                    div_sum += take
+                S = max(min(S, full_m3), dead_m3)
+            supply = S                       # 일 단위에서는 월류·하한이 이미 반영됨
+            pct = S / full_m3 * 100.0
+        else:
+            s_start = min(S, full_m3)
+            inflow = float(sub["_net"].sum())
+            wdr = w_m3s * _SECONDS_PER_DAY * len(sub)
+            supply = s_start + inflow - wdr
+            pct = max(supply, dead_m3) / full_m3 * 100.0
+            S = max(min(supply, full_m3), dead_m3)      # 월말 이월 저류량
         msl = float(curve.storage_to_stage(S)) if curve is not None else float("nan")
-        out[int(ym.month)] = {"storage_pct": pct, "storage_m3": S,
-                              "water_level_msl_ft": msl,
-                              "water_level_ft": msl + float(datum_offset_ft)}
+        row = {"storage_pct": pct, "storage_m3": S,
+               "water_level_msl_ft": msl,
+               "water_level_ft": msl + float(datum_offset_ft)}
+        if use_div:
+            row["diversion_m3"] = div_sum
+        out[int(ym.month)] = row
 
     if months is not None:
         out = {m: out[m] for m in months if m in out}
@@ -216,6 +268,8 @@ def member_reservoir_series(
     """한 멤버 run_dir 의 reservoir_day.txt → 예측월 물수지 상세 dict (없으면 None).
 
     각 월: {"storage_pct", "storage_m3", "water_level_ft"}.
+    전환유입이 설정돼 있으면 같은 run_dir 의 ``channel_sd_day.txt`` 에서 수원 채널의
+    일유량을 읽어 전환 가능 잉여수로 넘긴다(일 단위 운영 물수지).
     """
     raw = parse_reservoir_day(Path(run_dir) / "reservoir_day.txt",
                               outlet=params.gis_id, sdate=sdate)
@@ -231,7 +285,35 @@ def member_reservoir_series(
         months=months, curve=getattr(params, "curve", None),
         datum_offset_ft=getattr(params, "datum_offset_ft", 0.0),
         withdrawal_monthly_m3s=getattr(params, "withdrawal_monthly_m3s", None),
+        diversion_daily_m3=diversion_daily_m3(Path(run_dir), params, sdate=sdate),
+        diversion_target_m3=getattr(params, "diversion_target_m3", float("nan")),
     )
+
+
+def diversion_daily_m3(run_dir: Path, params: ReservoirForecastParams, *,
+                       sdate: str) -> Optional[pd.Series]:
+    """수원 채널 일유량 → 그 날 전환 가능한 잉여수(m³). 미설정·자료 없으면 None.
+
+    잉여수 = clip(유량 − ``diversion_min_flow_m3s``, 0, ``diversion_max_m3s``) × 86400.
+    - min_flow : 수원 하천에 남겨야 하는 유량(하천유지유량) — 가뭄에 수원이 마르면
+      잉여수가 0이 되어 보충이 끊긴다. 이것이 저수지 저하를 만드는 기제다.
+    - max_m3s  : 전환 설비(펌프·도수로) 용량 상한.
+    ``channel_sd_day.txt`` 가 없으면 None → 호출부는 기존 월 단위 물수지로 돌아간다.
+    """
+    gid = getattr(params, "diversion_from_outlet", None)
+    cap = float(getattr(params, "diversion_max_m3s", 0.0) or 0.0)
+    if not gid or cap <= 0:
+        return None
+    f = Path(run_dir) / "channel_sd_day.txt"
+    if not f.is_file():
+        return None
+    ch = parse_channel_sd_day(f, outlet=int(gid), sdate=sdate)
+    if ch is None or ch.empty or "flo_out" not in ch:
+        return None
+    lo = float(getattr(params, "diversion_min_flow_m3s", 0.0) or 0.0)
+    q = pd.to_numeric(ch["flo_out"], errors="coerce").fillna(0.0)
+    surplus = (q - lo).clip(lower=0.0).clip(upper=cap) * _SECONDS_PER_DAY
+    return pd.Series(surplus.values, index=pd.to_datetime(ch["date"]).values)
 
 
 def member_reservoir_capacity_pct(

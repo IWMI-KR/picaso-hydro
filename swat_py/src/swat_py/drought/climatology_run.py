@@ -275,6 +275,13 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
                                         sdate=f"{syear}-01-01")
             if daily is None or daily.empty:
                 continue
+            # 전환유입이 설정돼 있으면 평년도 같은 운영 물수지로 계산한다 — 예측과
+            # 기준이 서로 다른 물리를 쓰면 비교가 성립하지 않는다(쿡 기준 불일치 교훈).
+            from swat_py.drought.reservoir_forecast import diversion_daily_m3
+            div = diversion_daily_m3(work, params, sdate=f"{syear}-01-01")
+            if getattr(params, "diversion_from_outlet", None) and div is None:
+                print(f"  [WARN] 저수지 '{s.name}' 평년 — 전환유입이 설정됐으나 "
+                      f"channel_sd_day.txt 없음 → 월 단위 물수지로 계산(예측과 불일치)")
             # 연도별로 만수에서 출발해 12개월 물수지 → 달력월 평균
             daily["date"] = pd.to_datetime(daily["date"])
             per_month: Dict[int, list] = {m: [] for m in range(1, 13)}
@@ -286,7 +293,9 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
                     sub, full_m3=params.full_m3, init_m3=params.full_m3,
                     withdrawal_m3s=params.withdrawal_m3s, dead_m3=params.dead_m3,
                     curve=curve, datum_offset_ft=params.datum_offset_ft,
-                    withdrawal_monthly_m3s=params.withdrawal_monthly_m3s)
+                    withdrawal_monthly_m3s=params.withdrawal_monthly_m3s,
+                    diversion_daily_m3=div,
+                    diversion_target_m3=getattr(params, "diversion_target_m3", float("nan")))
                 for m, v in ser.items():
                     per_month[m].append(float(v["storage_pct"]))
                     per_month_lvl[m].append(float(v["water_level_ft"]))
@@ -381,6 +390,11 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
     # 예측(저수지 flo_in 기반)과 기준이 어긋난다.
     res_sources = [s for s in (getattr(dc, "sources", []) or [])
                    if getattr(s, "type", "") == "reservoir"]
+    # 전환유입을 쓰는 저수지가 있으면 **채널 일유량**도 켠다 — 평년도 예측과 같은
+    # 운영 물수지로 계산해야 기준이 성립한다. 전환유입이 없으면 켜지 않는다(용량 절약).
+    chan_day = any(getattr((getattr(cfg, "Reservoirs", {}) or {}).get(
+        getattr(s, "reservoir", ""), None), "diversion_from_outlet", None)
+        for s in res_sources)
     try:
         hdr = next(i for i, ln in enumerate(pl) if ln.split()[:1] == ["objects"])
         for i in range(hdr + 1, len(pl)):
@@ -388,7 +402,8 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
             if len(t) < 5:
                 continue
             if t[0] == "channel_sd":
-                pl[i] = f"{t[0]:<28} n             y             n             n"
+                _d = "y" if chan_day else "n"
+                pl[i] = f"{t[0]:<28} {_d}             y             n             n"
             elif t[0] == "reservoir" and res_sources:
                 pl[i] = f"{t[0]:<28} y             n             n             n"
             else:

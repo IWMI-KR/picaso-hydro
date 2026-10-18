@@ -402,6 +402,13 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
     # 저수지 수원이 있으면 reservoir 일단위 출력 필요(reservoir_day.txt → 만수대비% 물수지).
     _res_needed = bool([s for s in getattr(getattr(cfg, "Drought", None), "sources", []) or []
                         if getattr(s, "type", "") == "reservoir"])
+    # 전환유입을 쓰는 저수지가 있으면 **채널 일유량**도 필요하다(수원 잉여수 산정).
+    #  일단위 채널 출력은 용량이 커서(쿡 90채널) 전환유입이 설정된 때만 켠다.
+    _chan_day = any(
+        getattr((getattr(cfg, "Reservoirs", {}) or {}).get(getattr(s, "reservoir", ""), None),
+                "diversion_from_outlet", None)
+        for s in getattr(getattr(cfg, "Drought", None), "sources", []) or []
+        if getattr(s, "type", "") == "reservoir")
     try:
         hdr = next(i for i, l in enumerate(pl) if l.split()[:1] == ["objects"])
         for i in range(hdr + 1, len(pl)):
@@ -409,7 +416,8 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
             if len(t) < 5:
                 continue
             if t[0] == "channel_sd":
-                pl[i] = f"{t[0]:<28} n             y             n             n"  # 월유량
+                _d = "y" if _chan_day else "n"
+                pl[i] = f"{t[0]:<28} {_d}             y             n             n"  # 월유량(+전환유입 시 일유량)
             elif t[0] == "reservoir" and _res_needed:
                 pl[i] = f"{t[0]:<28} y             n             n             n"  # 일 저수량
             else:
