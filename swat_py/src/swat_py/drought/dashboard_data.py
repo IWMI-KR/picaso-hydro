@@ -163,6 +163,26 @@ def extend_weather_to(base_dir: Path, end: pd.Timestamp) -> Dict[str, int]:
     return added
 
 
+def active_pcp_files(base_dir: Path) -> List[Path]:
+    """SWAT+ 가 **실제로 읽는** 강수파일 목록 — ``pcp.cli`` 인덱스 기준.
+
+    base 폴더에는 쓰이지 않는 관측소 파일이 남아 있다(검보정용 우량계 등).
+    단일 관측소로 재배정하면 ``pcp.cli`` 가 그 하나만 나열하는데, 폴더의
+    ``*.pcp`` 를 전부 검사하면 **쓰지도 않는 파일 때문에 실행이 막힌다**
+    (쿡 461417 은 2014-09 부터라 2013년 기간에서 걸렸다).
+    ``pcp.cli`` 가 없으면 폴더 전체로 돌아간다(하위호환).
+    """
+    idx = base_dir / "pcp.cli"
+    if idx.is_file():
+        names = [ln.strip() for ln in
+                 idx.read_text(encoding="utf-8", errors="replace").splitlines()[2:]
+                 if ln.strip()]
+        files = [base_dir / n for n in names if (base_dir / n).is_file()]
+        if files:
+            return sorted(files)
+    return sorted(base_dir.glob("*.pcp"))
+
+
 def _assert_forecast_weather_rows(base_dir: Path, ym: List[tuple]) -> None:
     """예측기간 행이 실제로 존재하는지 확인. 없으면 중단(전 멤버 동일값 방지).
 
@@ -173,7 +193,7 @@ def _assert_forecast_weather_rows(base_dir: Path, ym: List[tuple]) -> None:
     daykeys = daykey_month(ym)
     want = {m for _, m in ym}
     bad: Dict[str, List[int]] = {}
-    for path in sorted(base_dir.glob("*.pcp")):
+    for path in active_pcp_files(base_dir):
         seen = set()
         for ln in path.read_text(encoding="utf-8", errors="replace").splitlines()[3:]:
             t = ln.split()
