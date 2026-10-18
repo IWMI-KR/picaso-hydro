@@ -40,7 +40,7 @@ from swat_py.drought.reservoir_forecast import (
 )
 from swat_py.drought.season import (
     SEASON_MONTHS, assert_period_sane, daykey_month, in_ym, period_end,
-    period_end_year, period_ym, preceding_ym, season_months, series_ym, ym_labels,
+    period_end_year, period_ym, season_months, series_ym, ym_labels,
 )
 from swat_py.drought.stages import stage_probabilities4
 
@@ -458,18 +458,59 @@ def _series_frame(fyear: int, months: List[int]) -> pd.DataFrame:
 
 def _observed_monthly(daily: pd.DataFrame, outlet: str,
                       obs_ym: List[tuple]) -> Dict[int, float]:
-    """예측 **직전** 달들(관측기상 모의)의 월평균 유량.
+    """**관측기상으로 구동한 SWAT+ 모의**의 월평균 유량 (실측이 아니다).
 
-    ``obs_ym`` 은 (연도, 월) 쌍이라 전년도로 넘어가는 달을 포함한다
-    (예: 2026_JFM → 2025-07 ~ 2025-12). 반환 키는 월 번호다 — 직전 6개월과
-    예측 3개월은 겹치지 않으므로 충돌하지 않는다.
+    ``obs_ym`` 은 (연도, 월) 쌍이라 해를 넘는 달을 포함한다. series 창
+    12개월 전체를 주면 **예측 3개월 구간에도** 값이 들어간다 — 과거 기간
+    (hindcast)에서는 "예측 vs 실제 거동" 비교가 한 화면에 보이고, 운영
+    예측(미래)에서는 자료가 없어 자연히 빈칸이 된다.
+
+    반환 키는 월 번호다 — 12개월 창 안에서는 중복되지 않는다.
     """
     s = daily[["date", outlet]].copy()
     s = s[in_ym(s["date"], obs_ym).values]
     return {int(m): float(v) for m, v in s.groupby(s["date"].dt.month)[outlet].mean().items()}
 
 
-def _seasonal_stage_row(mem, months, q185, q275, q355, season):
+def _observed_reservoir_monthly(cfg, params, obs_ym: List[tuple], *,
+                                level_based: bool) -> Dict[int, float]:
+    """저수지 **실측 수위**(staff gauge)의 월평균 → {월: 값}. 없으면 빈 dict.
+
+    하천의 ``observed`` 는 관측기상 모의값이지만, 저수지는 그에 해당하는
+    연·월별 모의 산출물이 저장되지 않는다(평년 12개월 평균만 있다).
+    대신 **실측 수위 관측**이 있으므로 그것을 쓴다
+    (팔라우 Ngerimel: 2018-01 ~ 2023-08). 어느 쪽인지는 dashboard.json 의
+    ``observed_source`` 로 밝힌다.
+
+    ``level_based`` 가 False(저수량% 기준)면 곡선으로 % 환산해서 돌려준다.
+    """
+    from swat_py.drought.historical_worst import _find_reservoir_obs
+    if params is None:
+        return {}
+    path, col = _find_reservoir_obs(cfg, params)
+    if not (path and Path(path).is_file()):
+        return {}
+    raw = pd.read_csv(path)
+    date_col = raw.columns[0]
+    raw[date_col] = pd.to_datetime(raw[date_col], errors="coerce")
+    raw[col] = pd.to_numeric(raw.get(col), errors="coerce")
+    raw = raw.dropna(subset=[date_col, col])
+    raw = raw[in_ym(raw[date_col], obs_ym).values]
+    if raw.empty:
+        return {}
+    ser = raw.groupby(raw[date_col].dt.month)[col].mean()
+    if level_based:
+        return {int(m): float(v) for m, v in ser.items()}
+    curve = getattr(params, "curve", None)
+    if curve is None or not params.full_m3:
+        return {}
+    off = float(getattr(params, "datum_offset_ft", 0.0))
+    return {int(m): float(curve.stage_to_storage(float(v) - off))
+            / params.full_m3 * 100.0 for m, v in ser.items()}
+
+
+def _seasonal_stage_row(mem, months, q185, q275, q355, season, *,
+                        top_inclusive: bool = False):
     """앙상블 멤버별 **3개월 평균값**(저수지=평균 저수량%, 하천=평균 유출량)을 산정해
     단계 분류 → 계절 전체 단계확률 1행 반환(월별 대신 계절 단일 리스크).
 
@@ -484,7 +525,8 @@ def _seasonal_stage_row(mem, months, q185, q275, q355, season):
     season_vals = mem[cols].mean(axis=1).dropna()      # 멤버별 3개월 평균
     if not len(season_vals):
         return None
-    sp = stage_probabilities4(season_vals.values, q185, q275, q355)
+    sp = stage_probabilities4(season_vals.values, q185, q275, q355,
+                              top_inclusive=top_inclusive)
     return {"season": season, **sp}
 
 
@@ -493,7 +535,7 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
     fyear = int(forecast.split("_")[0]); season = forecast.split("_")[1]
     months = season_months(season)
     ym = assert_period_sane(fyear, months)   # [(연,월)…] — 뒤집힌 구간이면 여기서 중단
-    obs_ym = preceding_ym(fyear, months)     # 예측 시작 직전 6개월(전년도 포함)
+    obs_ym = series_ym(fyear, months)        # 관측 표시 구간 = series 창 12개월
     mon_ym = {m: lbl for (_, m), lbl in zip(ym, ym_labels(ym))}   # 예측월 → "YYYY-MM"
     mon_year = {m: y for y, m in ym}                              # 예측월 → 연도
     dc = getattr(cfg, "Drought", None)
@@ -611,7 +653,9 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                 clim_res = lvl or {m: capacity_pct_to_level_ft(v, rp)
                                    for m, v in clim_res.items()}
             series["hist_mean"] = series["month"].map(clim_res)
-            series["observed"] = float("nan")
+            res_obs = _observed_reservoir_monthly(cfg, rp, obs_ym,
+                                                  level_based=level_based)
+            series["observed"] = series["month"].map(res_obs)
             if mem is not None:
                 series["forecast_mean"] = series["month"].map(mem.mean(axis=0).to_dict())
                 for q in QLEVELS:
@@ -633,13 +677,18 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
             if mem is not None:
                 for m in months:
                     if m in mem.columns:
-                        sp = stage_probabilities4(mem[m].dropna().values, q185, q275, q355)
+                        # 수위는 만수에서 잘린다 — 상한 경계를 이상(>=)으로 보지 않으면
+                        # 월류 중인 만수 저수지가 Normal 이 아니라 Watch 가 된다.
+                        sp = stage_probabilities4(mem[m].dropna().values,
+                                                  q185, q275, q355,
+                                                  top_inclusive=level_based)
                         stage_rows.append({"month": m, "ym": mon_ym[m], **sp})
             pd.DataFrame(stage_rows).to_csv(out_dir / "stage_prob.csv", index=False,
                                             encoding="utf-8-sig")
             incomplete += empty_forecast_months(outlet, stage_rows, months, mon_ym)
             # 계절(3개월 평균 저수량%) 단일 단계확률
-            season_row = _seasonal_stage_row(mem, months, q185, q275, q355, season)
+            season_row = _seasonal_stage_row(mem, months, q185, q275, q355, season,
+                                             top_inclusive=level_based)
             if season_row:
                 pd.DataFrame([season_row]).to_csv(out_dir / "stage_prob_season.csv",
                                                   index=False, encoding="utf-8-sig")
@@ -654,6 +703,8 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                 # 수위는 **관측 눈금**(staff gauge) 기준 — 곡선 datum(MSL)에
                 # registry obs_datum_offset_ft 를 더한 값이다(Ngerimel 만수 23.00 ft).
                 "datum": "staff_gauge" if level_based else None,
+                # observed 가 무엇인지 — 저수지는 실측 수위, 하천은 관측기상 모의
+                "observed_source": ("measured_gauge" if res_obs else None),
                 "full_level_ft": full_ft if level_based else None,
                 "forecast": forecast, "months": months, "months_ym": ym_labels(ym),
                 "thresholds": {"normal_watch": q185, "watch_warning": q275,
@@ -740,6 +791,8 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
         (out_dir / "dashboard.json").write_text(dumps_json({
             "outlet": outlet, "forecast": forecast, "months": months,
             "months_ym": ym_labels(ym),
+            # observed = 실측이 아니라 **관측기상으로 구동한 SWAT+ 모의**값
+            "observed_source": "sim_obs_weather",
             "thresholds": {"normal_watch": q185, "watch_warning": q275,
                            "warning_crisis": q355},
             "series": series.to_dict(orient="list"),   # NaN→null 은 dumps_json 이 처리

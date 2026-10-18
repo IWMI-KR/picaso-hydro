@@ -151,3 +151,50 @@ def test_criterion_labels() -> None:
     assert _criterion_label("level_fraction", 85) == "85% of full level"
     assert _criterion_label("level_ft", 19.6) == "19.6 ft"
     assert _criterion_label("capacity_fraction", 85) == "85%"
+
+
+# ── ⑤ 수위는 만수를 넘을 수 없다 — 상한 경계 ────────────────────────────────
+
+def test_level_is_clipped_at_full() -> None:
+    """유입이 아무리 많아도 **수위**는 만수에서 잘린다(저수량 %는 안 잘린다)."""
+    curve = _curve()
+    dates = pd.date_range("2026-02-01", "2026-04-30", freq="D")
+    ser = monthly_capacity_series(_daily(dates, flo_in=1e6), full_m3=103242.0,
+                                  init_m3=103242.0, curve=curve,
+                                  datum_offset_ft=OFFSET)
+    for m, v in ser.items():
+        assert v["water_level_ft"] == pytest.approx(23.0), m      # 만수에서 잘림
+        assert v["storage_pct"] > 100.0, m                        # %는 넘어간다
+
+
+def test_full_reservoir_is_normal_not_watch() -> None:
+    """수위 기준의 함정 — 상한 경계가 초과(>)면 월류 중인 만수가 Watch 가 된다.
+
+    수위는 만수에서 잘리므로 `수위 > 만수` 가 영영 성립하지 않는다.
+    """
+    from swat_py.drought.stages import classify_stage4, stage_probabilities4
+    st = stage_thresholds([], "level_fraction", [100, 85, 65], full_level_ft=23.0)
+    qs = (st["normal_watch"], st["watch_warning"], st["warning_crisis"])
+    assert classify_stage4(23.0, *qs) == "Watch"                       # 고치기 전
+    assert classify_stage4(23.0, *qs, top_inclusive=True) == "Normal"  # 고친 뒤
+    sp = stage_probabilities4([23.0] * 10, *qs, top_inclusive=True)
+    assert sp["Normal"] == pytest.approx(100.0) and sp["most_likely"] == "Normal"
+
+
+def test_top_inclusive_does_not_change_other_boundaries() -> None:
+    """상한만 이상(>=)이다 — 중간 경계는 그대로라 하천 분류가 바뀌지 않는다."""
+    from swat_py.drought.stages import classify_stage4
+    qs = (23.0, 19.55, 14.95)
+    for v, want in [(22.99, "Watch"), (19.55, "Warning"), (19.56, "Watch"),
+                    (14.95, "Crisis"), (14.96, "Warning"), (1.34, "Crisis")]:
+        assert classify_stage4(v, *qs, top_inclusive=True) == want, v
+        assert classify_stage4(v, *qs) == want, v          # 기본값과 동일
+
+
+def test_capacity_pct_basis_keeps_strict_top() -> None:
+    """저수량 % 기준은 100%를 넘길 수 있으므로 기본(초과) 경계가 맞다."""
+    from swat_py.drought.stages import classify_stage4
+    st = stage_thresholds([], "capacity_fraction", [100, 85, 65])
+    qs = (st["normal_watch"], st["watch_warning"], st["warning_crisis"])
+    assert classify_stage4(271.0, *qs) == "Normal"     # 월류 → 100% 초과로 표현됨
+    assert classify_stage4(100.0, *qs) == "Watch"      # 딱 만수는 Watch(기존 동작 유지)

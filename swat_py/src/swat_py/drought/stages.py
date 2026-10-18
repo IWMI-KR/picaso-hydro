@@ -25,11 +25,18 @@ STAGE_SCORE = {"Normal": 0.0, "Watch": 1 / 3, "Warning": 2 / 3, "Crisis": 1.0}
 STAGES = ("Watch", "Warning", "Crisis")
 
 
-def classify_stage4(flow: float, q185: float, q275: float, q355: float) -> str:
-    """단일 유량 → 4단계 급수단계 (Normal>Watch>Warning>Crisis 순 유량)."""
+def classify_stage4(flow: float, q185: float, q275: float, q355: float, *,
+                    top_inclusive: bool = False) -> str:
+    """단일 값 → 4단계 급수단계 (Normal>Watch>Warning>Crisis 순).
+
+    ``top_inclusive`` — 최상위 경계를 **이상(>=)** 으로 본다. 저수지 **수위**가
+    그렇다: 수위는 여수로(만수)에서 물리적으로 잘리므로 ``level > 만수`` 가
+    영영 성립하지 않아, 월류 중인 만수 저수지가 Watch 로 분류된다.
+    (저수량 % 는 만수를 넘길 수 있어 기본값 False 가 맞다.)
+    """
     if np.isnan(flow):
         return "NA"
-    if flow > q185:
+    if (flow >= q185) if top_inclusive else (flow > q185):
         return "Normal"
     if flow > q275:
         return "Watch"
@@ -39,8 +46,10 @@ def classify_stage4(flow: float, q185: float, q275: float, q355: float) -> str:
 
 
 def stage_probabilities4(values: Sequence[float], q185: float, q275: float,
-                         q355: float) -> Dict:
-    """앙상블 유량 → 4단계 확률(%) + 최빈 단계.
+                         q355: float, *, top_inclusive: bool = False) -> Dict:
+    """앙상블 값 → 4단계 확률(%) + 최빈 단계.
+
+    ``top_inclusive`` 는 ``classify_stage4`` 와 같다(저수지 수위는 True).
 
     Returns {"Normal":%, "Watch":%, "Warning":%, "Crisis":%, "most_likely":str, "n":int}
     """
@@ -51,7 +60,8 @@ def stage_probabilities4(values: Sequence[float], q185: float, q275: float,
         return {s: 0.0 for s in STAGES4} | {"most_likely": "NA", "n": 0}
     counts = {s: 0 for s in STAGES4}
     for v in vals:
-        counts[classify_stage4(v, q185, q275, q355)] += 1
+        counts[classify_stage4(v, q185, q275, q355,
+                               top_inclusive=top_inclusive)] += 1
     probs = {s: round(counts[s] / n * 100.0, 1) for s in STAGES4}
     probs["most_likely"] = max(STAGES4, key=lambda s: counts[s])
     probs["n"] = n

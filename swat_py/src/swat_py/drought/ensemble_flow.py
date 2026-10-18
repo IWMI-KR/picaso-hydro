@@ -236,6 +236,9 @@ def run_ensemble(base_dir: Path, ensemble_dir: Path, *, fyear: int, months: List
              for m in members if (m / f"{station}.csv").is_file()]
     records = []
     n_fail = 0
+    # 실패 사유별 멤버 목록 — 예전에는 개수만 세고 사유를 버려서, 999/1000 이
+    # 나와도 왜 하나가 빠졌는지 알 수 없었다.
+    fails: Dict[str, List[str]] = {}
     with ProcessPoolExecutor(max_workers=n_workers) as ex:
         futs = {ex.submit(_run_one, t): t for t in tasks}
         done = 0
@@ -249,6 +252,9 @@ def run_ensemble(base_dir: Path, ensemble_dir: Path, *, fyear: int, months: List
                 records.append(r)
             else:
                 n_fail += 1
+                why = str((r or {}).get("_error", "알 수 없음"))
+                fails.setdefault(why, []).append(
+                    str((r or {}).get("_member", "?")))
             if done % 10 == 0:
                 print(f"    앙상블 {done}/{len(tasks)} (실패 {n_fail})", flush=True)
     # 수원별 값 [member × month] (하천 유량 / 저수지 만수대비%)
@@ -271,4 +277,11 @@ def run_ensemble(base_dir: Path, ensemble_dir: Path, *, fyear: int, months: List
         if rows:
             wlevel[name] = pd.DataFrame(rows).T.reindex(columns=months)
     print(f"  앙상블 유효 멤버 {len(records)}/{len(tasks)}")
+    if fails:
+        # 사유별로 묶어 보여 준다(많은 순). 멤버 이름은 앞 3개만.
+        print(f"  ⚠ 실패 멤버 {n_fail}개 — 사유별:")
+        for why, who in sorted(fails.items(), key=lambda kv: -len(kv[1]))[:5]:
+            head = ", ".join(sorted(who)[:3])
+            more = f" 외 {len(who) - 3}개" if len(who) > 3 else ""
+            print(f"      [{len(who):>4}] {why}  ({head}{more})")
     return out, {"weather": weather, "wlevel": wlevel}
