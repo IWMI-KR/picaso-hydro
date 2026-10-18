@@ -25,6 +25,7 @@ import pandas as pd
 
 from swat_py.drought.season import daykey_month, in_ym, period_end, period_ym
 from swat_py.output.reader_swat_plus import parse_channel_sd_day
+from swat_py.runner.file_manager import ignore_swat_outputs
 
 # 12 outlet 채널 (gis_id → 이름)
 OUTLETS = {
@@ -150,7 +151,8 @@ def _run_one(args) -> Dict:
     tmp = Path(tempfile.mkdtemp(prefix="ens_"))
     try:
         run = tmp / "TxtInOut"
-        shutil.copytree(base_dir, run)
+        # 출력물 제외 — base 가 깨끗해도 이중으로 막는다(복사량이 멤버 수만큼 곱해진다)
+        shutil.copytree(base_dir, run, ignore=ignore_swat_outputs)
         # (선택) warm-up 을 최근접 ERA5 격자 일자료로 재구성 — 운영 예보용.
         #   예보 구간은 아래 acidwg 덮어쓰기가 최종값을 넣으므로, 여기선 warm-up 채움이 목적.
         if era5_warmup:

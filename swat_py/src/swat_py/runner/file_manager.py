@@ -185,3 +185,56 @@ def rename_outputs(
             dst = out_dir / f"output-{scenario_name}.{otype}"
             if src.exists():
                 shutil.move(str(src), dst)
+
+# ── SWAT+ 출력물 판별 — TxtInOut 복사량 줄이기 ────────────────────────────────
+#  검보정 master(calibrated/)에는 이전 실행의 출력 파일이 남아 있다. 쿡 기준
+#  194개 1.19GB 중 **출력물 64개가 1.18GB**(99%)이고, 실제 입력은 130개 19.5MB 뿐이다.
+#  예측 앙상블은 멤버마다 TxtInOut 을 통째로 복사하므로, 거르지 않으면
+#  1,000멤버 한 기간에 1.17TB 를 복사한다(디스크 포화 → SWAT+ 가 2개만 동시 실행).
+#  출력물은 SWAT+ 가 실행하며 다시 만들므로 복사할 이유가 없다.
+
+#: SWAT+ 출력 파일 접미어 (objects 출력: {object}_{day|mon|yr|aa}.txt)
+SWAT_OUTPUT_SUFFIXES = ("_day.txt", "_mon.txt", "_yr.txt", "_aa.txt")
+
+#: 접미어 규칙에 안 걸리는 출력·부산물 파일 이름
+SWAT_OUTPUT_NAMES = frozenset({
+    "simulation.out", "diagnostics.out", "area_calc.out", "files_out.out",
+    "erosion.out", "checker.out", "co2.out", "hru_dom.out", "success.fin",
+    "fort.7777", "promotion_info.csv",
+})
+
+
+def is_swat_output(name: str) -> bool:
+    """파일명이 SWAT+ **출력물**인가 (입력세트와 대조해 검증한 규칙).
+
+    쿡 default/(입력 127개) 전수에 대해 오판 0건, calibrated/ 의 출력 67개를
+    모두 걸러내는 것을 확인했다.
+    """
+    return name.endswith(SWAT_OUTPUT_SUFFIXES) or name in SWAT_OUTPUT_NAMES
+
+
+def ignore_swat_outputs(_dir, names):
+    """``shutil.copytree(..., ignore=ignore_swat_outputs)`` 용 필터."""
+    return {n for n in names if is_swat_output(n)}
+
+
+def copy_txtinout(src, dst) -> dict:
+    """TxtInOut 을 **입력물만** 복사. 반환 {"files", "bytes", "skipped", "skipped_bytes"}.
+
+    출력물은 SWAT+ 가 실행 중 새로 만든다. 거르면 복사량이 1/60 로 준다.
+    """
+    import shutil
+    src, dst = Path(src), Path(dst)
+    dst.mkdir(parents=True, exist_ok=True)
+    n = b = sn = sb = 0
+    for f in src.iterdir():
+        if not f.is_file():
+            continue
+        if is_swat_output(f.name):
+            sn += 1
+            sb += f.stat().st_size
+            continue
+        shutil.copyfile(f, dst / f.name)
+        n += 1
+        b += f.stat().st_size
+    return {"files": n, "bytes": b, "skipped": sn, "skipped_bytes": sb}

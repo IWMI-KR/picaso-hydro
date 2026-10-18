@@ -344,6 +344,23 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
     stn = setup_acidwg_weather(cfg, work)
     print(f"[2/5] 기상 재배정 → stations-acidwg.csv({stn}) 단일 관측소")
 
+    # 관측 공백 메우기 — 예측 base(_fill_single_station)와 **같은 처리**를 한다.
+    #  918430 은 1982~2024 중 429일(2013년 대부분 포함)이 비어 있다. 공백을 둔 채
+    #  돌리면 그 기간 유출이 과소하게 나오고, 공백을 메운 예측과 기준이 어긋난다
+    #  (2016_JJA 6월이 그 사례: 공백 365일).
+    from swat_py.drought.dashboard_data import resolve_era5_inputs
+    from swat_py.drought.warmup_single import fill_single_station_warmup
+    _e5 = resolve_era5_inputs(cfg) or {}
+    _fi = fill_single_station_warmup(
+        work, stn, start=pd.Timestamp(syear, 1, 1), end=pd.Timestamp(eyear, 12, 31),
+        grid_points_csv=_e5.get("grid_points_csv"),
+        grid_daily_std_dir=_e5.get("grid_daily_std_dir"))
+    if _fi["grid"]:
+        print(f"       공백 보정 → ERA5 {_fi['grid']}({_fi['dist_km']}km) "
+              f"월별 편의보정 {_fi['filled_days']}일 (실측 {_fi['obs_last']} 까지)")
+    else:
+        print("       ERA5 없음 → 공백은 wgn 보완")
+
     # time.sim 확장
     ts = work / "time.sim"
     lines = ts.read_text().splitlines()

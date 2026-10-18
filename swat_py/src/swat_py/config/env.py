@@ -242,6 +242,17 @@ class _DroughtCfg:
     """
     outlets:         Dict[int, str] = field(default_factory=dict)
     sources:         List["_DroughtSource"] = field(default_factory=list)
+    #: 예측 base 모델의 **warm-up 기상 소스** — "era5" | "observed"
+    #:  era5     : 관측소별 최근접 ERA5 격자로 warm-up 구간을 재구성(기본, 운영 예보용).
+    #:             관측 종료~예측 시작 공백을 메우지만, 검보정에 쓴 관측소 강수와
+    #:             값이 달라(쿡 라로통가 ERA5/관측 1.2~1.8배) 초기 저류가 어긋날 수 있다.
+    #:  observed : 검보정 master 의 **관측소 실측**을 그대로 쓰고, 모자란 구간만 wgn.
+    #:             다지점이라 평년(단일소) 기준보다 젖어 있다.
+    #:  single_station : **권장** — 평년 실행과 같은 단일 관측소로 전 유역 재배정하고,
+    #:             그 관측소 실측으로 warm-up. 실측이 닿지 않는 공백은 같은 관측소
+    #:             최근접 ERA5 격자를 월별 편의보정해 채운다. 평년·임계·예측이
+    #:             한 기준이 되어야 단계 분류가 성립한다.
+    base_weather:    str = "era5"
     forecast:        str = "2016_AMJ"
     n_members:       int = 100
     forecast_station: str = ""    # 미지정 시 obs_weather_std/stations-acidwg.csv 로 결정
@@ -786,6 +797,11 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
             withdrawal_monthly_m3s= ([float(x) for x in _wdrm] if _wdrm else None),
         ))
 
+    _basew = str(dr.get("base_weather", "era5") or "era5").lower()
+    if _basew not in ("era5", "observed", "single_station"):
+        raise ValueError("drought.base_weather 는 era5|observed|single_station "
+                         f"여야 함: {_basew!r}")
+
     if dr_sources:
         # sources 사용 시: flat outlets = 병합, flat method/values = 첫 수원(레거시 소비자 대비)
         _outlets_flat = merged_outlets
@@ -800,6 +816,7 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
     flat["Drought"] = _DroughtCfg(
         outlets=          _outlets_flat,
         sources=          dr_sources,
+        base_weather=     _basew,
         forecast=         str(dr.get("forecast", "2016_AMJ") or "2016_AMJ"),
         n_members=        int(dr_ens.get("n_members", 100) or 100),
         forecast_station= str(dr.get("forecast_station", "") or ""),

@@ -246,6 +246,34 @@ def resolve_era5_inputs(cfg) -> "Dict | None":
     return None
 
 
+def _fill_single_station(cfg, base_dir: Path, fyear: int,
+                         last: pd.Timestamp) -> str:
+    """평년(Historical)과 **같은 단일 관측소**로 base 기상을 맞춘다.
+
+    1. ``setup_acidwg_weather`` 로 .cli·weather-sta.cli 를 단일소로 재배정
+       (평년 실행이 쓰는 바로 그 함수 — 두 경로가 갈라지지 않게 한다)
+    2. 그 관측소 실측으로 warm-up 을 채우고, 실측이 닿지 않는 공백은
+       최근접 ERA5 격자를 **월별 편의보정**해 채운다
+    3. 나머지 변수(.slr/.hmd/.wnd)는 예측 끝월까지 -99 연장(wgn 보완)
+    """
+    from swat_py.drought.climatology_run import setup_acidwg_weather
+    from swat_py.drought.warmup_single import fill_single_station_warmup
+
+    station = setup_acidwg_weather(cfg, base_dir)
+    era5 = resolve_era5_inputs(cfg)
+    info = fill_single_station_warmup(
+        base_dir, station,
+        start=pd.Timestamp(fyear - int(cfg.CioNYSKIP), 1, 1), end=last,
+        grid_points_csv=(era5 or {}).get("grid_points_csv"),
+        grid_daily_std_dir=(era5 or {}).get("grid_daily_std_dir"))
+    extend_weather_to(base_dir, last)          # .slr/.hmd/.wnd 등 행 확보
+    src = (f"실측 {info['obs_last']} 까지 + ERA5 {info['grid']}"
+           f"({info['dist_km']}km) 편의보정 {info['filled_days']}일"
+           if info["grid"] else f"실측 {info['obs_last']} 까지 (ERA5 없음 → wgn)")
+    print(f"[base] 기상 = 단일 관측소 {station} 로 전 유역 재배정 — {src}")
+    return "single_station"
+
+
 def fill_base_weather(cfg, base_dir: Path, fyear: int, months: List[int],
                       last: pd.Timestamp) -> str:
     """base 기상을 예측 끝월까지 채운다 — **ERA5 우선, 실패 시 wgn 연장**.
@@ -264,7 +292,15 @@ def fill_base_weather(cfg, base_dir: Path, fyear: int, months: List[int],
     -------
     str : 사용한 방식 — ``"era5"`` 또는 ``"wgn"``
     """
-    era5 = resolve_era5_inputs(cfg)
+    dc0 = getattr(cfg, "Drought", None)
+    mode = str(getattr(dc0, "base_weather", "era5") or "era5").lower()
+    if mode == "single_station":
+        return _fill_single_station(cfg, base_dir, fyear, last)
+    era5 = resolve_era5_inputs(cfg) if mode == "era5" else None
+    if mode == "observed":
+        # 검보정 master 의 관측소 실측을 그대로 둔다 — ERA5 로 덮어쓰지 않는다.
+        print("[base] 기상 = 검보정 master 의 관측소 실측 "
+              "(drought.base_weather=observed) → 모자란 구간만 wgn 연장")
     if era5:
         try:
             from swat_py.drought.warmup_era5 import write_era5_warmup
@@ -322,7 +358,13 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
             if not base_dir.parent.exists():
                 break
             time.sleep(0.2)
-    shutil.copytree(Path(cfg.CalibratedDir), base_dir)
+    # 검보정 master 에는 이전 실행의 출력물이 남아 있다(쿡 1.19GB 중 1.18GB).
+    # 출력물은 SWAT+ 가 다시 만들므로 복사하지 않는다 — 멤버마다 base 를 통째로
+    # 복사하는 구조라, 거르지 않으면 1,000멤버 한 기간에 1.17TB 를 복사하게 된다.
+    from swat_py.runner.file_manager import copy_txtinout
+    _cp = copy_txtinout(Path(cfg.CalibratedDir), base_dir)
+    print(f"[base] 입력물 {_cp['files']}개 {_cp['bytes']/2**20:.1f}MB 복사 "
+          f"(출력물 {_cp['skipped']}개 {_cp['skipped_bytes']/2**20:,.0f}MB 제외)")
     nyskip = int(cfg.CioNYSKIP)                   # 마스터 warm_up_years (단일 관리)
     start_yr = fyear - nyskip                      # 웜업 nyskip년 → 출력 fyear
     ts = base_dir / "time.sim"
