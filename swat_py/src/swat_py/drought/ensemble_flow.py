@@ -151,8 +151,12 @@ def _run_one(args) -> Dict:
     tmp = Path(tempfile.mkdtemp(prefix="ens_"))
     try:
         run = tmp / "TxtInOut"
-        # 출력물 제외 — base 가 깨끗해도 이중으로 막는다(복사량이 멤버 수만큼 곱해진다)
-        shutil.copytree(base_dir, run, ignore=ignore_swat_outputs)
+        # 출력물·실행파일 제외 — 실행파일(6.6MB)은 base 것을 그대로 쓴다.
+        #  멤버마다 복사해 띄우면 백신이 새 복사본을 매번 검사하면서
+        #  [WinError 2] 로 실행이 실패한다(1,000멤버 중 13~18% 실패 관측).
+        #  SWAT+ 는 입력을 cwd 에서 읽으므로 실행파일 위치는 달라도 된다.
+        shutil.copytree(base_dir, run,
+                        ignore=lambda d, n: ignore_swat_outputs(d, n) | {exe_name})
         # (선택) warm-up 을 최근접 ERA5 격자 일자료로 재구성 — 운영 예보용.
         #   예보 구간은 아래 acidwg 덮어쓰기가 최종값을 넣으므로, 여기선 warm-up 채움이 목적.
         if era5_warmup:
@@ -172,6 +176,8 @@ def _run_one(args) -> Dict:
             return {"_member": member_csv.parent.name,
                     "_error": "예측기간 기상행 없음(base 미연장)"}
         exe_path = run / exe_name
+        if not exe_path.is_file():
+            exe_path = base_dir / exe_name          # base 의 실행파일 공유(cwd 는 run)
         if exe_path.is_file():
             try:
                 exe_path.chmod(0o755)           # 리눅스 실행 권한(best-effort, 마운트 EPERM 무시)
