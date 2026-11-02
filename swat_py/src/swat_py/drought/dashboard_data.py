@@ -30,7 +30,8 @@ import pandas as pd
 
 from swat_py.dashboard.json_writers import dumps_json   # NaN→null 표준 JSON
 from swat_py.drought.climatology import (
-    climatology_daily_path, load_daily_flow, outlet_climatology_and_thresholds,
+    climatology_daily_path, climatology_stat, load_daily_flow,
+    outlet_climatology_and_thresholds, warn_if_climatology_stale,
 )
 from swat_py.drought.fdc import is_level_method, stage_thresholds
 from swat_py.drought.ensemble_flow import OUTLETS, run_ensemble
@@ -620,6 +621,10 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
     out_root = root / "forecast" / period_label     # 4_drought_risk/forecast/{period[+ic]}
     out_root.mkdir(parents=True, exist_ok=True)
     daily = load_daily_flow(clim_csv)
+    # 평년이 **지금 설정으로 만든 것인지** 확인한다 — 취수·전환·기간을 바꾸고도
+    # 옛 평년을 그대로 읽으면 평년선·FDC 임계가 예측과 다른 물리를 쓴다
+    # (업체 지적 §4-라 ②). 중단하지는 않고, 무엇이 달라졌는지 찍고 결과에 남긴다.
+    clim_check = warn_if_climatology_stale(cfg)
 
     # ── 예측 앙상블 (③⑤) ──
     # base·멤버 실행은 로컬(C:) — 프로젝트 루트(I:)는 네트워크 공유라 N멤버가 각자
@@ -774,6 +779,8 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                 "observed_source": ("measured_gauge" if res_obs else None),
                 "full_level_ft": full_ft if level_based else None,
                 "forecast": forecast, "months": months, "months_ym": ym_labels(ym),
+                "climatology_stat": climatology_stat(cfg),
+                "climatology_settings": clim_check,   # ok | stale | missing (+차이)
                 "thresholds": {"normal_watch": q185, "watch_warning": q275,
                                "warning_crisis": q355},
                 "series": series.to_dict(orient="list"),   # NaN→null 은 dumps_json 이 처리
@@ -810,7 +817,10 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
 
         # ① 평년(창 12개월), ② 관측(예측 직전월), ③ 예측 평균+분위(예측월)
         series = _series_frame(fyear, months)
-        series["hist_mean"] = series["month"].map(clim["mean"])
+        # 평년선 통계 — drought.climatology_stat (mean 기본 | median).
+        # FDC 임계는 분포에서 따로 뽑으므로 영향받지 않는다 — 표시선만 바뀐다.
+        _stat_col = "p50" if climatology_stat(cfg) == "median" else "mean"
+        series["hist_mean"] = series["month"].map(clim[_stat_col])
         series["observed"] = series["month"].map(obs)
         if mem is not None:
             fmean = mem.mean(axis=0)
@@ -860,6 +870,8 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
             "months_ym": ym_labels(ym),
             # observed = 실측이 아니라 **관측기상으로 구동한 SWAT+ 모의**값
             "observed_source": "sim_obs_weather",
+            "climatology_stat": climatology_stat(cfg),
+            "climatology_settings": clim_check,   # ok | stale | missing (+차이)
             "thresholds": {"normal_watch": q185, "watch_warning": q275,
                            "warning_crisis": q355},
             "series": series.to_dict(orient="list"),   # NaN→null 은 dumps_json 이 처리

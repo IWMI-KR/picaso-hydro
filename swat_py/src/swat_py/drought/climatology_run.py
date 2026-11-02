@@ -267,8 +267,12 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
     from swat_py.io.reservoir import load_stage_storage
     from swat_py.output.reader_swat_plus import parse_reservoir_day
 
+    from swat_py.drought.climatology import climatology_stat
+    stat = climatology_stat(cfg)                  # mean(기본) | median
     cols: Dict[str, Dict[int, float]] = {}        # 수원 → {월: 저수량%}
-    cols_lvl: Dict[str, Dict[int, float]] = {}    # 수원 → {월: 수위 ft(관측 눈금)}
+    cols_lvl: Dict[str, Dict[int, float]] = {}    # 수원 → {월: 수위 ft(관측 눈금)} — 채택 통계
+    cols_lvl_mean: Dict[str, Dict[int, float]] = {}   # 참고용 평균
+    cols_lvl_med: Dict[str, Dict[int, float]] = {}    # 참고용 중앙값
     for s in sources:
         rcfg = (getattr(cfg, "Reservoirs", {}) or {}).get(s.reservoir)
         if not (rcfg and rcfg.stage_storage_file):
@@ -314,12 +318,26 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
                     per_month_lvl[m].append(float(v["water_level_ft"]))
             name = next(iter(s.outlets.values()))
 
-            def _avg(per):
-                return {m: (sum(v) / len(v) if v else float("nan"))
-                        for m, v in per.items()}
+            # 평년 통계 — drought.climatology_stat (mean 기본 | median).
+            #  저수지 수위는 위가 만수로 막히고 아래로 꼬리가 길어, 소수의 가뭄 해가
+            #  평균을 끌어내려 '보통 해' 선이 Watch 구간에 그려진다(팔라우 3월).
+            #  어느 쪽을 쓰든 두 값을 **모두** 파일에 남겨 비교할 수 있게 한다.
+            def _stat(per, how):
+                def one(v):
+                    if not v:
+                        return float("nan")
+                    if how == "median":
+                        sv = sorted(v)
+                        n = len(sv)
+                        return (sv[n // 2] if n % 2
+                                else (sv[n // 2 - 1] + sv[n // 2]) / 2.0)
+                    return sum(v) / len(v)
+                return {m: one(v) for m, v in per.items()}
 
-            cols[name] = _avg(per_month)
-            cols_lvl[name] = _avg(per_month_lvl)
+            cols[name] = _stat(per_month, stat)
+            cols_lvl[name] = _stat(per_month_lvl, stat)
+            cols_lvl_mean[name] = _stat(per_month_lvl, "mean")
+            cols_lvl_med[name] = _stat(per_month_lvl, "median")
         except Exception as e:
             print(f"  [WARN] 저수지 '{s.name}' 평년 산출 실패({type(e).__name__}: {e})")
 
@@ -329,9 +347,15 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
     for name, mp in cols.items():
         df[name] = df["month"].map(mp)                       # 저수량 %
     for name, mp in cols_lvl.items():
-        df[f"{name}_level_ft"] = df["month"].map(mp)         # 수위 ft(관측 눈금)
+        df[f"{name}_level_ft"] = df["month"].map(mp)         # 수위 ft — 채택 통계
+    # 두 통계를 함께 남긴다 — 어느 쪽을 쓸지 논의할 때 파일만 보면 되도록.
+    for name, mp in cols_lvl_mean.items():
+        df[f"{name}_level_ft_mean"] = df["month"].map(mp)
+    for name, mp in cols_lvl_med.items():
+        df[f"{name}_level_ft_median"] = df["month"].map(mp)
     path = out_dir / f"reservoir_monthly_avg_{tag}.csv"
     df.to_csv(path, index=False, encoding="utf-8-sig")
+    print(f"  저수지 평년 통계: {stat} (mean·median 두 열을 함께 저장)")
     return str(path), diverted
 
 
@@ -495,7 +519,13 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
     mavg_csv = out_dir / f"channel_monthly_avg_{tag}.csv"
     mavg.to_csv(mavg_csv, index=False, encoding="utf-8-sig")
 
+    # 설정 지문 — 이 평년이 '어떤 설정으로' 만들어졌는지 옆에 남긴다.
+    #  업체 지적(§4-라 ②): 설정을 바꿔도 옛 평년 파일을 그대로 읽고 경고하지 않았다.
+    from swat_py.drought.climatology import write_climatology_fingerprint
+    fp = write_climatology_fingerprint(cfg, out_dir)
+
     print("\n저장:")
+    print(f"  settings     : {fp}")
     print(f"  monthly      : {monthly_csv}  shape={monthly.shape}")
     print(f"  monthly_avg  : {mavg_csv}  shape={mavg.shape}")
     if res_csv:

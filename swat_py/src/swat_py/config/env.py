@@ -279,6 +279,10 @@ class _DroughtCfg:
     # 운영 예보 시 warm-up 을 최근접 ERA5 격자 일자료로 재구성(그 전 관측이 없을 때).
     #   true → 0_database/era5/grid_daily_std 사용(util-era5-update 로 최신화 필요). 기본 false.
     era5_warmup:     bool = False
+    #  평년선 통계 — mean(기본) | median. 저수지 수위처럼 위가 만수로 막히고 아래로
+    #  꼬리가 긴 분포에서는 소수의 가뭄 해가 평균을 끌어내려 '보통 해' 선이 Watch 에
+    #  그려진다(팔라우 3월). FDC 임계에는 영향이 없다 — 표시선만 바뀐다.
+    climatology_stat: str = "mean"
     # ── 4단계 급수단계 경계 (설정 가능) ──────────────────────────────────────
     #  method: fdc_exceedance | nonexceed_percentile | fixed_flow
     #  values: [Normal|Watch, Watch|Warning, Warning|Crisis] — method 별 의미 상이(fdc.stage_thresholds).
@@ -843,6 +847,7 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
         eyear=            int(dr.get("eyear", 0) or 0),
         ensemble_root=    str(dr_ens.get("root", "") or ""),
         era5_warmup=      bool(dr.get("era5_warmup", False)),
+        climatology_stat= str(dr.get("climatology_stat", "mean") or "mean").lower(),
         threshold_method= _thr_method_flat,
         threshold_values= _thr_values_flat,
     )

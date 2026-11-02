@@ -298,6 +298,20 @@ drought:
   # climatology_years: [2003, 2024]
   # era5_warmup: 멤버마다 ERA5 warm-up 을 다시 쓸지(기본 false — base 단계에서 이미 연결).
   era5_warmup: false
+  # climatology_stat: 평년선 통계 — mean(기본) | median.
+  #  저수지 수위처럼 위가 만수로 막히고 아래로 꼬리가 긴 분포에서는 소수의 가뭄 해가
+  #  평균을 끌어내려, '보통 해'를 나타내야 할 평년선이 Watch 구간에 그려진다.
+  #  그럴 때 median 으로 바꾼다(팔라우 Ngerimel 사례).
+  #  ※ FDC 임계(단계 경계)에는 영향이 없다 — 화면의 평년선만 바뀐다.
+  #  ※ 저수지 평년 파일에는 _level_ft_mean 과 _level_ft_median 두 열이 함께 저장돼,
+  #    어느 쪽을 쓸지 파일만 보고 비교할 수 있다.
+  climatology_stat: "mean"
+  #
+  # ── 평년 설정 지문 (자동) ─────────────────────────────────────────────────
+  #  climatology_run 이 평년 산출물 옆에 climatology_settings_{tag}.json 을 남긴다.
+  #  대시보드는 실행할 때마다 이 지문을 현재 설정과 대조해, 취수·전환·기간 등이
+  #  바뀌었는데 옛 평년을 읽고 있으면 **무엇이 달라졌는지 항목별로 경고**한다
+  #  (dashboard.json 의 climatology_settings 에도 남는다). 설정 항목은 아니다.
 
   # ── 수원(水源) 유형별 가뭄단계 설정 ───────────────────────────────────────
   #  ★ 현행 스키마는 drought.sources 다. 구 flat 스키마(drought.thresholds/outlets)는
