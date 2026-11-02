@@ -5,6 +5,18 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+# ── 0. 모델 · 관측소 (선택 — 전부 기본값이 있다) ─────────────────────────────
+model:
+  type:         "swat_plus"        # swat_plus | swat2012. 출력 폴더 경로가 여기서 갈린다
+  executable:   "SWAT-Plus.exe"    # 없으면 자동 내려받는다
+  # warm_up_years 는 공통 picaso-hydro.yaml 이 단일 관리한다(여기 적으면 그 값을 덮어씀)
+  output_types: ["sd"]             # 읽어들일 SWAT+ 출력 종류
+
+stations:
+  metadata_file: "stations-hydro.csv"   # obs/weather/ 기준. SWAT+·Tank 공용
+  ids: []                               # 비우면 메타 파일 전체
+
+
 # ── 1. 프로젝트 (swat 전용 경로 — root/database 는 공통 파일) ─────────────────
 # qswat_txtinout: QSWAT+에서 생성한 TxtInOut 폴더
 # swatplus_txtinout: qswat_txtinout 에서 복사해 채움. 자동 검보정은 이 폴더를 /runs 폴더에 복제해 반복 구동
@@ -43,6 +55,10 @@ calibration:
   validation:
     start: "2018-01-01"
     end:   "2020-12-31"
+  #  관측 항목 — obs_file / obs_column / outlet_name 은 생략하면 컨벤션으로 자동 산출된다.
+  #    obs_file    = {obs_root}/{variable}/{time_step}/{outlet_name}.csv
+  #    obs_column  = {variable}_{단위접미} (예: flow_m3s, wlevel_ft)
+  #    outlet_name = "outlet_{outlet_id}"
   observations:
     - id:        "avatiu"
       outlet_id: 13
@@ -52,6 +68,28 @@ calibration:
       obs_file:  "Avatiu_Flow_obs.csv"
       weight:    1.0
       objective: "NSE"
+      # outlet_name: "avatiu"        # 생략 시 "outlet_13"
+      # obs_column:  "flow_m3s"      # 생략 시 variable·unit 로 자동
+      #  min_valid: 이보다 작은 관측은 **결측으로 돌린다**(물리적으로 불가능한 기록).
+      #    결측을 0 으로 적어 둔 행이 월평균과 검보정 지표(KGE·RMSE·PBIAS)를
+      #    오염시키는 것을 막는다. 저수지는 레지스트리의 사수위로 자동 판정하므로
+      #    보통 불필요하고, 하천 수위처럼 기준선이 없는 관측에 쓴다.
+      # min_valid: 1.0
+
+    # 저수지 수위 관측 예시 — §6 reservoirs 레지스트리에 연결한다.
+    #  (관측 파일에 폴더가 들어가면 obs_root 기준 상대경로로 그대로 쓴다)
+    # - id:         "example_dam"
+    #   reservoir:  "example_dam"     # ← §6 레지스트리 이름. outlet_id 는 거기서 상속
+    #   variable:   "wlevel"          # 수위 — flo_stor → 수위내용적 곡선 → stage(ft)
+    #   unit:       "ft"
+    #   time_step:  "daily"
+    #   obs_file:   "flow/example_dam.csv"
+    #   obs_column: "wlevel_ft"
+    #   weight:     1.0
+    #   objective:  "KGE"             # ★ 관리형 저수지는 변동이 작아 NSE 가 착시를 준다
+    #   #  수위내용적 곡선이 없을 때만 쓰는 근사 — stage(m) = datum_m + shape_factor·V/A
+    #   shape_factor: 1.0             # 1.0=각주형(평균수심) · 2.0=쐐기형
+    #   datum_m:      0.0             # 수위계 기준면 오프셋(m)
 
     - id:        "avana"
       outlet_id: 3
@@ -202,7 +240,10 @@ tank:
     matavera:  "441306"            # Matavera 우량계
     muriavai:  "461417"            # Muriavai 우량계
     totokoitu: "461412"            # Totokoitu 우량계
-  # 유역(gauge 배수)면적 km²
+  # 유역(gauge 배수)면적 km² — CSV 로 주려면 아래 3개를 쓰고 basin_areas 를 비운다.
+  # basin_area_csv: "$(project.database)/gis/subbasin_area.csv"
+  # basin_area_key: "station"                 # CSV 에서 유역 이름이 든 컬럼
+  # basin_area_col: "subbasin_area_km2"       # CSV 에서 면적이 든 컬럼
   basin_areas:
     avatiu:    1.235
     avana:     2.283
@@ -229,30 +270,117 @@ tank:
 #  공통값(forecast 예측연월·ensemble.n_members·ensemble.root)은 config/picaso-hydro.yaml
 #  이 단일 관리하며 로더가 자동 주입한다.
 drought:
-  # 장기 기후(평년·FDC) 재실행 기간 — acidwg_py.yaml observation(syear/eyear)과 동일 값.
-  # SWAT+ 웜업(공통 warm_up_years) 제외 후 출력. climatology 파일명은 syear+warmup~eyear
-  # 로 자동 산출된다(channel_monthly[_avg]_{syear+warmup}_{eyear}.csv). 하드코딩 없음.
-  # (일유량은 생산하지 않는다 — 가뭄단계 경계는 월유량 분포에서 산정)
+  # ── warm-up 기상 소스 ──────────────────────────────────────────────────────
+  #  single_station(권장) | era5 | observed
+  #  single_station = 평년(Historical) 실행과 **같은 단일 관측소**(stations-acidwg.csv)로
+  #    전 유역을 재배정해 warm-up 한다. 평년선·FDC 임계가 그 기준으로 만들어지므로
+  #    예측도 같은 기준에서 출발해야 단계 분류가 성립한다.
+  #    (다지점 warm-up 은 단일 관측소 대비 훨씬 젖어 예측이 늘 임계 위로 뜬다 — 쿡 사례)
+  #    실측이 예보 시작까지 닿지 않는 공백은 같은 관측소 최근접 ERA5 격자를
+  #    월별 편의보정해 채운다.
+  #  era5     = 보정하지 않은 ERA5 격자로 warm-up (기본값이지만 권장하지 않음)
+  #  observed = 관측 기상 그대로
+  base_weather: "single_station"
+
+  # ── 장기 기후(평년·FDC) 재실행 기간 ───────────────────────────────────────
+  #  SWAT+ 웜업(공통 warm_up_years) 제외 후 출력하므로
+  #  출력 시작연도 = syear + warm_up_years (1982+3 = 1985).
+  #  파일명은 channel_monthly[_avg]_{syear+warmup}_{eyear}.csv 로 자동 산출(하드코딩 없음).
+  #  (일유량은 생산하지 않는다 — 가뭄단계 경계는 월유량 분포에서 산정)
+  #  ※ 이 값을 바꾸면 파일명 태그가 바뀌어 기존 평년 산출물을 읽지 않는다.
+  #    반드시 climatology_run 을 다시 돌릴 것.
+  #  ※ acidwg_py.yaml 의 observation.syear/eyear 와 **같을 필요가 없다** —
+  #    그쪽은 WGEN 적합용 관측 기간이다.
   syear: 1982
   eyear: 2023
-  # 급수 4단계 경계 (Normal|Watch, Watch|Warning, Warning|Crisis) — 사용자 변경 가능.
-  # fdc_exceedance : 초과확률(%). 권장 Q70/Q90/Q95
-  thresholds:
-    method: "fdc_exceedance"
-    values: [70, 90, 95]               # [Normal|Watch, Watch|Warning, Warning|Crisis]
-  outlets:                             # 12개 소유역 outlet 채널 (gis_id: 이름)
-    13: "avatiu"
-    3:  "avana"
-    8:  "matavera"
-    10: "muriavai"
-    25: "totokoitu"
-    1:  "papua"
-    5:  "takuvaine"
-    12: "turangi"
-    14: "tupapa"
-    15: "tipara"
-    16: "rutaki"
-    29: "ngatoe"
+
+  # ── 선택 항목 ─────────────────────────────────────────────────────────────
+  # forecast_station: 예보 확률을 읽을 PICASO 관측소 ID. 미지정 시 자동 판정.
+  # forecast_station: "918430"
+  # climatology_csv : 평년 유량 CSV 를 직접 지정(미지정 시 위 태그로 자동 산출).
+  # climatology_csv: ""
+  # climatology_years: syear/eyear 미지정 시의 하위호환 경로. 새 설정에서는 쓰지 말 것.
+  # climatology_years: [2003, 2024]
+  # era5_warmup: 멤버마다 ERA5 warm-up 을 다시 쓸지(기본 false — base 단계에서 이미 연결).
+  era5_warmup: false
+  # climatology_stat: 평년선 통계 — mean(기본) | median.
+  #  저수지 수위처럼 위가 만수로 막히고 아래로 꼬리가 긴 분포에서는 소수의 가뭄 해가
+  #  평균을 끌어내려, '보통 해'를 나타내야 할 평년선이 Watch 구간에 그려진다.
+  #  그럴 때 median 으로 바꾼다(팔라우 Ngerimel 사례).
+  #  ※ FDC 임계(단계 경계)에는 영향이 없다 — 화면의 평년선만 바뀐다.
+  #  ※ 저수지 평년 파일에는 _level_ft_mean 과 _level_ft_median 두 열이 함께 저장돼,
+  #    어느 쪽을 쓸지 파일만 보고 비교할 수 있다.
+  climatology_stat: "mean"
+  #
+  # ── 평년 설정 지문 (자동) ─────────────────────────────────────────────────
+  #  climatology_run 이 평년 산출물 옆에 climatology_settings_{tag}.json 을 남긴다.
+  #  대시보드는 실행할 때마다 이 지문을 현재 설정과 대조해, 취수·전환·기간 등이
+  #  바뀌었는데 옛 평년을 읽고 있으면 **무엇이 달라졌는지 항목별로 경고**한다
+  #  (dashboard.json 의 climatology_settings 에도 남는다). 설정 항목은 아니다.
+
+  # ── 수원(水源) 유형별 가뭄단계 설정 ───────────────────────────────────────
+  #  ★ 현행 스키마는 drought.sources 다. 구 flat 스키마(drought.thresholds/outlets)는
+  #    하위호환으로만 남아 있으니 새 프로젝트에서는 쓰지 말 것.
+  #  수원마다 type(stream|reservoir) · thresholds(method/values) · outlets(gis_id:이름)를
+  #  독립 지정한다. 로더가 sources 의 outlets 를 병합해 전 outlet 목록을 자동 구성하며,
+  #  threshold_for(outlet) 이 해당 수원 임계를 돌려준다.
+  #  경계 순서는 항상 [Normal|Watch, Watch|Warning, Warning|Crisis].
+  sources:
+
+    # ① 하천수 — 유량 분포 기반 (쿡 라로통가 12개 소유역 예시)
+    streams:
+      type: "stream"
+      thresholds:
+        method: "fdc_exceedance"       # 초과확률(%) — 값↑=저유량. 권장 Q70/Q90/Q95
+        values: [70, 90, 95]           # [Normal|Watch, Watch|Warning, Warning|Crisis]
+      outlets:                         # 소유역 outlet 채널 (gis_id: 이름)
+        13: "avatiu"
+        3:  "avana"
+        8:  "matavera"
+        10: "muriavai"
+        25: "totokoitu"
+        1:  "papua"
+        5:  "takuvaine"
+        12: "turangi"
+        14: "tupapa"
+        15: "tipara"
+        16: "rutaki"
+        29: "ngatoe"
+
+    # ② 저수지(댐) — 만수 대비 % 기반 (팔라우 Ngerimel 예시)
+    #    저수지 수원이 없는 프로젝트(쿡)는 이 블록을 통째로 지우면 된다.
+    example_dam:
+      type: "reservoir"
+      reservoir: "example_dam"         # ↓ §6 reservoirs 레지스트리 참조(곡선·datum·취수 상속)
+      thresholds:
+        #  level_fraction   = 만수 **수위** 대비 %  — 현장 운영자가 보는 자(staff gauge) 눈금
+        #  capacity_fraction= 만수 **저수량** 대비 % — 부피 기준
+        #  ※ 수위-내용적 곡선은 직선이 아니므로 같은 "85%" 가 서로 다른 물리량을 가리킨다.
+        #    어느 쪽인지 반드시 발주처와 합의하고 적을 것.
+        #  ※ Normal|Watch 를 100 으로 두면 경계가 만수 바로 그 지점이라 실측은 늘 Watch,
+        #    모의는 늘 Normal 이 된다(0.06 ft 로 단계가 갈린 사례). 95 를 권장한다.
+        method: "level_fraction"
+        values: [95, 85, 65]
+      outlets:
+        4: "example_dam"               # 저수지 gis_id (reservoir_con.gis_id)
+
+      # ── 예측 초기조건 (type=reservoir 전용) ─────────────────────────────
+      #  예측 시작 시점의 저수위 → 3개월 물수지의 출발점.
+      #  결과 폴더에 태그가 붙어(__ic{수위}ft-{scn|meas}) 시나리오별로 구분·보존된다.
+      initial_condition:
+        #  ★ 기준면 — **자(staff gauge) 눈금 ft**. 현장에서 읽는 그 숫자를 그대로 적는다.
+        #    곡선·레지스트리는 MSL 이지만, 운영값은 자 눈금으로 통일했다
+        #    (팔라우: 유진호 박사 확인 2026-11-02). 변환은 엔진이 한다
+        #    — obs_datum_offset_ft 로 MSL 로 바꿔 곡선을 조회한다.
+        #    범위를 벗어난 값(옛 MSL 값 등)은 실행이 중단되고 변환식을 안내한다.
+        init_water_level_ft: 22.0      # 자 눈금 ft. 미지정 시 만수(23.0)에서 시작
+        measured: No                   # Yes=실측 초기수위(-meas) / No=가정 시나리오(-scn)
+        #  취수 시나리오(선택) — §6 레지스트리의 물리 제원을 **덮어쓴다**.
+        #  지정하면 결과 폴더에 꼬리표(_wdr0.0300)가 붙어 시나리오끼리 안 섞인다.
+        # withdrawal_m3s: 0.0300                 # 상수 취수(m³/s)
+        # withdrawal_monthly_m3s:                # 월별(1~12월) — 상수보다 우선
+        #   [0.010, 0.010, 0.010, 0.0438, 0.0438, 0.0438,
+        #    0.0438, 0.0438, 0.0438, 0.0438, 0.0438, 0.0438]
 
 
 # ── 5. 기후변화 (선택) ───────────────────────────────────────────────────────
@@ -260,3 +388,54 @@ drought:
 climate_change:
   enabled: false
   metadata_file: "stations-cchange.csv"
+  # ids:       ["918430"]                    # 대상 관측소. 비우면 메타 파일 전체
+  # models:    ["ACCESS-CM2", "CNRM-CM6-1"]  # CMIP6 GCM 목록
+  # scenarios: ["ssp245", "ssp585"]          # 배출 시나리오
+  # historical_period:
+  #   start_year: 1981
+  #   end_year:   2010
+  # future_periods:
+  #   - {start_year: 2021, end_year: 2040, label: "2030s"}
+  #   - {start_year: 2041, end_year: 2060, label: "2050s"}
+
+
+# ── 6. 저수지(댐) 레지스트리 (선택 — type=reservoir 수원이 있을 때만) ────────
+#  SWAT+ 저수지 모의 저류량(reservoir_day.txt flo_stor, m³)을 실측 수위-내용적
+#  곡선으로 수위(ft)로 환산 → 댐 수위 관측과 직접 비교·검보정한다.
+#  drought.sources.<수원>.reservoir 와 calibration.observations[].reservoir 가
+#  여기 이름을 참조한다.
+reservoirs:
+  example_dam:
+    gis_id:              4           # reservoir_con.gis_id (reservoir_day 필터)
+    #  stage_storage_file: 파일명만 적으면 obs_root/reservoir/ 아래로 해석된다
+    #    → 0_database/obs/reservoir/example_dam_stage_storage.csv (elev_ft, storage_m3)
+    stage_storage_file:  "example_dam_stage_storage.csv"
+    interp:              "pchip"     # 곡선 보간 — pchip | linear
+    #  obs_datum_offset_ft: 곡선(MSL) ↔ 자 눈금을 잇는 유일한 다리. **모델 수위에 더한다.**
+    #    예) 만수 45.00 MSL + (−22.0) = 자 눈금 23.00 ft
+    #    ※ 아래 crest/spillway/bottom 은 측량 성과라 **MSL** 이다(곡선 CSV 와 같은 기준).
+    #      반면 운영값(init_water_level_ft·diversion_target_ft)은 **자 눈금**이다.
+    obs_datum_offset_ft: -22.0
+    crest_ft:            51.00       # 댐마루
+    spillway_ft:         45.00       # 여수로(월류 임계) = 만수(cap)
+    bottom_ft:           23.34       # 사수위(dead storage)
+    withdrawal_m3s:      0.0438      # 상수도 취수(유입에서 차감). 1 MGD = 0.0438 m³/s
+    # withdrawal_monthly_m3s: [ ...12개... ]   # 월별 실측 확보 시 상수보다 우선
+
+    # ── 전환유입(인접 하천 → 저수지) 운영 (선택) ─────────────────────────
+    #  수위가 낮아지면 인접 하천의 잉여수를 끌어와 보충하는 운영을 모사한다.
+    #  이것을 넣지 않으면 유입이 용량을 크게 웃도는 소형 저수지에서 어떤 가뭄에도
+    #  만수로 복귀해 단계가 Normal 에 고정된다.
+    #  ※ diversion_from_outlet 을 지우면 즉시 기존 월 단위 물수지로 돌아간다.
+    #  ※ 상한·최소유량은 가능하면 **실측 펌프 제원**으로 적을 것. 격자탐색 보정값을
+    #    쓰는 경우 그렇다고 주석에 남겨야 뒤에 보는 사람이 오해하지 않는다.
+    diversion_from_outlet:  1        # 전환 수원 채널 gis_id
+    diversion_max_m3s:      0.15     # 전환 상한(펌프·도수로 용량)
+    diversion_min_flow_m3s: 0.02     # 수원 하천에 남길 유량(하천유지유량)
+    diversion_target_ft:    22.00    # 보충 목표 수위 — **자 눈금 ft**. 미지정 시 만수
+
+    # ── 드물게 쓰는 항목 ─────────────────────────────────────────────────
+    # cap_level_ft:  45.00   # 만수 수위를 spillway_ft 와 다르게 둘 때만 (MSL — 측량 제원)
+    #  init_level_ft: 검보정 모의의 초기수위. 예측 초기조건(initial_condition)과 별개다.
+    #    ★ 이것도 **운영값**이라 자 눈금 ft 다(측량 제원이 아니다).
+    # init_level_ft: 22.00

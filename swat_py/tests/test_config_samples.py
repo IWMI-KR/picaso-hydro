@@ -235,3 +235,40 @@ def test_샘플에_특정_프로젝트_절대경로가_없다(name):
     text = (SAMPLES / name).read_text(encoding="utf-8")
     hits = re.findall(r"[A-Za-z]:[/\\]20\d\d-[\w]+", text)
     assert not hits, f"프로젝트 고정 경로가 남아 있다: {sorted(set(hits))}"
+
+
+# ── 4. picaso-hydro-init 이 나눠 주는 템플릿도 같아야 한다 ──────────────────
+#  ★ 2026-11-02 발견: config_samples 는 갱신했는데 picaso_hydro/templates/config
+#    쪽은 구 스키마(262줄, drought.thresholds/outlets)로 남아 있었다.
+#    picaso-hydro-init 을 쓴 사용자는 **폐기된 설정**을 받고 있었다.
+#    사본이 둘이면 반드시 갈라진다 — 여기서 묶어 둔다.
+
+INIT_TEMPLATES = (SAMPLES.parent / "picaso_hydro" / "src" / "picaso_hydro"
+                  / "templates" / "config")
+
+#: picaso-hydro.yaml 은 init 이 프로젝트 경로로 치환할 자리를 갖는다 — 그 한 줄만 다르다.
+_ROOT_PLACEHOLDER = "__PROJECT_ROOT__"
+
+
+def _norm_root(text: str) -> str:
+    """root 기본값 줄을 비교 대상에서 지운다(치환 자리라 다른 것이 정상)."""
+    return re.sub(r"^\s*root:.*$", "  root: <NORMALIZED>", text, flags=re.M)
+
+
+@pytest.mark.parametrize("name", ["picaso-hydro.yaml", "swat_py.yaml", "acidwg_py.yaml"])
+def test_init_템플릿이_config_samples_와_같다(name):
+    tpl = INIT_TEMPLATES / name
+    assert tpl.is_file(), f"init 템플릿이 없다: {tpl}"
+    a = _norm_root((SAMPLES / name).read_text(encoding="utf-8"))
+    b = _norm_root(tpl.read_text(encoding="utf-8"))
+    assert a == b, (
+        f"picaso-hydro-init 이 나눠 주는 {name} 이 config_samples 와 다르다.\n"
+        f"  샘플 {len(a.splitlines())}줄 / 템플릿 {len(b.splitlines())}줄\n"
+        f"  → config_samples 를 정본으로 {tpl} 에 복사할 것"
+        f"(picaso-hydro.yaml 은 root 기본값만 {_ROOT_PLACEHOLDER} 로 둔다).")
+
+
+def test_init_템플릿의_root_자리가_살아있다():
+    t = (INIT_TEMPLATES / "picaso-hydro.yaml").read_text(encoding="utf-8")
+    assert _ROOT_PLACEHOLDER in t, (
+        "치환 자리가 사라졌다 — init 이 프로젝트 경로를 넣지 못한다")
