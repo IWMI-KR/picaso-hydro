@@ -14,11 +14,14 @@ reservoir_day.txt(일 flo_in·precip·evap·seep, m³/일)를 읽어, 사용자�
 capacity_fraction 임계 [100,85,65] 와 결합: %>100 Normal · 85~100 Watch ·
 65~85 Warning · ≤65 Crisis (classify_stage4 와 방향 일치).
 
-수위(ft) 는 두 가지 기준면으로 나온다 — **곡선 datum(MSL)** 과 **관측 눈금(staff
-gauge)**. 레지스트리의 ``obs_datum_offset_ft`` 가 그 차이다(Ngerimel −22.0).
-현장 운영자가 보는 자 눈금이 기준이므로 ``water_level_ft`` 는 **관측 눈금**으로
-내보내고(만수 45.00 MSL → 23.00 ft), 곡선 datum 값은 ``water_level_msl_ft`` 에
-함께 남긴다(요청: 유진호 2026-08-26 "현지 실측 23 m 가 만수위이니 22 를 빼서").
+기준면 — **자(staff gauge) 눈금이 공식 기준**이다 (유진호 박사 확인 2026-11-02:
+"해발고도가 아니라 23 ft 가 최대값이 되는 실측 수위 기준").
+  · 입력(``init_water_level_ft`` · ``diversion_target_ft``) = **자 눈금 ft**
+  · 출력(``water_level_ft``)                               = **자 눈금 ft** (만수 23.00)
+  · 단계 임계(``level_fraction`` %)                        = **자 눈금 만수 대비 %**
+수위-내용적 곡선(stage_storage CSV)만 측량 성과라 MSL 로 남는다. 레지스트리의
+``obs_datum_offset_ft`` 가 둘을 잇는 유일한 다리다(Ngerimel −22.0; 45.00 MSL =
+23.00 자 눈금). 곡선 datum 값이 필요하면 ``water_level_msl_ft`` 에 함께 남긴다.
 """
 from __future__ import annotations
 
@@ -53,14 +56,48 @@ class ReservoirForecastParams:
     diversion_target_m3:    float = float("nan")  # 보충 목표 저류량. NaN → 만수
 
 
+def _assert_gauge_level(value: float, reservoir_cfg, offset_ft: float, *, key: str) -> None:
+    """설정 수위가 **자 눈금(staff gauge)** 범위 안인지 확인한다.
+
+    기준면을 섞어 적는 것이 이 모형에서 가장 조용하고 위험한 실수다 —
+    MSL 값 44.0 을 자 눈금으로 읽으면 만수(23.0)보다 훨씬 높고, 반대로 자 눈금
+    22.5 를 MSL 로 읽으면 사수위(23.34 MSL)보다 낮아 **시작하자마자 Crisis** 가
+    된다. 둘 다 오류 없이 그럴듯한 숫자를 내므로 여기서 막는다.
+
+    Raises
+    ------
+    ValueError : 사수위~댐마루(자 눈금) 밖이면. 옛 MSL 값으로 보이면 변환식을 알려 준다.
+    """
+    if reservoir_cfg is None:
+        return
+    bottom = float(getattr(reservoir_cfg, "bottom_ft", float("nan")))
+    crest = float(getattr(reservoir_cfg, "crest_ft", float("nan")))
+    if bottom != bottom or crest != crest:         # 제원이 없으면 검사 불가
+        return
+    lo, hi = bottom + offset_ft, crest + offset_ft           # 자 눈금 범위
+    if lo <= value <= hi:
+        return
+    hint = ""
+    if lo <= value + offset_ft <= hi:
+        hint = (f"\n  → 이 값은 곡선 datum(MSL) 로 보인다. 자 눈금으로 바꿔 적을 것: "
+                f"{value:.2f} + ({offset_ft:+.2f}) = {value + offset_ft:.2f}")
+    raise ValueError(
+        f"{key} = {value} ft 가 자(staff gauge) 눈금 범위를 벗어났다.\n"
+        f"  이 값은 **현장에서 읽는 자 눈금**이어야 한다 "
+        f"(사수위 {lo:.2f} ~ 댐마루 {hi:.2f} ft, 만수 "
+        f"{float(getattr(reservoir_cfg, 'spillway_ft', float('nan'))) + offset_ft:.2f} ft)."
+        f"{hint}")
+
+
 def build_reservoir_forecast_params(source, reservoir_cfg, curve) -> ReservoirForecastParams:
     """_DroughtSource + _Reservoir(registry) + StageStorageCurve → 예측 매개변수.
 
     - full_m3 : 곡선상 여수로(spillway_ft) 저수량 = 만수 기준.
     - dead_m3 : 곡선상 사수위(bottom_ft) 저수량.
-    - init_m3 : source.init_water_level_ft(MSL ft) 곡선 환산. 미지정 시 full(만수).
+    - init_m3 : source.init_water_level_ft(**자 눈금 ft**) → MSL 환산 후 곡선 조회.
+      미지정 시 full(만수).
     - datum_offset_ft : registry obs_datum_offset_ft. 곡선(MSL) 수위에 더하면
-      관측 눈금이 된다(Ngerimel: 45.00 MSL + (−22.0) = 23.00 ft 만수).
+      자 눈금이 된다(Ngerimel: 45.00 MSL + (−22.0) = 23.00 ft 만수).
     """
     import math
     from swat_py.io.reservoir import water_level_to_storage
@@ -71,8 +108,20 @@ def build_reservoir_forecast_params(source, reservoir_cfg, curve) -> ReservoirFo
         else float(curve.storage_m3[-1])
     dead_m3 = float(curve.stage_to_storage(bottom)) if not math.isnan(bottom) else 0.0
 
-    iwl = getattr(source, "init_water_level_ft", float("nan"))
-    init_m3 = water_level_to_storage(curve, iwl) if (iwl == iwl) else full_m3  # NaN → 만수
+    off = float(getattr(reservoir_cfg, "obs_datum_offset_ft", 0.0) or 0.0) if reservoir_cfg else 0.0
+
+    # ── 초기수위: 설정은 **자 눈금(staff gauge)**, 곡선은 MSL ──────────────────
+    #  유진호 박사 확인(2026-11-02): 기준면은 해발고도가 아니라 **만수 23 ft 인
+    #  실측 자 눈금**이다. 사용자가 적는 운영값은 현장에서 읽는 그 숫자여야 한다.
+    #  곡선(stage_storage CSV)은 측량 성과라 MSL 그대로 두고, 여기서 변환한다.
+    #      MSL = gauge − obs_datum_offset_ft      (Ngerimel: 22.0 − (−22.0) = 44.0)
+    iwl_gauge = getattr(source, "init_water_level_ft", float("nan"))
+    if iwl_gauge == iwl_gauge:                                   # NaN 아님
+        _assert_gauge_level(iwl_gauge, reservoir_cfg, off,
+                            key="drought.sources.<수원>.initial_condition.init_water_level_ft")
+        init_m3 = water_level_to_storage(curve, iwl_gauge - off)
+    else:
+        init_m3 = full_m3                                        # 미지정 → 만수에서 시작
 
     # 취수: 시나리오(source.initial_condition)가 있으면 레지스트리 물리 제원을 덮어쓴다.
     wdr = float(getattr(reservoir_cfg, "withdrawal_m3s", 0.0) or 0.0) if reservoir_cfg else 0.0
@@ -84,15 +133,19 @@ def build_reservoir_forecast_params(source, reservoir_cfg, curve) -> ReservoirFo
         wmon = [float(x) for x in s_wmon]
     elif s_wdr is not None:
         wdr, wmon = float(s_wdr), None
-    off = float(getattr(reservoir_cfg, "obs_datum_offset_ft", 0.0) or 0.0) if reservoir_cfg else 0.0
     gid = next(iter(source.outlets)) if source.outlets else (
         reservoir_cfg.gis_id if reservoir_cfg else 0)
     # 전환유입 — registry 설정을 그대로 쓴다(시나리오 덮어쓰기 대상 아님).
     dv_out = getattr(reservoir_cfg, "diversion_from_outlet", None) if reservoir_cfg else None
-    dv_tgt_ft = float(getattr(reservoir_cfg, "diversion_target_ft", float("nan"))) \
+    # 보충 목표 수위도 **자 눈금**이다(초기수위와 같은 기준면) → 곡선용 MSL 로 변환.
+    dv_tgt_gauge = float(getattr(reservoir_cfg, "diversion_target_ft", float("nan"))) \
         if reservoir_cfg else float("nan")
-    dv_tgt_m3 = (float(curve.stage_to_storage(dv_tgt_ft))
-                 if (dv_tgt_ft == dv_tgt_ft) else float("nan"))
+    if dv_tgt_gauge == dv_tgt_gauge:
+        _assert_gauge_level(dv_tgt_gauge, reservoir_cfg, off,
+                            key="reservoirs.<저수지>.diversion_target_ft")
+        dv_tgt_m3 = float(curve.stage_to_storage(dv_tgt_gauge - off))
+    else:
+        dv_tgt_m3 = float("nan")
     return ReservoirForecastParams(
         gis_id=int(gid), name=list(source.outlets.values())[0] if source.outlets else source.name,
         full_m3=full_m3, dead_m3=dead_m3, init_m3=init_m3, withdrawal_m3s=wdr,

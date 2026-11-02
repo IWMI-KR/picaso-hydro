@@ -292,7 +292,11 @@ def build_reservoir_sim(
             cap_lvl = res.cap_level_ft if not _math.isnan(res.cap_level_ft) else res.spillway_ft
             cap_m3 = float(curve.stage_to_storage(cap_lvl)) if not _math.isnan(cap_lvl) else None
             dead_m3 = float(curve.stage_to_storage(res.bottom_ft)) if not _math.isnan(res.bottom_ft) else 0.0
-            init_m3 = float(curve.stage_to_storage(res.init_level_ft)) if not _math.isnan(res.init_level_ft) else cap_m3
+            # 운영값(init_level_ft·diversion_target_ft)은 **자(staff gauge) 눈금**이다
+            # (유진호 박사 확인 2026-11-02). 곡선은 MSL 이라 offset 만큼 되돌려 조회한다
+            # — 예측 경로(build_reservoir_forecast_params)와 같은 규칙이어야 한다.
+            init_m3 = (float(curve.stage_to_storage(res.init_level_ft - datum_offset_ft))
+                       if not _math.isnan(res.init_level_ft) else cap_m3)
             wdr = res.withdrawal_monthly_m3s or res.withdrawal_m3s
             # 전환유입 — 예측 경로와 같은 규칙. run_dir·sdate 가 있을 때만 적용한다.
             div_arr, div_tgt = None, float("nan")
@@ -315,9 +319,10 @@ def build_reservoir_sim(
                 else:
                     # 저수지 자료 날짜에 맞춰 정렬 — 기간이 어긋나면 해당 날은 0
                     div_arr = pd.to_datetime(raw["date"]).map(_s).fillna(0.0).to_numpy(float)
-                    _tgt_ft = float(getattr(res, "diversion_target_ft", float("nan")))
-                    div_tgt = (float(curve.stage_to_storage(_tgt_ft))
-                               if _tgt_ft == _tgt_ft else float("nan"))
+                    # 보충 목표 수위도 자 눈금 → 곡선(MSL) 으로 되돌려 조회
+                    _tgt_g = float(getattr(res, "diversion_target_ft", float("nan")))
+                    div_tgt = (float(curve.stage_to_storage(_tgt_g - datum_offset_ft))
+                               if _tgt_g == _tgt_g else float("nan"))
             bal = simulate_managed_storage(
                 raw, withdrawal_m3s=wdr, cap_m3=cap_m3, dead_m3=dead_m3, init_m3=init_m3,
                 diversion_daily_m3=div_arr, diversion_target_m3=div_tgt,

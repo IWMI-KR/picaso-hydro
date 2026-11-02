@@ -349,10 +349,12 @@ drought:
       #  예측 시작 시점의 저수위 → 3개월 물수지의 출발점.
       #  결과 폴더에 태그가 붙어(__ic{수위}ft-{scn|meas}) 시나리오별로 구분·보존된다.
       initial_condition:
-        #  ★ 단위/기준면 주의 — 아래 값은 수위내용적 곡선·레지스트리와 같은 datum(MSL)이다.
-        #    화면이 보여주는 자(gauge) 눈금과 다를 수 있다
-        #    (예: 만수 45.0 MSL = 자 눈금 23.0 ft, obs_datum_offset_ft 만큼 차이).
-        init_water_level_ft: 44.0      # 미지정 시 만수에서 시작
+        #  ★ 기준면 — **자(staff gauge) 눈금 ft**. 현장에서 읽는 그 숫자를 그대로 적는다.
+        #    곡선·레지스트리는 MSL 이지만, 운영값은 자 눈금으로 통일했다
+        #    (팔라우: 유진호 박사 확인 2026-11-02). 변환은 엔진이 한다
+        #    — obs_datum_offset_ft 로 MSL 로 바꿔 곡선을 조회한다.
+        #    범위를 벗어난 값(옛 MSL 값 등)은 실행이 중단되고 변환식을 안내한다.
+        init_water_level_ft: 22.0      # 자 눈금 ft. 미지정 시 만수(23.0)에서 시작
         measured: No                   # Yes=실측 초기수위(-meas) / No=가정 시나리오(-scn)
         #  취수 시나리오(선택) — §6 레지스트리의 물리 제원을 **덮어쓴다**.
         #  지정하면 결과 폴더에 꼬리표(_wdr0.0300)가 붙어 시나리오끼리 안 섞인다.
@@ -390,8 +392,10 @@ reservoirs:
     #    → 0_database/obs/reservoir/example_dam_stage_storage.csv (elev_ft, storage_m3)
     stage_storage_file:  "example_dam_stage_storage.csv"
     interp:              "pchip"     # 곡선 보간 — pchip | linear
-    #  obs_datum_offset_ft: 관측 눈금 → 곡선(MSL) 정합. **모델 수위에 더한다.**
+    #  obs_datum_offset_ft: 곡선(MSL) ↔ 자 눈금을 잇는 유일한 다리. **모델 수위에 더한다.**
     #    예) 만수 45.00 MSL + (−22.0) = 자 눈금 23.00 ft
+    #    ※ 아래 crest/spillway/bottom 은 측량 성과라 **MSL** 이다(곡선 CSV 와 같은 기준).
+    #      반면 운영값(init_water_level_ft·diversion_target_ft)은 **자 눈금**이다.
     obs_datum_offset_ft: -22.0
     crest_ft:            51.00       # 댐마루
     spillway_ft:         45.00       # 여수로(월류 임계) = 만수(cap)
@@ -409,7 +413,7 @@ reservoirs:
     diversion_from_outlet:  1        # 전환 수원 채널 gis_id
     diversion_max_m3s:      0.15     # 전환 상한(펌프·도수로 용량)
     diversion_min_flow_m3s: 0.02     # 수원 하천에 남길 유량(하천유지유량)
-    diversion_target_ft:    44.00    # 보충 목표 수위(곡선과 같은 datum). 미지정 시 만수
+    diversion_target_ft:    22.00    # 보충 목표 수위 — **자 눈금 ft**. 미지정 시 만수
 
     # ── 드물게 쓰는 항목 ─────────────────────────────────────────────────
     # cap_level_ft:  45.00   # 만수 수위를 spillway_ft 와 다르게 둘 때만

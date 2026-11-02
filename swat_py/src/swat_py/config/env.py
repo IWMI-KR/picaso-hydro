@@ -151,7 +151,7 @@ class _Reservoir:
     diversion_from_outlet:   Optional[int] = None   # 전환 수원 채널 gis_id (Ngerikiil=1)
     diversion_max_m3s:       float = 0.0            # 전환 상한(펌프 용량). 3 MGD=0.1314
     diversion_min_flow_m3s:  float = 0.0            # 수원 하천에 남길 유량(하천유지유량)
-    diversion_target_ft:     float = float("nan")   # 보충 목표 수위(MSL). 미지정 시 만수
+    diversion_target_ft:     float = float("nan")   # 보충 목표 수위(**자 눈금 ft**). 미지정 시 만수
 
 
 @dataclass
@@ -223,8 +223,10 @@ class _DroughtSource:
     threshold_method: str = "fdc_exceedance"
     threshold_values: List[float] = field(default_factory=lambda: [70.0, 90.0, 95.0])
     # ── 예측 초기조건 (type=reservoir 전용) ─────────────────────────────────────
-    #  예측 시점 초기 저수위 → 물수지로 3개월 %저수량(수위) 예측의 출발점.
-    #  단위: 수위내용적 곡선/registry 와 동일 datum(MSL, ft; 여수로 45·댐마루 51·바닥 23.34).
+    #  예측 시점 초기 저수위 → 물수지로 3개월 수위 예측의 출발점.
+    #  단위: **자(staff gauge) 눈금 ft** — 현장에서 읽는 그 숫자다(Ngerimel 만수 23.00).
+    #  (유진호 박사 확인 2026-11-02 — 해발고도(MSL) 아님. 곡선 조회용 MSL 변환은
+    #   build_reservoir_forecast_params 가 obs_datum_offset_ft 로 처리한다.)
     init_water_level_ft: float = float("nan")  # 미지정 시 만수(cap)로 시작(기존 동작)
     measured:            bool = False           # true=실측 초기수위 / false=가정 시나리오
     # ── 취수 시나리오(선택) — 레지스트리(§reservoirs)의 물리 제원을 **덮어쓴다** ──

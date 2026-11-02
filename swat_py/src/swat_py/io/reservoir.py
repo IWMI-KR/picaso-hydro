@@ -323,10 +323,13 @@ def water_level_to_storage(
     *,
     interp: str = "pchip",
 ) -> float:
-    """초기 저수위(ft, MSL=곡선 datum) → 초기 저류량(m³).
+    """저수위(ft, **곡선 datum = MSL**) → 저류량(m³).
 
     예측 물수지의 출발 저류량(simulate_managed_storage 의 init_m3)으로 쓴다.
-    입력 수위는 수위-내용적 곡선/registry 와 동일 datum(여수로 45·댐마루 51·바닥 23.34 ft).
+    ★ 설정 파일의 ``init_water_level_ft``·``diversion_target_ft`` 는 **자 눈금**이다.
+      이 함수에 넘기기 전에 ``− obs_datum_offset_ft`` 로 MSL 로 바꿔야 한다
+      (build_reservoir_forecast_params 가 처리한다). 자 눈금을 그대로 넘기면
+      사수위 아래로 해석돼 즉시 Crisis 가 된다.
     """
     return float(curve.stage_to_storage(float(water_level_ft), interp=interp))
 

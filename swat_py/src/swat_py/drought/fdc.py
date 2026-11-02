@@ -100,9 +100,11 @@ def stage_thresholds(daily_q, method: str = "fdc_exceedance",
     하천(유량) method 는 유량(m³/s), 저수지는 **두 기준** 중 하나다 —
     ``capacity_fraction`` 은 만수 **저수량**(부피) 대비 %, ``level_fraction``·
     ``level_ft`` 는 만수 **수위** 기준이다. 수위-내용적 곡선은 직선이 아니므로
-    같은 "85%" 가 서로 다른 물리량을 가리킨다. 현장 운영자가 보는 것은 자(staff
-    gauge) 눈금이라 팔라우 Ngerimel 은 수위 기준을 쓴다
-    (설계 화면도 23.0/19.6/15.0 ft = 23.0 × [100,85,65]%).
+    같은 "85%" 가 서로 다른 물리량을 가리킨다.
+    ★ 팔라우 Ngerimel 은 **수위 기준(level_fraction)** 으로 확정됐다
+      (유진호 박사 확인 2026-11-02). %의 분모는 **자(staff gauge) 눈금 만수
+      23.00 ft** 이고 해발고도가 아니다 → [95,85,65]% = 21.85 / 19.55 / 14.95 ft.
+      (저수량 기준이었다면 22.59 / 21.78 / 20.03 ft 로 Crisis 경계가 5 ft 어긋난다.)
 
     항상 normal_watch ≥ watch_warning ≥ warning_crisis (고→저=습윤→고갈) 순.
 
