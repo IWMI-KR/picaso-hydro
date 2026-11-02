@@ -435,5 +435,7 @@ reservoirs:
     diversion_target_ft:    22.00    # 보충 목표 수위 — **자 눈금 ft**. 미지정 시 만수
 
     # ── 드물게 쓰는 항목 ─────────────────────────────────────────────────
-    # cap_level_ft:  45.00   # 만수 수위를 spillway_ft 와 다르게 둘 때만
-    # init_level_ft: 44.00   # 검보정 모의의 초기수위(예측 초기조건과 별개)
+    # cap_level_ft:  45.00   # 만수 수위를 spillway_ft 와 다르게 둘 때만 (MSL — 측량 제원)
+    #  init_level_ft: 검보정 모의의 초기수위. 예측 초기조건(initial_condition)과 별개다.
+    #    ★ 이것도 **운영값**이라 자 눈금 ft 다(측량 제원이 아니다).
+    # init_level_ft: 22.00
