@@ -89,6 +89,17 @@ def generating_iso(
         else:          # NN — 중간 연도
             valid = np.where((yr_vals > br[1]) & (yr_vals <= br[2]))[0]
 
+        # ★ 후보를 실제 재료 개수(n) 안으로 자른다.
+        #   해를 넘기는 시즌은 iso_dev_* 가 n = n_years-1 행뿐이다 — 마지막 해는
+        #   뒤따르는 1월이 없어 계절 한 벌을 못 만들기 때문이다. 그런데 후보는
+        #   raw_basin_anom(n_years 행, 달력 연도 기준)에서 뽑혀 마지막 해가 걸리면
+        #   iso_dev_t[n] 접근이 범위를 벗어났다(팔라우 2016_NDJ 30멤버:
+        #   "index 35 is out of bounds for axis 0 with size 35", 제니토스 2026-10-20 보고).
+        #   run.py 의 재시도 루프가 오류를 삼켜 결과는 나왔지만 traceback 이 쌓였고,
+        #   마지막 해는 앙상블에서 구조적으로 빠져 있었다.
+        #   두 배열 모두 **달력 연도 k 로 색인**되므로(iso_dev_t[k] = 연도 k 의 Nov·Dec
+        #   + 연도 k+1 의 Jan~Oct, raw_basin_anom[k] = 연도 k) 단순히 n 으로 자르면 된다.
+        valid = valid[valid < n]
         if len(valid) == 0:
             valid = np.arange(n)  # fallback: 전체 연도에서 선택
         sampled_year = int(np.random.choice(valid))
