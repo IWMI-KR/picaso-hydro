@@ -577,6 +577,62 @@ def _observed_reservoir_monthly(cfg, params, obs_ym: List[tuple], *,
             / params.full_m3 * 100.0 for m, v in ser.items()}
 
 
+# ── observed 가 왜 비는지 화면이 말할 수 있게 ──────────────────────────────
+#  ★ 업체 지적(최기섭 2026-10-20 §5): "2024_DJF 시험 실행에서 12칸이 모두 비어
+#    있었다. 운영 중인 최근 시즌에도 observed 를 채울 계획이 있으신지."
+#  방침(D-1) — **비워 두되 이유를 함께 내보낸다.** 평년 기간을 해마다 늘려
+#  채우는 길은 쿡 기상자료 결손(918430) 때문에 지금은 막혀 있다.
+#  빈칸의 뜻이 "자료 없음"인지 "계산 실패"인지 화면에서 구분되지 않던 것이 문제였다.
+
+def _coverage_from_dates(dates) -> Optional[Dict[str, str]]:
+    """날짜 계열 → {"start": "YYYY-MM", "end": "YYYY-MM"}. 비면 None."""
+    d = pd.to_datetime(pd.Series(dates), errors="coerce").dropna()
+    if d.empty:
+        return None
+    return {"start": d.min().strftime("%Y-%m"), "end": d.max().strftime("%Y-%m")}
+
+
+def _observed_note(coverage: Optional[Dict[str, str]], ym: List[tuple],
+                   source: str) -> Optional[str]:
+    """12개월 창 중 observed 가 비는 구간을 사람 말로 설명한다. 다 차면 None."""
+    labels = [f"{y:04d}-{m:02d}" for y, m in ym]
+    what = {"sim_obs_weather": "관측기상으로 구동한 모의값",
+            "measured_gauge": "실측 수위"}.get(source, "관측값")
+    if coverage is None:
+        return f"observed({what}) 자료가 없다 — 이 화면의 12개월 전 구간이 빈칸이다."
+    missing = [s for s in labels if not (coverage["start"] <= s <= coverage["end"])]
+    if not missing:
+        return None
+    return (f"observed({what})는 {coverage['start']} ~ {coverage['end']} 까지만 있다. "
+            f"{', '.join(missing)} 은(는) 자료가 없어 빈칸이다 — 계산 실패가 아니다.")
+
+
+def observed_coverage_reservoir(cfg, params) -> Optional[Dict[str, str]]:
+    """저수지 실측 수위 파일이 **실제로 덮는 기간** (obs_ym 로 거르기 전)."""
+    from swat_py.drought.historical_worst import _find_reservoir_obs
+    if params is None:
+        return None
+    path, col = _find_reservoir_obs(cfg, params)
+    if not (path and Path(path).is_file()):
+        return None
+    try:
+        raw = pd.read_csv(path)
+    except (OSError, ValueError):
+        return None
+    date_col = raw.columns[0]
+    d = pd.to_datetime(raw[date_col], errors="coerce")
+    v = pd.to_numeric(raw.get(col), errors="coerce")
+    return _coverage_from_dates(d[v.notna()])
+
+
+def observed_coverage_stream(daily: pd.DataFrame, outlet: str) -> Optional[Dict[str, str]]:
+    """하천 observed(평년 실행 산출물)가 **실제로 덮는 기간**."""
+    if outlet not in daily.columns:
+        return None
+    s = daily[["date", outlet]].dropna()
+    return _coverage_from_dates(s["date"])
+
+
 def _seasonal_stage_row(mem, months, q185, q275, q355, season, *,
                         top_inclusive: bool = False):
     """앙상블 멤버별 **3개월 평균값**(저수지=평균 저수량%, 하천=평균 유출량)을 산정해
@@ -727,6 +783,7 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
             series["hist_mean"] = series["month"].map(clim_res)
             res_obs = _observed_reservoir_monthly(cfg, rp, obs_ym,
                                                   level_based=level_based)
+            res_cov = observed_coverage_reservoir(cfg, rp)
             series["observed"] = series["month"].map(res_obs)
             if mem is not None:
                 series["forecast_mean"] = series["month"].map(mem.mean(axis=0).to_dict())
@@ -777,6 +834,10 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                 "datum": "staff_gauge" if level_based else None,
                 # observed 가 무엇인지 — 저수지는 실측 수위, 하천은 관측기상 모의
                 "observed_source": ("measured_gauge" if res_obs else None),
+                # observed 가 비는 구간과 그 이유 — 빈칸이 '자료 없음'인지
+                # '계산 실패'인지 화면에서 구분되게 한다(업체 지적 §5).
+                "observed_coverage": res_cov,
+                "observed_note": _observed_note(res_cov, ym, "measured_gauge"),
                 "full_level_ft": full_ft if level_based else None,
                 "forecast": forecast, "months": months, "months_ym": ym_labels(ym),
                 "climatology_stat": climatology_stat(cfg),
@@ -792,6 +853,9 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                                      "most_likely": sr["most_likely"],
                                      "Normal": sr["Normal"], "Watch": sr["Watch"],
                                      "Warning": sr["Warning"], "Crisis": sr["Crisis"]})
+            _note = _observed_note(res_cov, ym, "measured_gauge")
+            if _note:
+                print(f"    · observed: {_note}")
             unit_txt = (f"수위 ft (만수 {full_ft:.2f}, 경계 {q185:.2f}/{q275:.2f}/{q355:.2f})"
                         if level_based else "만수대비%")
             print(f"  ✔ {outlet:<12s} [저수지] {unit_txt} 단계="
@@ -813,6 +877,7 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
         clim = ct["monthly"].set_index("month")
 
         obs = _observed_monthly(daily, outlet, obs_ym)
+        obs_cov = observed_coverage_stream(daily, outlet)
         mem = ens.get(outlet)   # DataFrame [member × month]
 
         # ① 평년(창 12개월), ② 관측(예측 직전월), ③ 예측 평균+분위(예측월)
@@ -870,6 +935,8 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
             "months_ym": ym_labels(ym),
             # observed = 실측이 아니라 **관측기상으로 구동한 SWAT+ 모의**값
             "observed_source": "sim_obs_weather",
+            "observed_coverage": obs_cov,
+            "observed_note": _observed_note(obs_cov, ym, "sim_obs_weather"),
             "climatology_stat": climatology_stat(cfg),
             "climatology_settings": clim_check,   # ok | stale | missing (+차이)
             "thresholds": {"normal_watch": q185, "watch_warning": q275,
@@ -884,6 +951,9 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                                  "most_likely": sr["most_likely"],
                                  "Normal": sr["Normal"], "Watch": sr["Watch"],
                                  "Warning": sr["Warning"], "Crisis": sr["Crisis"]})
+        _note = _observed_note(obs_cov, ym, "sim_obs_weather")
+        if _note:
+            print(f"    · observed: {_note}")
         print(f"  ✔ {outlet:<12s} Q275={q275:.4f} Q355={q355:.4f} "
               f"단계={[s['most_likely'] for s in stage_rows]}")
 
