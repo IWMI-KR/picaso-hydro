@@ -433,10 +433,12 @@ def run_reservoir_daily(cfg, *, workdir=None, timeout: int = 7200,
     eyear = dc.eyear or 2023
     out_first = pd.Timestamp(f"{syear + warmup}-01-01")
 
-    if work.parent.exists():
-        shutil.rmtree(work.parent, ignore_errors=True)
+    # 작업폴더는 **자신만** 비운다(상위 폴더 삭제 금지 — 2026-10-20 사고).
+    from swat_py.runner.file_manager import mark_work_dir, reset_work_dir
+    reset_work_dir(work, label="저수지 장기 모의", trusted=workdir is None)
     print(f"[1/4] calibrated master 복사 → {work}")
     shutil.copytree(master, work)
+    mark_work_dir(work)
     stn = setup_acidwg_weather(cfg, work)
     print(f"[2/4] 기상 재배정 → {stn} 단일 관측소, time.sim {syear}–{eyear}")
 

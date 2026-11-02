@@ -345,10 +345,13 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
     out_first = f"{syear + warmup}-01-01"      # 웜업 제외 후 출력 시작
     tag = climatology_tag(cfg)                  # 파일명 태그 = {syear+warmup}_{eyear}
 
-    if work.parent.exists():
-        shutil.rmtree(work.parent)
+    # 작업폴더는 **자신만** 비운다(상위 폴더 삭제 금지 — 2026-10-20 사고).
+    # 사용자가 --workdir 로 준 경로는 비었거나 PICASO 표식이 있을 때만 지운다.
+    from swat_py.runner.file_manager import mark_work_dir, reset_work_dir
+    reset_work_dir(work, label="평년 실행", trusted=workdir is None)
     print(f"[1/5] calibrated master 복사 → {work}")
     shutil.copytree(master_dir, work)
+    mark_work_dir(work)
 
     stn = setup_acidwg_weather(cfg, work)
     print(f"[2/5] 기상 재배정 → stations-acidwg.csv({stn}) 단일 관측소")
@@ -469,7 +472,9 @@ def main(argv=None) -> int:
     ap.add_argument("--config", default="config/swat_py.yaml",
                     help="swat_py 설정 (같은 폴더의 picaso-hydro.yaml 공통값 자동 병합)")
     ap.add_argument("--workdir", default=None,
-                    help="SWAT 구동 임시폴더(기본: 시스템 임시)")
+                    help="SWAT 구동 임시폴더(기본: 시스템 임시). "
+                         "지정하면 그 폴더만 비우고 상위는 건드리지 않는다 — "
+                         "다른 자료가 든 폴더를 주면 중단한다")
     ap.add_argument("--timeout", type=int, default=7200, help="SWAT 실행 제한(초)")
     args = ap.parse_args(argv)
     from swat_py.config import load_config

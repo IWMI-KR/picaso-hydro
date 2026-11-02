@@ -140,9 +140,12 @@ def _evaluate_run(
             # tuple → 모든 obs 에 동일 시계열 (단일 obs 케이스 호환)
             sim_by_obs = {obs.id: sim_result for obs in ctx.observations}
     else:
-        run_dir = ctx.runs_dir / f"run_{run_idx:04d}" / "TxtInOut"
-        if run_dir.exists():
-            shutil.rmtree(run_dir.parent)
+        # 시도 폴더(run_NNNN)를 **이름으로 직접** 지정해 비운다 — 상위(runs_dir)를
+        # 건드리지 않는다. 옛 코드의 run_dir.parent 방식은 경로가 바뀌면 위험했다.
+        from swat_py.runner.file_manager import reset_work_dir
+        run_root = reset_work_dir(ctx.runs_dir / f"run_{run_idx:04d}",
+                                  label="보정 시도", trusted=True)
+        run_dir = run_root / "TxtInOut"
         shutil.copytree(ctx.default_dir, run_dir)
         changes = _build_changes(ctx.param_defs, x)
         apply_parameter_set(run_dir, changes, model_type=ctx.cfg.ModelType)

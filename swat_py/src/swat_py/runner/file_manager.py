@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 import platform
 import shutil
+import tempfile
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -31,6 +33,96 @@ _SWAT2012_WEATHER = ["pcp1.pcp", "tmp1.tmp", "hmd.hmd", "wnd.wnd", "slr.slr"]
 def setup_run_dir(run_dir: Path) -> None:
     """Create *run_dir* and all parents if they do not exist."""
     Path(run_dir).mkdir(parents=True, exist_ok=True)
+
+
+# ── SWAT 구동 임시폴더 — 안전한 비우기 ──────────────────────────────────────────
+#  ★ 2026-10-20 사고: climatology_run/finalize/historical_worst 가 작업폴더를 비울 때
+#    ``shutil.rmtree(work.parent)`` 를 썼다. 기본 경로에서는 parent 가 도구가 만든
+#    껍데기 폴더라 문제가 없었지만, ``--workdir X`` 로 임의 경로를 주면 **X 가 아니라
+#    X 의 상위 폴더 전체**가 지워졌다(제니토스 작업폴더 소실).
+#    아래 헬퍼는 (1) 대상 폴더 **자신만** 지우고, (2) 루트·홈 같은 보호 경로를 거부하며,
+#    (3) 사용자가 준 경로는 도구 표식이 있거나 비어 있을 때만 지운다.
+
+WORKDIR_MARKER = ".picaso_workdir"
+
+
+def _is_protected_path(path: Path) -> bool:
+    """어떤 경우에도 지우면 안 되는 경로인가 — 드라이브/마운트 루트·홈·임시폴더 자체."""
+    try:
+        rp = Path(path).expanduser().resolve()
+    except OSError:
+        rp = Path(path).absolute()
+    if rp.parent == rp or str(rp) == rp.anchor:
+        return True
+    for special in (Path.home(), Path(tempfile.gettempdir())):
+        try:
+            if rp == special.expanduser().resolve():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _is_tool_owned(work: Path) -> bool:
+    """PICASO 가 만든 작업 폴더인가 — 표식이 있거나 비어 있으면 참."""
+    if (work / WORKDIR_MARKER).is_file():
+        return True
+    try:
+        return not any(work.iterdir())
+    except OSError:
+        return False
+
+
+def mark_work_dir(work) -> None:
+    """작업 폴더에 PICASO 표식을 남긴다 — 다음 실행이 안전하게 지울 수 있도록."""
+    try:
+        (Path(work) / WORKDIR_MARKER).write_text(
+            "PICASO-Hydro 가 만든 임시 작업폴더다. 지워도 된다.\n", encoding="utf-8")
+    except OSError:
+        pass            # 표식 실패는 실행을 막을 사유가 아니다
+
+
+def reset_work_dir(work, *, label: str = "작업", trusted: bool = False) -> Path:
+    """SWAT 구동 작업폴더를 비우고 돌려준다 — **그 폴더 자신만** 지운다.
+
+    상위 폴더는 절대 건드리지 않는다.
+
+    Parameters
+    ----------
+    work : 비울 폴더. 없으면 상위만 만들고 그대로 돌려준다.
+    label : 오류 메시지에 쓸 이름("평년 실행", "Top1 모의" 등).
+    trusted : 호출부가 경로를 **내부에서 생성**했을 때만 True.
+        사용자가 ``--workdir`` 로 준 경로는 반드시 False — 이때는 폴더가
+        비어 있거나 PICASO 표식(:data:`WORKDIR_MARKER`)이 있을 때만 지운다.
+
+    Raises
+    ------
+    RuntimeError
+        보호 경로이거나, 사용자가 준 경로에 PICASO 것이 아닌 내용이 들어 있을 때.
+    """
+    work = Path(work).expanduser()
+    if _is_protected_path(work):
+        raise RuntimeError(
+            f"[중단] {label} 폴더로 쓸 수 없는 경로다 → {work}\n"
+            f"       드라이브 루트·사용자 홈·임시폴더 자체는 지정할 수 없다.")
+    if work.exists():
+        if not work.is_dir():
+            raise RuntimeError(f"[중단] {label} 폴더 자리에 파일이 있다 → {work}")
+        if not (trusted or _is_tool_owned(work)):
+            raise RuntimeError(
+                f"[중단] {label} 폴더가 PICASO 가 만든 것이 아니다 → {work}\n"
+                f"       안의 자료를 지우지 않았다. 빈 폴더나 새 경로를 주거나,\n"
+                f"       직접 비운 뒤 다시 실행할 것.")
+        # Windows: 읽기전용·삭제지연 대응 — 무시 후 소멸 대기, 그래도 남으면 예외
+        shutil.rmtree(work, ignore_errors=True)
+        for _ in range(25):
+            if not work.exists():
+                break
+            time.sleep(0.2)
+        if work.exists():
+            shutil.rmtree(work)
+    work.parent.mkdir(parents=True, exist_ok=True)
+    return work
 
 
 def _swat_exe_candidates(executable: str) -> List[str]:

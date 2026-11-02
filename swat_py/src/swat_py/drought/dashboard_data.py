@@ -22,7 +22,6 @@ import hashlib
 import re
 import shutil
 import tempfile
-import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -371,18 +370,16 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
 
     예측기간이 관측 기록 밖이면 기상파일을 그 시점까지 연장한다(:func:`extend_weather_to`).
     연장 후에도 예측기간 행이 없으면 중단한다."""
-    if base_dir.parent.exists():
-        # Windows: 삭제지연/읽기전용 대응 — 오류 무시 후 소멸 대기
-        shutil.rmtree(base_dir.parent, ignore_errors=True)
-        for _ in range(25):
-            if not base_dir.parent.exists():
-                break
-            time.sleep(0.2)
+    # base 는 ensemble_base_dir() 가 만든 내부 경로다. 그래도 **자신만** 지운다 —
+    # 상위를 지우던 옛 코드가 --workdir 경로에서 사고를 냈다(2026-10-20).
+    from swat_py.runner.file_manager import mark_work_dir, reset_work_dir
+    reset_work_dir(base_dir, label="앙상블 base", trusted=True)
     # 검보정 master 에는 이전 실행의 출력물이 남아 있다(쿡 1.19GB 중 1.18GB).
     # 출력물은 SWAT+ 가 다시 만들므로 복사하지 않는다 — 멤버마다 base 를 통째로
     # 복사하는 구조라, 거르지 않으면 1,000멤버 한 기간에 1.17TB 를 복사하게 된다.
     from swat_py.runner.file_manager import copy_txtinout
     _cp = copy_txtinout(Path(cfg.CalibratedDir), base_dir)
+    mark_work_dir(base_dir)
     print(f"[base] 입력물 {_cp['files']}개 {_cp['bytes']/2**20:.1f}MB 복사 "
           f"(출력물 {_cp['skipped']}개 {_cp['skipped_bytes']/2**20:,.0f}MB 제외)")
     nyskip = int(cfg.CioNYSKIP)                   # 마스터 warm_up_years (단일 관리)

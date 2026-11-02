@@ -96,9 +96,11 @@ def run_top1_sim(cfg, work_dir: Optional[Path] = None) -> Path:
     default_dir = Path(cfg.DefaultDir)
     results_dir = _results_dir(cfg)
     work = Path(work_dir) if work_dir else results_dir / "_top1_run" / "TxtInOut"
-    if work.parent.exists():
-        shutil.rmtree(work.parent)
+    # 작업폴더는 **자신만** 비운다(상위 폴더 삭제 금지 — 2026-10-20 사고).
+    from swat_py.runner.file_manager import mark_work_dir, reset_work_dir
+    reset_work_dir(work, label="Top1 모의", trusted=work_dir is None)
     shutil.copytree(default_dir, work)
+    mark_work_dir(work)
 
     changes = load_best_changes(cfg, results_dir)
     print(f"[top1] 파라미터 {len(changes)}개 적용(지역보정 rows 포함)")
