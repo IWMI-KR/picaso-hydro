@@ -196,26 +196,48 @@ def _run_one(args) -> Dict:
         res: Dict = {"_member": member_csv.parent.name}
         # 이 멤버를 구동한 예측월 강수·기온(지역별 CSV 칼럼용) — 섬 단일예측이라 공통.
         res["_weather"] = _member_monthly_weather(member_csv, ym)
+        # ── 1차: 저수지 수원 ──────────────────────────────────────────────
+        #  reservoir_day.txt 물수지 → 월 만수대비% + 월말 저수위(ft).
+        #  전환유입을 쓰는 저수지는 **그 달에 실제 가져간 물**을 수원 채널별로 모아 둔다.
+        from swat_py.drought.reservoir_forecast import (
+            member_reservoir_series, subtract_diversion,
+        )
+        diverted: Dict[int, Dict[int, float]] = {}      # 수원 채널 gid → {월: m³}
+        for gid, name in outlets.items():
+            if gid not in reservoirs:
+                continue
+            params = reservoirs[gid]
+            ser = member_reservoir_series(
+                run, params, fyear=fyear, months=months, sdate=f"{fyear}-01-01")
+            if not ser:
+                continue
+            res[name] = {m: v["storage_pct"] for m, v in ser.items()}
+            res.setdefault("_wlevel", {})[name] = {
+                m: v["water_level_ft"] for m, v in ser.items()}
+            src_gid = getattr(params, "diversion_from_outlet", None)
+            if src_gid:
+                acc = diverted.setdefault(int(src_gid), {})
+                for m, v in ser.items():
+                    acc[m] = acc.get(m, 0.0) + float(v.get("diversion_m3", 0.0) or 0.0)
+
+        # ── 2차: 채널 수원 ────────────────────────────────────────────────
+        #  월단위 출력(channel_sd_mon.txt), 각 행=월평균 flo_out.
+        #  ★ 저수지로 전환해 간 물은 하천에 남아 있지 않다 — 빼지 않으면 같은 물을
+        #    두 번 세게 된다(제니토스 2026-10-20 §4-다). 1차에서 모은 실제 전환량을 뺀다.
+        month_year = {m: y for y, m in ym}
         for gid, name in outlets.items():
             if gid in reservoirs:
-                # 저수지 수원 — reservoir_day.txt 물수지 → 월 만수대비% + 월말 저수위(ft)
-                from swat_py.drought.reservoir_forecast import member_reservoir_series
-                ser = member_reservoir_series(
-                    run, reservoirs[gid], fyear=fyear, months=months,
-                    sdate=f"{fyear}-01-01")
-                if ser:
-                    res[name] = {m: v["storage_pct"] for m, v in ser.items()}
-                    res.setdefault("_wlevel", {})[name] = {
-                        m: v["water_level_ft"] for m, v in ser.items()}
                 continue
-            # 채널 수원 — 월단위 출력(channel_sd_mon.txt), 각 행=월말·월평균 flo_out.
             df = parse_channel_sd_day(run / "channel_sd_mon.txt", outlet=gid,
                                       sdate=f"{fyear}-01-01")
             if df is None:
                 continue
             df = df[in_ym(df["date"], ym).values]   # 연도별 월 — 해를 넘는 계절 포함
             mon = df.groupby(df["date"].dt.month)["flo_out"].mean()
-            res[name] = {int(m): float(v) for m, v in mon.items()}
+            vals = {int(m): float(v) for m, v in mon.items()}
+            if gid in diverted:
+                vals = subtract_diversion(vals, diverted[gid], month_year)
+            res[name] = vals
         return res
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

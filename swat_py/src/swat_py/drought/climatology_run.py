@@ -233,7 +233,7 @@ def setup_acidwg_weather(cfg, work: Path) -> str:
 
 
 def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
-                                syear: int, eyear: int) -> Optional[str]:
+                                syear: int, eyear: int) -> tuple:
     """저수지 수원의 **월 평년(만수대비%)** 을 산출해 저장한다.
 
     예측(dashboard_data)과 동일하게 ``reservoir_day.txt`` 의 저수지 유입 flo_in 으로
@@ -245,13 +245,20 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
 
     수위 열은 **관측 눈금**(staff gauge) 기준이다 — 대시보드가 수위 기준
     (thresholds.method=level_fraction)일 때 평년선이 된다.
+
+    Returns
+    -------
+    (csv_path | None, diverted) — ``diverted`` 는 {수원 채널 gis_id: {(연, 월): m³}} 로,
+    그 달에 저수지로 **실제 가져간 물**이다. 호출부가 수원 하천의 평년 유량에서
+    빼는 데 쓴다(이중계산 방지 — 예측 경로와 같은 규칙).
     """
     dc = getattr(cfg, "Drought", None)
     sources = [s for s in (getattr(dc, "sources", []) or [])
                if getattr(s, "type", "") == "reservoir"]
     res_txt = work / "reservoir_day.txt"
+    diverted: Dict[int, Dict[tuple, float]] = {}   # 수원채널 gid → {(연,월): 실제 전환 m³}
     if not sources or not res_txt.is_file():
-        return None
+        return None, diverted
 
     from swat_py.drought.reservoir_forecast import (
         build_reservoir_forecast_params,
@@ -286,6 +293,7 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
             daily["date"] = pd.to_datetime(daily["date"])
             per_month: Dict[int, list] = {m: [] for m in range(1, 13)}
             per_month_lvl: Dict[int, list] = {m: [] for m in range(1, 13)}
+            src_gid = getattr(params, "diversion_from_outlet", None)
             for yr, sub in daily.groupby(daily["date"].dt.year):
                 if yr < syear or yr > eyear:
                     continue
@@ -296,6 +304,11 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
                     withdrawal_monthly_m3s=params.withdrawal_monthly_m3s,
                     diversion_daily_m3=div,
                     diversion_target_m3=getattr(params, "diversion_target_m3", float("nan")))
+                if src_gid:
+                    acc = diverted.setdefault(int(src_gid), {})
+                    for m, v in ser.items():
+                        acc[(int(yr), int(m))] = (acc.get((int(yr), int(m)), 0.0)
+                                                  + float(v.get("diversion_m3", 0.0) or 0.0))
                 for m, v in ser.items():
                     per_month[m].append(float(v["storage_pct"]))
                     per_month_lvl[m].append(float(v["water_level_ft"]))
@@ -311,7 +324,7 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
             print(f"  [WARN] 저수지 '{s.name}' 평년 산출 실패({type(e).__name__}: {e})")
 
     if not cols:
-        return None
+        return None, diverted
     df = pd.DataFrame({"month": range(1, 13)})
     for name, mp in cols.items():
         df[name] = df["month"].map(mp)                       # 저수량 %
@@ -319,7 +332,7 @@ def write_reservoir_climatology(cfg, work: Path, out_dir: Path, tag: str,
         df[f"{name}_level_ft"] = df["month"].map(mp)         # 수위 ft(관측 눈금)
     path = out_dir / f"reservoir_monthly_avg_{tag}.csv"
     df.to_csv(path, index=False, encoding="utf-8-sig")
-    return str(path)
+    return str(path), diverted
 
 
 def run_climatology(cfg, *, workdir: Optional[Path] = None,
@@ -446,6 +459,34 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
         s = merged[["date", name]].dropna()
         print(f"  {name:<12s} n={len(s)} {s['date'].min().date()}~{s['date'].max().date()}")
 
+    # 저수지 수원 평년 — reservoir_day.txt 물수지를 예측과 동일하게 돌려 월 평년(만수대비%) 산출.
+    #  ★ 채널 평년보다 **먼저** 돌린다 — 저수지로 실제 전환해 간 물을 받아, 수원 하천의
+    #    평년 유량에서 빼야 하기 때문이다. 예측에서만 빼고 평년·FDC 임계는 빼지 않으면
+    #    기준과 예측이 서로 다른 물리를 쓰게 된다(쿡 기준 불일치와 같은 종류의 사고).
+    res_csv, diverted = write_reservoir_climatology(
+        cfg, work, out_dir, tag, syear + warmup, eyear)
+
+    # 전환분 차감 — merged 는 [date, 채널명…] 월단위 wide. 해당 수원 채널 열만 손댄다.
+    if diverted:
+        import calendar as _cal
+        gid_name = {int(g): n for g, n in outlets.items()}
+        for src_gid, by_ym in diverted.items():
+            name = gid_name.get(int(src_gid))
+            if name is None or name not in merged.columns:
+                print(f"  [WARN] 전환 수원 채널 gis_id={src_gid} 이 outlets 에 없다 "
+                      f"→ 하천 평년에서 전환분을 빼지 못했다(예측과 불일치 가능)")
+                continue
+            d = pd.to_datetime(merged["date"])
+            rate = d.map(lambda ts: (
+                by_ym.get((ts.year, ts.month), 0.0)
+                / (_cal.monthrange(ts.year, ts.month)[1] * 86400.0)))
+            before = float(pd.to_numeric(merged[name], errors="coerce").mean())
+            merged[name] = (pd.to_numeric(merged[name], errors="coerce")
+                            - rate.astype(float)).clip(lower=0.0)
+            after = float(pd.to_numeric(merged[name], errors="coerce").mean())
+            print(f"  [전환 차감] {name}: 평균 {before:.4f} → {after:.4f} m³/s "
+                  f"(저수지로 보낸 몫 제외)")
+
     # 결과 2종 저장(일자료 미생산). merged 는 이미 월단위 → to_monthly 는 월초 정규화(멱등).
     monthly = to_monthly(merged)
     monthly_csv = out_dir / f"channel_monthly_{tag}.csv"
@@ -453,9 +494,6 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
     mavg = to_monthly_avg(merged)
     mavg_csv = out_dir / f"channel_monthly_avg_{tag}.csv"
     mavg.to_csv(mavg_csv, index=False, encoding="utf-8-sig")
-
-    # 저수지 수원 평년 — reservoir_day.txt 물수지를 예측과 동일하게 돌려 월 평년(만수대비%) 산출.
-    res_csv = write_reservoir_climatology(cfg, work, out_dir, tag, syear + warmup, eyear)
 
     print("\n저장:")
     print(f"  monthly      : {monthly_csv}  shape={monthly.shape}")

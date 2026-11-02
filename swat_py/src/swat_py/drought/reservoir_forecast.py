@@ -25,6 +25,7 @@ capacity_fraction 임계 [100,85,65] 와 결합: %>100 Normal · 85~100 Watch ·
 """
 from __future__ import annotations
 
+import calendar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -308,6 +309,40 @@ def monthly_capacity_pct(
         daily_res, full_m3=full_m3, init_m3=init_m3, withdrawal_m3s=withdrawal_m3s,
         dead_m3=dead_m3, use_losses=use_losses, months=months)
     return {m: v["storage_pct"] for m, v in ser.items()}
+
+
+def subtract_diversion(flow_m3s: Dict[int, float], diverted_m3: Dict[int, float],
+                       month_year: Dict[int, int]) -> Dict[int, float]:
+    """수원 하천의 월평균 유량에서 **저수지로 실제 가져간 물**을 뺀다.
+
+    전환유입을 켜면 같은 물이 두 번 세어진다 — 저수지는 보충을 받아 수위가 오르는데,
+    수원 하천(Ngerikiil)의 예측 유량은 SWAT+ 채널 유량 그대로라 전환분이 남아 있었다
+    (제니토스 2026-10-20 지적 §4-다). 하천 단계 분류가 실제보다 후하게 나온다.
+
+    빼는 양은 *가져갈 수 있었던 잉여수*(:func:`diversion_daily_m3`)가 아니라
+    **물수지에서 실제로 가져간 양**(``monthly_capacity_series`` 의 ``diversion_m3``)이다.
+    저수지가 목표 수위에 가까우면 잉여수가 있어도 조금만 가져가기 때문이다.
+
+    Parameters
+    ----------
+    flow_m3s    : {월: 월평균 유량 m³/s} — 뺄 대상(수원 하천).
+    diverted_m3 : {월: 그 달에 실제 전환한 물 m³}.
+    month_year  : {월: 연도} — 해를 넘는 계절(NDJ·DJF)에서 2월 일수를 맞추기 위해 필요하다.
+
+    Returns
+    -------
+    {월: 유량} — 음수가 되면 0 으로 자른다(하천이 마른 것으로 본다).
+    """
+    out = dict(flow_m3s)
+    for m, vol in (diverted_m3 or {}).items():
+        if m not in out or not vol:
+            continue
+        yr = month_year.get(m)
+        if yr is None:
+            continue
+        days = calendar.monthrange(int(yr), int(m))[1]
+        out[m] = max(0.0, float(out[m]) - float(vol) / (days * _SECONDS_PER_DAY))
+    return out
 
 
 def member_reservoir_series(
