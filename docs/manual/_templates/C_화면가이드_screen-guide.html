@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>템플릿 C — 화면 가이드 (Screen Guide)</title>
+<style>
+  /* ── 템플릿 C : 화면 가이드 ───────────────────────────────────────────
+     화면 그림에 번호를 찍고 그 번호를 풀어 설명한다.
+     언어 전환 단추로 한 파일에서 한국어/English 를 오간다(인쇄 시 둘 다 나옴).
+     외부 자원 없음(오프라인). */
+
+  :root{
+    --ink:#17181a; --ink-2:#5b5f66; --line:#dfe3e8; --paper:#fff; --tint:#f5f7f9;
+    --accent:#185fa5; --accent-soft:#eaf1f8;
+    --normal:#2e7d4f; --watch:#b8860b; --warning:#c2601f; --crisis:#a32d2d;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0; background:#eceef1; color:var(--ink);
+       font-family:"Malgun Gothic","맑은 고딕","Segoe UI",system-ui,sans-serif;
+       font-size:15px; line-height:1.74;}
+  .page{width:220mm; margin:18px auto; padding:16mm 16mm 12mm;
+        background:var(--paper); box-shadow:0 2px 14px rgba(0,0,0,.12);}
+
+  /* 언어 전환 */
+  .langbar{display:flex; justify-content:flex-end; gap:6px; margin-bottom:10px;}
+  .langbar button{font:inherit; font-size:12.5px; padding:5px 15px; cursor:pointer;
+    border:1.5px solid var(--line); background:#fff; color:var(--ink-2); border-radius:20px;}
+  .langbar button.on{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600;}
+  .en{display:none;} body.lang-en .ko{display:none;} body.lang-en .en{display:block;}
+  span.en,span.ko{display:inline;} body.lang-en span.ko{display:none;}
+  body:not(.lang-en) span.en{display:none;}
+
+  h1{font-size:25px; margin:0 0 4px;}
+  .sub{color:var(--ink-2); font-size:14px; margin:0 0 20px;}
+
+  /* 화면 그림 + 번호 */
+  .shot{position:relative; border:1px solid var(--line); border-radius:7px;
+        background:#fff; padding:14px 16px 10px; margin:0 0 8px;
+        box-shadow:0 1px 3px rgba(0,0,0,.05);}
+  .shot .cap{font-size:11.5px; letter-spacing:.1em; color:var(--ink-2);
+             text-transform:uppercase; margin-bottom:9px;}
+  svg{display:block; width:100%; height:auto;}
+
+  .pin{display:inline-flex; align-items:center; justify-content:center;
+       width:22px; height:22px; border-radius:50%; background:var(--accent);
+       color:#fff; font-size:12.5px; font-weight:700; flex:none;}
+
+  /* 번호 설명 */
+  .keys{margin:16px 0 0;}
+  .key{display:grid; grid-template-columns:24px 1fr; gap:12px; padding:11px 0;
+       border-top:1px solid #edf0f3; break-inside:avoid;}
+  .key:first-child{border-top:0;}
+  .key h4{margin:0 0 3px; font-size:15.5px;}
+  .key p{margin:0; color:#303338;}
+
+  /* 해석 상자 — 이 화면에서 무엇을 결정하나 */
+  .decide{margin:22px 0 0; border:1.5px solid var(--accent); border-radius:7px; overflow:hidden;}
+  .decide .hd{background:var(--accent); color:#fff; padding:8px 15px;
+              font-size:13px; font-weight:700; letter-spacing:.05em;}
+  .decide table{width:100%; border-collapse:collapse; font-size:14.5px;}
+  .decide td{padding:9px 15px; border-bottom:1px solid #e8edf2; vertical-align:top;}
+  .decide tr:last-child td{border-bottom:0;}
+  .decide td.s{width:118px; font-weight:700; white-space:nowrap;}
+  td.s.n{color:var(--normal);} td.s.w{color:var(--watch);}
+  td.s.g{color:var(--warning);} td.s.c{color:var(--crisis);}
+
+  .callout{margin:18px 0 0; background:var(--accent-soft); border-radius:7px;
+           padding:13px 16px; font-size:14.5px;}
+  .callout b{color:var(--accent);}
+
+  .foot{margin-top:26px; padding-top:9px; border-top:1px solid var(--line);
+        display:flex; justify-content:space-between; font-size:11.5px; color:var(--ink-2);}
+
+  .spec{max-width:220mm; margin:26px auto 0; padding:16px 16mm; font-size:13.5px;
+        color:#3b3a35; background:#fffdf5; border:1px dashed #c9c3a8;}
+  .spec h4{margin:0 0 7px; font-size:14px;} .spec ul{margin:5px 0 0 18px; padding:0;}
+
+  @media print{
+    body{background:#fff;} .page{margin:0; box-shadow:none; width:auto;}
+    .langbar,.spec{display:none;}
+    .en,.ko{display:block !important;}   /* 인쇄물엔 두 언어 모두 */
+  }
+</style>
+</head>
+<body class="lang-ko">
+
+<div class="page">
+  <div class="langbar">
+    <button class="on" onclick="document.body.className='lang-ko';sel(this)">한국어</button>
+    <button onclick="document.body.className='lang-en';sel(this)">English</button>
+  </div>
+
+  <h1><span class="ko">화면 ③ — 저수지 수위 전망</span><span class="en">Screen ③ — Water Level Outlook</span></h1>
+  <p class="sub"><span class="ko">Ngerimel 댐 · 이 화면 하나로 이번 분기 급수 판단을 합니다</span>
+                 <span class="en">Ngerimel Dam · this single screen drives the quarterly supply decision</span></p>
+
+  <div class="shot">
+    <div class="cap">Water Level Outlook — Ngerimel Dam</div>
+    <svg viewBox="0 0 900 330" role="img" aria-label="저수지 수위 전망 그래프 예시">
+      <!-- 단계 띠 : 23.0 → y=30, 24px/ft 축소배율 10px/ft -->
+      <rect x="70" y="30"  width="760" height="11.5" fill="#e7f0de"/>
+      <rect x="70" y="41.5" width="760" height="23"  fill="#fbefd4"/>
+      <rect x="70" y="64.5" width="760" height="46"  fill="#f7dcc6"/>
+      <rect x="70" y="110.5" width="760" height="150" fill="#f2cfce"/>
+      <line x1="70" y1="30"    x2="830" y2="30"    stroke="#b8b6ae" stroke-width="1.4"/>
+      <line x1="70" y1="41.5"  x2="830" y2="41.5"  stroke="#b8b6ae" stroke-width=".8"/>
+      <line x1="70" y1="64.5"  x2="830" y2="64.5"  stroke="#b8b6ae" stroke-width=".8"/>
+      <line x1="70" y1="110.5" x2="830" y2="110.5" stroke="#b8b6ae" stroke-width=".8"/>
+      <line x1="70" y1="260"   x2="830" y2="260"   stroke="#b8b6ae" stroke-width="1.4"/>
+      <g font-size="11" fill="#5b5f66" font-family="Segoe UI,sans-serif">
+        <text x="63" y="34"    text-anchor="end">23.00</text>
+        <text x="63" y="45.5"  text-anchor="end">21.85</text>
+        <text x="63" y="68.5"  text-anchor="end">19.55</text>
+        <text x="63" y="114.5" text-anchor="end">14.95</text>
+        <text x="63" y="264"   text-anchor="end">8.00</text>
+        <text x="836" y="34">100%</text><text x="836" y="45.5">95%</text>
+        <text x="836" y="68.5">85%</text><text x="836" y="114.5">65%</text>
+        <text x="26" y="150" text-anchor="middle" transform="rotate(-90 26 150)">feet</text>
+      </g>
+      <g font-size="11.5" fill="#44484e" font-family="Segoe UI,sans-serif">
+        <text x="78" y="39">Normal</text><text x="78" y="57">Stage 1 Watch</text>
+        <text x="78" y="88">Stage 2 Warning</text><text x="78" y="135">Stage 3 Crisis</text>
+      </g>
+      <!-- 예측 띠 -->
+      <polygon points="120,30 320,30 520,30 740,30 740,96 520,78 320,48" fill="#378add" fill-opacity=".15"/>
+      <polygon points="120,30 320,30 520,30 740,30 740,56 520,47 320,36" fill="#378add" fill-opacity=".28"/>
+      <polyline points="120,30 320,32 520,39 740,44" fill="none" stroke="#185fa5" stroke-width="2.6"/>
+      <circle cx="120" cy="30" r="4.5" fill="#185fa5"/>
+      <!-- 관측 -->
+      <polyline points="120,30 60,30" fill="none" stroke="#17181a" stroke-width="2"/>
+      <g font-size="11" fill="#5b5f66" font-family="Segoe UI,sans-serif">
+        <text x="120" y="278" text-anchor="middle">now</text>
+        <text x="320" y="278" text-anchor="middle">Apr</text>
+        <text x="520" y="278" text-anchor="middle">May</text>
+        <text x="740" y="278" text-anchor="middle">Jun</text>
+      </g>
+      <!-- 번호 핀 -->
+      <g font-family="Segoe UI,sans-serif" font-size="12" font-weight="700">
+        <circle cx="46"  cy="45"  r="11" fill="#185fa5"/><text x="46"  y="49"  fill="#fff" text-anchor="middle">1</text>
+        <circle cx="200" cy="48"  r="11" fill="#185fa5"/><text x="200" y="52"  fill="#fff" text-anchor="middle">2</text>
+        <circle cx="600" cy="63"  r="11" fill="#185fa5"/><text x="600" y="67"  fill="#fff" text-anchor="middle">3</text>
+        <circle cx="856" cy="45"  r="11" fill="#185fa5"/><text x="856" y="49"  fill="#fff" text-anchor="middle">4</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="keys">
+    <div class="key"><span class="pin">1</span>
+      <div>
+        <h4><span class="ko">왼쪽 눈금 — 수위(ft)</span><span class="en">Left axis — water level (ft)</span></h4>
+        <p><span class="ko">현장 수위계에서 읽는 그 숫자입니다. 해발고도가 아닙니다. 맨 위 23.00 이 만수위입니다.</span>
+           <span class="en">The same number you read on the staff gauge — not elevation above sea level. 23.00 at the top is full supply.</span></p>
+      </div>
+    </div>
+    <div class="key"><span class="pin">2</span>
+      <div>
+        <h4><span class="ko">굵은 선 — 예측 중앙값</span><span class="en">Bold line — forecast median</span></h4>
+        <p><span class="ko">1,000개 예측의 한가운데 값입니다. 연한 띠는 예측이 흩어진 범위(50%·90%)입니다.</span>
+           <span class="en">The middle of 1,000 forecast members. The shaded bands show where 50% and 90% of them fall.</span></p>
+      </div>
+    </div>
+    <div class="key"><span class="pin">3</span>
+      <div>
+        <h4><span class="ko">배경 색 띠 — 급수 단계</span><span class="en">Background bands — supply stages</span></h4>
+        <p><span class="ko">선이 어느 띠에 들어 있는지가 그달의 단계입니다. 경계는 만수 23.00 ft 의 95·85·65% 입니다.</span>
+           <span class="en">Whichever band the line sits in is that month's stage. Boundaries are 95, 85 and 65% of the 23.00 ft full supply.</span></p>
+      </div>
+    </div>
+    <div class="key"><span class="pin">4</span>
+      <div>
+        <h4><span class="ko">오른쪽 — 만수 대비 %</span><span class="en">Right side — % of full supply</span></h4>
+        <p><span class="ko">같은 경계를 백분율로 본 것입니다. 보고서에 쓸 때 편합니다.</span>
+           <span class="en">The same boundaries expressed as a percentage — convenient for reporting.</span></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="decide">
+    <div class="hd"><span class="ko">이 화면을 보고 무엇을 하나</span><span class="en">What to do with this screen</span></div>
+    <table>
+      <tr><td class="s n">Normal</td><td><span class="ko">평상 운영. 다음 달 화면을 다시 확인합니다.</span><span class="en">Normal operation. Check again next month.</span></td></tr>
+      <tr><td class="s w">Watch</td><td><span class="ko">주 1회 실제 수위를 재고 기록합니다.</span><span class="en">Measure and log the actual level weekly.</span></td></tr>
+      <tr><td class="s g">Warning</td><td><span class="ko">절수 안내문을 준비하고 보충 가능 여부를 확인합니다.</span><span class="en">Draft a conservation advisory; check whether transfer is possible.</span></td></tr>
+      <tr><td class="s c">Crisis</td><td><span class="ko">제한급수 검토. 국가비상위원회(NEC)에 보고합니다.</span><span class="en">Consider rationing. Report to the National Emergency Committee (NEC).</span></td></tr>
+    </table>
+  </div>
+
+  <div class="callout">
+    <b><span class="ko">선이 끊겨 있다면</span><span class="en">If a line is broken</span></b>
+    <span class="ko"> — 고장이 아닙니다. 그 기간에 관측 자료가 없다는 뜻이며, 화면 아래에 어느 달이 왜 비었는지 적혀 있습니다.</span>
+    <span class="en"> — nothing is broken. It means there is no observation for that period; the note below the chart says which months and why.</span>
+  </div>
+
+  <div class="foot">
+    <span>PICASO-Hydro <span class="ko">화면 가이드</span><span class="en">Screen Guide</span></span>
+    <span>IWMI · APCC · 2026</span>
+  </div>
+</div>
+
+<div class="spec">
+  <h4>템플릿 C — 화면 가이드 (Screen Guide)</h4>
+  <ul>
+    <li><b>성격</b> — 사용자가 <b>실제로 보는 화면</b>을 그대로 싣고 번호를 찍어 해설.
+        “무엇을 눌러라”가 아니라 <b>“이 숫자를 어떻게 읽고 무엇을 결정하나”</b>에 집중.</li>
+    <li><b>강점</b> — 비전문가가 가장 빨리 이해함. 화면과 1:1로 대응해 길을 잃지 않음.
+        단계별 행동이 표로 바로 붙어 있어 실무로 이어짐.</li>
+    <li><b>약점</b> — <b>화면이 바뀌면 그림을 다시 만들어야 함</b>(유지보수 부담).
+        설치·실행 같은 화면 없는 작업은 이 형식으로 담기 어려움.</li>
+    <li><b>이중 언어</b> — 위 단추로 전환(한 파일). <b>인쇄하면 두 언어가 모두</b> 나옴.</li>
+    <li><b>적합</b> — 예측 결과를 해석하는 일상 업무 / 기상청·물관리 담당자 대상.</li>
+  </ul>
+</div>
+
+<script>
+function sel(b){for(const x of document.querySelectorAll('.langbar button'))x.classList.remove('on');b.classList.add('on');}
+</script>
+</body>
+</html>

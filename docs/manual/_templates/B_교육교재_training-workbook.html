@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>템플릿 B — 교육 교재 (Training Workbook)</title>
+<style>
+  /* ── 템플릿 B : 교육 교재 ─────────────────────────────────────────────
+     한·영을 좌우로 나란히 둔다. 강의하며 양쪽을 동시에 가리킬 수 있다.
+     외부 자원 없음(오프라인). */
+
+  :root{
+    --ink:#20201d;  --ink-2:#5d5c55;  --line:#ddd9ce;
+    --paper:#fffdf9; --tint:#f4f1e8;
+    --ko:#1a4f7a;   --en:#6b5b3e;
+    --normal:#2e7d4f; --watch:#b8860b; --warning:#c2601f; --crisis:#a32d2d;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:#e6e3da; color:var(--ink);
+    font-family:"Malgun Gothic","맑은 고딕","Segoe UI",system-ui,sans-serif;
+    font-size:15px; line-height:1.76;
+  }
+  .page{width:230mm; margin:18px auto; padding:20mm 16mm 14mm;
+        background:var(--paper); box-shadow:0 2px 14px rgba(0,0,0,.13);}
+
+  /* 단원 머리 */
+  .unit{display:flex; align-items:center; gap:13px; margin-bottom:6px;}
+  .unit .badge{background:var(--ko); color:#fff; font-size:12px; font-weight:700;
+               letter-spacing:.1em; padding:4px 11px; border-radius:3px;}
+  .unit .time{font-size:12.5px; color:var(--ink-2);}
+  h1{font-size:26px; margin:2px 0 3px; letter-spacing:-.01em;}
+  h1 small{display:block; font-size:15px; font-weight:600; color:var(--en); margin-top:3px;}
+
+  /* 학습 목표 */
+  .goal{margin:18px 0 26px; border:1.5px solid var(--line); border-radius:5px; overflow:hidden;}
+  .goal .hd{background:var(--tint); padding:8px 15px; font-size:13px; font-weight:700;
+            letter-spacing:.05em; border-bottom:1px solid var(--line);}
+  .goal .bd{padding:12px 15px; display:grid; grid-template-columns:1fr 1fr; gap:0 26px;}
+  .goal ol{margin:0; padding-left:19px;} .goal li{margin:3px 0;}
+  .goal .e{color:var(--en); font-size:14px;}
+
+  /* 좌우 2단 — 한국어 / English */
+  .duo{display:grid; grid-template-columns:1fr 1fr; gap:0 26px; margin:0 0 20px;
+       break-inside:avoid;}
+  .duo > div{min-width:0;}
+  .duo .side-en{color:#3f3b32; border-left:1px solid var(--line); padding-left:26px;}
+  .duo h3{font-size:17px; margin:0 0 7px; color:var(--ko);}
+  .duo .side-en h3{color:var(--en);}
+  .duo p{margin:0 0 9px;}
+
+  /* 개념 상자 */
+  .concept{background:#f2f6fa; border:1px solid #cfdeea; border-radius:5px;
+           padding:13px 16px; margin:16px 0; break-inside:avoid;}
+  .concept .t{font-weight:700; color:var(--ko); font-size:14px; margin-bottom:5px;}
+  .concept .t::before{content:"개념  "; font-size:11px; letter-spacing:.14em; opacity:.65;}
+
+  /* 왜? 상자 */
+  .why{background:#fcf7ec; border:1px solid #e4d5ae; border-radius:5px;
+       padding:13px 16px; margin:16px 0; break-inside:avoid;}
+  .why .t{font-weight:700; color:#7a5c16; font-size:14px; margin-bottom:5px;}
+  .why .t::before{content:"왜 이렇게 하나?  "; font-size:11px; letter-spacing:.1em; opacity:.7;}
+
+  /* 단계 그림 */
+  .bands{margin:18px 0; border:1px solid var(--line); border-radius:5px; overflow:hidden;}
+  .band{display:flex; align-items:center; gap:14px; padding:11px 16px;
+        border-bottom:1px solid #eceadf; font-size:14.5px;}
+  .band:last-child{border-bottom:0;}
+  .band .sw{width:7px; align-self:stretch; border-radius:2px;}
+  .band .nm{width:92px; font-weight:700;}
+  .band .vl{width:128px; font-variant-numeric:tabular-nums; color:var(--ink-2);}
+  .band.n{background:#f3faf5;} .band.n .sw{background:var(--normal);} .band.n .nm{color:var(--normal);}
+  .band.w{background:#fdf8ea;} .band.w .sw{background:var(--watch);}  .band.w .nm{color:var(--watch);}
+  .band.g{background:#fdf4ec;} .band.g .sw{background:var(--warning);}.band.g .nm{color:var(--warning);}
+  .band.c{background:#fdf2f2;} .band.c .sw{background:var(--crisis);} .band.c .nm{color:var(--crisis);}
+
+  /* 연습문제 */
+  .quiz{margin:24px 0 0; border-top:2.5px solid var(--ko); padding-top:14px;}
+  .quiz h3{font-size:15px; margin:0 0 10px; letter-spacing:.04em;}
+  .q{margin:0 0 14px; break-inside:avoid;}
+  .q .ask{font-weight:600;} .q .ask .e{display:block; color:var(--en); font-weight:500; font-size:13.5px;}
+  .blank{display:inline-block; min-width:110px; border-bottom:1.5px dotted #9b978a; height:1.15em;}
+
+  .foot{margin-top:28px; padding-top:9px; border-top:1px solid var(--line);
+        display:flex; justify-content:space-between; font-size:11.5px; color:var(--ink-2);}
+
+  .spec{max-width:230mm; margin:26px auto 0; padding:16px 16mm; font-size:13.5px;
+        color:#3b3a35; background:#fffdf5; border:1px dashed #c9c3a8;}
+  .spec h4{margin:0 0 7px; font-size:14px;}
+  .spec ul{margin:5px 0 0 18px; padding:0;}
+
+  @media print{ body{background:#fff;} .page{margin:0; box-shadow:none; width:auto;} .spec{display:none;} }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <div class="unit">
+    <span class="badge">UNIT 3</span>
+    <span class="time">강의 25분 + 실습 15분</span>
+  </div>
+  <h1>급수 단계 읽기
+    <small>Reading the Water Supply Stage</small>
+  </h1>
+
+  <div class="goal">
+    <div class="hd">학습 목표 · Learning Objectives</div>
+    <div class="bd">
+      <ol>
+        <li>네 단계의 뜻을 설명할 수 있다</li>
+        <li>화면에서 이번 달 단계를 찾을 수 있다</li>
+        <li>확률이 갈릴 때 어떻게 읽는지 안다</li>
+      </ol>
+      <ol class="e">
+        <li>Explain what the four stages mean</li>
+        <li>Find this month's stage on the screen</li>
+        <li>Interpret a split probability</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="duo">
+    <div>
+      <h3>1. 단계란 무엇인가</h3>
+      <p>급수 단계는 저수지에 물이 얼마나 남았는지를 <b>네 칸</b>으로 나눈 것입니다.
+         숫자 하나만 보고 판단하기 어려우니, 운영자가 바로 행동으로 옮길 수 있게
+         구간으로 묶어 둔 것입니다.</p>
+      <p>Ngerimel 댐은 <b>수위(ft)</b> 를 기준으로 나눕니다. 저수량(부피)이 아닙니다.</p>
+    </div>
+    <div class="side-en">
+      <h3>1. What is a stage?</h3>
+      <p>A water supply stage divides the reservoir's remaining water into
+         <b>four bands</b>. A single number is hard to act on, so the bands group
+         it into levels an operator can respond to.</p>
+      <p>Ngerimel Dam uses <b>water level (ft)</b>, not stored volume.</p>
+    </div>
+  </div>
+
+  <div class="concept">
+    <div class="t">만수위 23.0 ft · Full supply level</div>
+    여수로 마루까지 물이 찼을 때의 수위계 눈금입니다. 모든 단계 경계는 이 값의
+    백분율로 정합니다. <b>95% = 21.85 ft</b>, 85% = 19.55 ft, 65% = 14.95 ft.
+  </div>
+
+  <div class="bands">
+    <div class="band n"><span class="sw"></span><span class="nm">Normal</span>
+      <span class="vl">21.85 ft 이상</span><span>평상 운영 · Normal operation</span></div>
+    <div class="band w"><span class="sw"></span><span class="nm">Watch</span>
+      <span class="vl">19.55 – 21.85</span><span>주 1회 확인 · Weekly check</span></div>
+    <div class="band g"><span class="sw"></span><span class="nm">Warning</span>
+      <span class="vl">14.95 – 19.55</span><span>절수 안내 준비 · Prepare advisory</span></div>
+    <div class="band c"><span class="sw"></span><span class="nm">Crisis</span>
+      <span class="vl">14.95 ft 미만</span><span>제한급수 검토 · Consider rationing</span></div>
+  </div>
+
+  <div class="why">
+    <div class="t">왜 100%가 아니라 95%에서 Watch 가 시작되나</div>
+    경계를 만수(100%)에 두면 실측 수위가 늘 만수 바로 아래라 <b>거의 항상 Watch</b> 가
+    되어 버립니다. 실제로 0.06 ft 차이로 단계가 갈린 적이 있습니다.
+    95%로 내리면 만수 근처의 일상적인 오르내림은 Normal 로 두고, 실제로 물이
+    줄어들 때만 Watch 가 됩니다.
+  </div>
+
+  <div class="duo">
+    <div>
+      <h3>2. 확률이 갈릴 때</h3>
+      <p>예측은 1,000개를 돌려 몇 개가 각 단계였는지로 나옵니다.
+         <b>Normal 60% · Watch 40%</b> 이라면 “대체로 괜찮지만 지켜볼 것”입니다.
+         한 단계가 70%를 넘으면 그 단계로 보고 움직여도 됩니다.</p>
+    </div>
+    <div class="side-en">
+      <h3>2. When probabilities are split</h3>
+      <p>The forecast runs 1,000 members and reports how many fell in each stage.
+         <b>Normal 60% · Watch 40%</b> means "mostly fine, but keep watching".
+         If one stage exceeds 70%, you may act on that stage.</p>
+    </div>
+  </div>
+
+  <div class="quiz">
+    <h3>확인 문제 · Check Your Understanding</h3>
+    <div class="q">
+      <div class="ask">Q1. 수위가 20.4 ft 입니다. 어느 단계입니까?
+        <span class="e">The level is 20.4 ft. Which stage?</span></div>
+      <div>답 <span class="blank"></span></div>
+    </div>
+    <div class="q">
+      <div class="ask">Q2. Warning 45% · Crisis 40% 로 나왔습니다. 어떻게 보고해야 할까요?
+        <span class="e">Warning 45%, Crisis 40%. How would you report this?</span></div>
+      <div><span class="blank" style="min-width:340px"></span></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>PICASO-Hydro 교육 교재 · Unit 3</span>
+    <span>IWMI · APCC · 2026</span>
+  </div>
+</div>
+
+<div class="spec">
+  <h4>템플릿 B — 교육 교재 (Training Workbook)</h4>
+  <ul>
+    <li><b>성격</b> — 강의용. 학습 목표 → 개념 → 왜 그런가 → 연습문제 흐름.</li>
+    <li><b>강점</b> — <b>한·영 좌우 병기</b>라 강의하며 양쪽을 동시에 가리킬 수 있음.
+        “왜 이렇게 하나” 상자가 있어 질문에 답이 됨. 연습문제로 이해도 확인 가능.</li>
+    <li><b>약점</b> — 분량이 가장 큼(같은 내용에 약 2배 지면). 현장에서 급히 찾아보기엔
+        무거움. 좌우 병기라 <b>용지가 넓어야</b> 함(A4 가로 또는 B4).</li>
+    <li><b>이중 언어</b> — 한 파일에 좌우 병기. 번역이 어긋나면 바로 보이는 장점.</li>
+    <li><b>적합</b> — 현지 초청연수·워크숍 교재 / 신규 담당자 교육.</li>
+  </ul>
+</div>
+
+</body>
+</html>

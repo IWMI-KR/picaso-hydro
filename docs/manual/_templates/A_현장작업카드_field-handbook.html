@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>템플릿 A — 현장 작업카드 (Field Handbook)</title>
+<style>
+  /* ── 템플릿 A : 현장 작업카드 ─────────────────────────────────────────
+     인터넷 없이 열리도록 외부 자원을 쓰지 않는다(쿡·팔라우 현장 고려).
+     흑백 복사해도 읽히도록 색에 의존하지 않고 굵기·테두리로 구분한다. */
+
+  :root{
+    --ink:#1b1b19;      --ink-2:#55544e;   --line:#d8d6cf;
+    --paper:#ffffff;    --tint:#f6f5f1;
+    --normal:#2e7d4f;   --watch:#b8860b;   --warning:#c2601f;  --crisis:#a32d2d;
+    --accent:#185fa5;
+  }
+  *{box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
+  body{
+    margin:0; background:#e9e7e1; color:var(--ink);
+    font-family:"Malgun Gothic","맑은 고딕","Segoe UI",system-ui,sans-serif;
+    font-size:15.5px; line-height:1.72;
+  }
+  .page{
+    width:210mm; min-height:297mm; margin:18px auto; padding:20mm 18mm 16mm;
+    background:var(--paper); box-shadow:0 2px 14px rgba(0,0,0,.14);
+  }
+
+  /* 머리글 */
+  .crumb{display:flex; justify-content:space-between; align-items:baseline;
+         border-bottom:2.5px solid var(--ink); padding-bottom:7px; margin-bottom:22px;}
+  .crumb .sys{font-weight:700; letter-spacing:.14em; font-size:12px;}
+  .crumb .no{font-size:12px; color:var(--ink-2);}
+
+  h1{font-size:27px; line-height:1.3; margin:0 0 4px; letter-spacing:-.01em;}
+  h1 .en{display:block; font-size:15px; font-weight:600; color:var(--ink-2);
+         letter-spacing:0; margin-top:3px;}
+  .lede{margin:14px 0 26px; padding:13px 16px; background:var(--tint);
+        border-left:4px solid var(--accent); font-size:14.5px;}
+
+  /* 작업 단계 — 큰 번호 */
+  .step{display:grid; grid-template-columns:44px 1fr; gap:14px; margin:0 0 20px;
+        break-inside:avoid;}
+  .step .n{
+    width:38px; height:38px; border-radius:50%; background:var(--ink); color:#fff;
+    display:flex; align-items:center; justify-content:center;
+    font-size:18px; font-weight:700; margin-top:1px;
+  }
+  .step h3{margin:4px 0 6px; font-size:17.5px;}
+  .step h3 .en{font-weight:500; color:var(--ink-2); font-size:13.5px;}
+  .step p{margin:0 0 7px;}
+
+  /* 체크 목록 */
+  ul.check{list-style:none; padding:0; margin:9px 0;}
+  ul.check li{position:relative; padding-left:27px; margin:5px 0;}
+  ul.check li::before{
+    content:""; position:absolute; left:0; top:.42em;
+    width:13px; height:13px; border:1.8px solid var(--ink-2); border-radius:2px;
+  }
+
+  /* 알림 상자 */
+  .note{border:1.5px solid var(--line); border-left-width:5px; padding:12px 15px;
+        margin:14px 0; background:#fff; break-inside:avoid;}
+  .note b{display:block; margin-bottom:4px; font-size:13.5px; letter-spacing:.02em;}
+  .note.warn{border-left-color:var(--crisis); background:#fdf5f4;}
+  .note.tip {border-left-color:var(--normal); background:#f4faf6;}
+
+  /* 단계 색 막대 */
+  table.stage{width:100%; border-collapse:collapse; margin:16px 0; font-size:14.5px;}
+  table.stage th,table.stage td{border:1px solid var(--line); padding:9px 11px; text-align:left;}
+  table.stage th{background:var(--tint); font-size:13px; letter-spacing:.03em;}
+  table.stage td.lv{font-weight:700; border-left-width:7px;}
+  td.lv.n{border-left-color:var(--normal); color:var(--normal);}
+  td.lv.w{border-left-color:var(--watch);  color:var(--watch);}
+  td.lv.g{border-left-color:var(--warning);color:var(--warning);}
+  td.lv.c{border-left-color:var(--crisis); color:var(--crisis);}
+  td.num{font-variant-numeric:tabular-nums; white-space:nowrap;}
+
+  /* 바닥글 */
+  .foot{margin-top:30px; padding-top:9px; border-top:1px solid var(--line);
+        display:flex; justify-content:space-between; font-size:11.5px; color:var(--ink-2);}
+
+  /* 견본 표시 */
+  .spec{max-width:210mm; margin:26px auto 0; padding:16px 18mm; font-size:13.5px;
+        color:#3b3a35; background:#fffdf5; border:1px dashed #c9c3a8;}
+  .spec h4{margin:0 0 7px; font-size:14px;}
+  .spec ul{margin:5px 0 0 18px; padding:0;}
+
+  @media print{
+    body{background:#fff;} .page{margin:0; box-shadow:none; width:auto; min-height:0;}
+    .spec{display:none;}
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <div class="crumb">
+    <span class="sys">PICASO-HYDRO · 현장 작업카드</span>
+    <span class="no">카드 3-2 · 쿡 제도 / 팔라우</span>
+  </div>
+
+  <h1>급수 단계 읽기
+    <span class="en">Reading the Water Supply Stage</span>
+  </h1>
+
+  <div class="lede">
+    화면에 나온 <b>단계</b>가 무엇을 뜻하는지, 그리고 단계별로 무엇을 해야 하는지 정리한
+    카드입니다. 이 카드만 보고 끝까지 할 수 있도록 되어 있습니다.
+    <b>소요 시간 약 10분 · 컴퓨터 지식 필요 없음</b>
+  </div>
+
+  <div class="step">
+    <div class="n">1</div>
+    <div>
+      <h3>화면에서 이번 달 값을 찾습니다 <span class="en">Find this month's value</span></h3>
+      <p>Water Level Outlook 그래프에서 <b>굵은 파란 선</b>이 예측 중앙값입니다.
+         연한 띠는 예측이 흩어진 범위입니다.</p>
+      <ul class="check">
+        <li>왼쪽 눈금이 <b>ft(피트)</b> 인지 확인합니다</li>
+        <li>맨 위 <b>23.0 ft</b> 가 만수위입니다</li>
+        <li>가로축에서 이번 달 칸을 찾습니다</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="n">2</div>
+    <div>
+      <h3>단계 띠와 견줍니다 <span class="en">Compare with the stage bands</span></h3>
+      <p>배경의 색 띠가 급수 단계입니다. 선이 어느 띠에 들어 있는지만 보면 됩니다.</p>
+
+      <table class="stage">
+        <tr><th>단계 Stage</th><th>수위 Level</th><th>뜻 Meaning</th></tr>
+        <tr><td class="lv n">Normal</td><td class="num">21.85 ft 이상</td><td>평상 운영</td></tr>
+        <tr><td class="lv w">Watch</td><td class="num">19.55 – 21.85</td><td>주 1회 수위 확인</td></tr>
+        <tr><td class="lv g">Warning</td><td class="num">14.95 – 19.55</td><td>절수 안내 준비</td></tr>
+        <tr><td class="lv c">Crisis</td><td class="num">14.95 ft 미만</td><td>제한급수 검토</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="n">3</div>
+    <div>
+      <h3>확률 표를 함께 봅니다 <span class="en">Check the probability table</span></h3>
+      <p>단계는 하나로 떨어지지 않습니다. 1,000개의 예측 중 몇 개가 각 단계였는지를
+         백분율로 보여 줍니다. <b>가장 큰 숫자</b>가 그달의 대표 단계입니다.</p>
+      <div class="note tip">
+        <b>읽는 요령</b>
+        Normal 60% · Watch 40% 이라면 “대체로 괜찮지만 지켜볼 것”으로 읽습니다.
+        한 단계가 70%를 넘으면 그 단계로 보고 움직여도 됩니다.
+      </div>
+    </div>
+  </div>
+
+  <div class="note warn">
+    <b>주의 — 수위 숫자의 기준</b>
+    화면의 수위는 <b>현장 수위계(staff gauge) 눈금</b>입니다. 해발고도가 아닙니다.
+    댐에서 직접 읽은 숫자를 그대로 비교하시면 됩니다.
+  </div>
+
+  <div class="note">
+    <b>빈칸이 보일 때</b>
+    Observed(실측) 선이 끊겨 있으면 고장이 아니라 <b>그 기간 자료가 없는 것</b>입니다.
+    화면 아래 안내 문구에 어느 달이 왜 비었는지 적혀 있습니다.
+  </div>
+
+  <div class="foot">
+    <span>PICASO-Hydro 사용자 매뉴얼 · 2026</span>
+    <span>IWMI · APCC</span>
+  </div>
+</div>
+
+<div class="spec">
+  <h4>템플릿 A — 현장 작업카드 (Field Handbook)</h4>
+  <ul>
+    <li><b>성격</b> — 한 가지 일 = 한 장. 책상에서 보며 따라 하는 용도.</li>
+    <li><b>강점</b> — 큰 번호와 체크박스로 “어디까지 했는지” 가 분명. 흑백 복사·코팅해
+        댐 현장에 두기 좋음. 분량이 가장 적음.</li>
+    <li><b>약점</b> — 배경 설명이 거의 없어 <b>교육 교재로는 부족</b>. 왜 그런지 묻는
+        질문에 답하지 못함.</li>
+    <li><b>이중 언어</b> — 제목·소제목만 영문 병기, 본문은 언어별 <b>파일 분리</b>
+        (현장에서 한 언어만 보게).</li>
+    <li><b>적합</b> — 매달 반복하는 정해진 작업 / 인수인계용.</li>
+  </ul>
+</div>
+
+</body>
+</html>
