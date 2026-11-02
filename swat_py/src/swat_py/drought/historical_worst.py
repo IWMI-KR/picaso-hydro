@@ -204,13 +204,20 @@ def _season_mean(flows: List[Tuple[int, int, float]]) -> float:
 
 # ── 관측 저수위 → 초기 저수위(MSL) ──────────────────────────────────────────────
 
-def load_obs_level_msl(obs_csv: Path, *, col: str, datum_offset_ft: float
+def load_obs_level_msl(obs_csv: Path, *, col: str, datum_offset_ft: float,
+                       dead_level_ft: float = float("nan")
                        ) -> Tuple[Dict[Tuple[int, int], float], Dict[int, float]]:
     """관측 수위 CSV → (연·월 평균 MSL, 월별 climatology 평균 MSL).
 
     MSL = 관측값 − datum_offset_ft (곡선 datum 정합; reader 는 곡선+offset=관측이므로 역변환).
+
+    ``dead_level_ft``(자 눈금 사수위)를 주면 그보다 낮은 값을 결측으로 돌린다 —
+    결측을 0 으로 적어 둔 행이 월평균을 끌어내리는 것을 막는다(업체 지적 §5).
     """
+    from swat_py.io.reservoir import sanitize_observed_level
     df = pd.read_csv(obs_csv, parse_dates=["date"])
+    df, _ = sanitize_observed_level(df, col, dead_level_ft=dead_level_ft,
+                                    label=f"{Path(obs_csv).name}:{col}")
     df = df[["date", col]].dropna()
     df["msl"] = pd.to_numeric(df[col], errors="coerce") - float(datum_offset_ft)
     df = df.dropna(subset=["msl"])
@@ -623,9 +630,11 @@ def build_historical_worst(cfg, *, min_frac: float = 0.90,
         full_lvl = _full_level(res_params, res_rcfg)
         obs_csv, obs_col = _find_reservoir_obs(cfg, res_params)
         if obs_csv and Path(obs_csv).is_file():
+            from swat_py.io.reservoir import dead_level_gauge_ft
             obs_ym, obs_clim = load_obs_level_msl(
                 Path(obs_csv), col=obs_col,
-                datum_offset_ft=getattr(res_rcfg, "obs_datum_offset_ft", 0.0))
+                datum_offset_ft=getattr(res_rcfg, "obs_datum_offset_ft", 0.0),
+                dead_level_ft=dead_level_gauge_ft(res_rcfg))
             log_lines.append("")
             log_lines.append(f"저수지 관측수위: {Path(obs_csv).name} col={obs_col} "
                              f"datum_offset={getattr(res_rcfg, 'obs_datum_offset_ft', 0.0)} "

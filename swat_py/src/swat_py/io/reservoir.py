@@ -456,3 +456,72 @@ def update_hydrology_res(
 
     after = {c: params[c] for c in _HYDRO_RES_VALCOLS}
     return {"before": before, "after": after}
+
+
+# ── 관측 수위 정화 ──────────────────────────────────────────────────────────
+#  ★ 업체 지적(최기섭 2026-10-20 §5): Ngerimel 실측에 2019-03-01~04 나흘이 0.0 ft 로
+#    들어 있다. 사수위(자 눈금 1.34 ft)보다 낮아 **결측을 0 으로 적은 것**인데,
+#    그대로 월평균에 들어가 2019년 3월 observed 가 19.68 ft(Watch)로 나왔다.
+#    0.0 을 빼면 22.60 ft(Normal) — 단계가 통째로 뒤집히는 크기다.
+#  자료만 고치면 같은 일이 새 자료로 또 생긴다. 읽는 쪽에서 막는다.
+
+def sanitize_observed_level(df, col: str, *, dead_level_ft: float,
+                            label: str = "관측 수위", verbose: bool = True):
+    """사수위보다 낮은 관측 수위를 **결측으로 돌린다** (물리적으로 불가능).
+
+    저수지 수위가 사수위 아래로 내려갈 수는 없다. 그런 값은 거의 항상 결측을
+    0 이나 음수로 적어 둔 것이며, 평균에 섞이면 단계 분류를 뒤집는다.
+
+    Parameters
+    ----------
+    df            : 관측 DataFrame (수정하지 않고 사본을 돌려준다).
+    col           : 수위 열 이름. 단위·기준면은 ``dead_level_ft`` 와 같아야 한다.
+    dead_level_ft : 사수위. **관측과 같은 기준면**(보통 자 눈금)으로 줄 것.
+                    NaN 이면 검사하지 않는다(제원 미상 저수지 하위호환).
+    label         : 경고 메시지에 쓸 이름.
+
+    Returns
+    -------
+    (정화된 DataFrame, 결측 처리한 행 수)
+    """
+    import pandas as _pd
+    if col not in getattr(df, "columns", []):
+        return df, 0
+    if dead_level_ft != dead_level_ft:            # NaN → 검사 불가
+        return df, 0
+    out = df.copy()
+    v = _pd.to_numeric(out[col], errors="coerce")
+    bad = v.notna() & (v < float(dead_level_ft))
+    n = int(bad.sum())
+    if n:
+        if verbose:
+            dates = ""
+            for c in ("date", out.columns[0]):
+                if c in out.columns:
+                    try:
+                        d = _pd.to_datetime(out.loc[bad, c], errors="coerce").dropna()
+                        if not d.empty:
+                            dates = (f" [{d.min().date()} ~ {d.max().date()}]"
+                                     if len(d) > 1 else f" [{d.min().date()}]")
+                    except (TypeError, ValueError):
+                        pass
+                    break
+            uniq = sorted(set(v[bad].round(3).tolist()))[:5]
+            print(f"  [관측 정화] {label}: 사수위({dead_level_ft:.2f}) 미만 {n}개를 "
+                  f"결측 처리{dates} — 값 {uniq}")
+        out.loc[bad, col] = float("nan")
+    return out, n
+
+
+def dead_level_gauge_ft(reservoir_cfg) -> float:
+    """레지스트리 제원 → **자 눈금 기준** 사수위. 제원이 없으면 NaN.
+
+    곡선·제원은 MSL 이고 관측은 자 눈금이라, 비교하려면 offset 을 더해야 한다
+    (Ngerimel: 23.34 MSL + (−22.0) = 1.34 ft).
+    """
+    if reservoir_cfg is None:
+        return float("nan")
+    bottom = float(getattr(reservoir_cfg, "bottom_ft", float("nan")))
+    if bottom != bottom:
+        return float("nan")
+    return bottom + float(getattr(reservoir_cfg, "obs_datum_offset_ft", 0.0) or 0.0)

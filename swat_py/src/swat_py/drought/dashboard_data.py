@@ -38,6 +38,7 @@ from swat_py.drought.ensemble_flow import OUTLETS, run_ensemble
 from swat_py.drought.reservoir_forecast import (
     capacity_pct_to_level_ft, full_level_ft,
 )
+from swat_py.io.reservoir import sanitize_observed_level
 from swat_py.drought.season import (
     SEASON_MONTHS, assert_period_sane, daykey_month, in_ym, period_end,
     period_end_year, period_ym, season_months, series_ym, ym_labels,
@@ -562,6 +563,10 @@ def _observed_reservoir_monthly(cfg, params, obs_ym: List[tuple], *,
     date_col = raw.columns[0]
     raw[date_col] = pd.to_datetime(raw[date_col], errors="coerce")
     raw[col] = pd.to_numeric(raw.get(col), errors="coerce")
+    # 사수위보다 낮은 값은 결측을 0 으로 적어 둔 것 — 월평균에 섞이면 단계가 뒤집힌다
+    raw, _ = sanitize_observed_level(
+        raw, col, dead_level_ft=_dead_gauge_for(cfg, params),
+        label=f"{Path(path).name}:{col}", verbose=False)
     raw = raw.dropna(subset=[date_col, col])
     raw = raw[in_ym(raw[date_col], obs_ym).values]
     if raw.empty:
@@ -583,6 +588,17 @@ def _observed_reservoir_monthly(cfg, params, obs_ym: List[tuple], *,
 #  방침(D-1) — **비워 두되 이유를 함께 내보낸다.** 평년 기간을 해마다 늘려
 #  채우는 길은 쿡 기상자료 결손(918430) 때문에 지금은 막혀 있다.
 #  빈칸의 뜻이 "자료 없음"인지 "계산 실패"인지 화면에서 구분되지 않던 것이 문제였다.
+
+def _dead_gauge_for(cfg, params) -> float:
+    """이 저수지의 **자 눈금 기준** 사수위 — 관측 정화 기준선."""
+    from swat_py.io.reservoir import dead_level_gauge_ft
+    name = getattr(params, "name", "")
+    for rname, r in (getattr(cfg, "Reservoirs", {}) or {}).items():
+        if rname == name or int(getattr(r, "gis_id", -1)) == int(
+                getattr(params, "gis_id", -2)):
+            return dead_level_gauge_ft(r)
+    return float("nan")
+
 
 def _coverage_from_dates(dates) -> Optional[Dict[str, str]]:
     """날짜 계열 → {"start": "YYYY-MM", "end": "YYYY-MM"}. 비면 None."""
@@ -620,6 +636,9 @@ def observed_coverage_reservoir(cfg, params) -> Optional[Dict[str, str]]:
     except (OSError, ValueError):
         return None
     date_col = raw.columns[0]
+    raw, _ = sanitize_observed_level(
+        raw, col, dead_level_ft=_dead_gauge_for(cfg, params),
+        label=f"{Path(path).name}:{col}", verbose=False)
     d = pd.to_datetime(raw[date_col], errors="coerce")
     v = pd.to_numeric(raw.get(col), errors="coerce")
     return _coverage_from_dates(d[v.notna()])

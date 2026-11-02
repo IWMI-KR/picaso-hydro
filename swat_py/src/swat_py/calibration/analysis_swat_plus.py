@@ -416,6 +416,18 @@ def analyze_one_observation_plus(
         print(f"[WARN] 관측 컬럼 '{obs_col}' 없음 in {obs_path.name} "
               f"(있는 컬럼: {list(obs_df.columns)})")
         return None
+    # 물리적으로 불가능한 관측(결측을 0 으로 적어 둔 행)을 걸러낸다.
+    #  그대로 두면 **검보정 지표(KGE·RMSE·PBIAS)까지 오염된다**(업체 지적 §5).
+    #  기준선: observations[].min_valid 가 있으면 그것, 없으면 저수지 사수위.
+    from swat_py.io.reservoir import dead_level_gauge_ft, sanitize_observed_level
+    _floor = float(getattr(obs, "min_valid", float("nan")))
+    if _floor != _floor and source == "reservoir":
+        _floor = dead_level_gauge_ft((reservoirs or {}).get(
+            getattr(obs, "reservoir", "") or ""))
+    if _floor == _floor:
+        obs_df, _ndrop = sanitize_observed_level(
+            obs_df, obs_col, dead_level_ft=_floor,
+            label=f"{obs_path.name}:{obs_col} (검보정)")
     obs_sub = _prepare_obs(obs_df, outtype, obs_col)
 
     # ── 일 단위 병합 ──

@@ -70,6 +70,11 @@ calibration:
       objective: "NSE"
       # outlet_name: "avatiu"        # 생략 시 "outlet_13"
       # obs_column:  "flow_m3s"      # 생략 시 variable·unit 로 자동
+      #  min_valid: 이보다 작은 관측은 **결측으로 돌린다**(물리적으로 불가능한 기록).
+      #    결측을 0 으로 적어 둔 행이 월평균과 검보정 지표(KGE·RMSE·PBIAS)를
+      #    오염시키는 것을 막는다. 저수지는 레지스트리의 사수위로 자동 판정하므로
+      #    보통 불필요하고, 하천 수위처럼 기준선이 없는 관측에 쓴다.
+      # min_valid: 1.0
 
     # 저수지 수위 관측 예시 — §6 reservoirs 레지스트리에 연결한다.
     #  (관측 파일에 폴더가 들어가면 obs_root 기준 상대경로로 그대로 쓴다)

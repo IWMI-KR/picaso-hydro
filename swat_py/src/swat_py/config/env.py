@@ -119,6 +119,11 @@ class _Observation:
     reservoir:  str = ""       # reservoirs: 레지스트리 참조(이름). 지정 시 곡선·datum 상속.
     #   (곡선 없을 때 fallback) stage(m) = datum_m + shape_factor · V/A
     shape_factor: float = 1.0  # 1.0=각주형(평균수심), 2.0=쐐기형
+    #  min_valid: 이 값보다 작은 관측은 **결측으로 돌린다**(물리적으로 불가능한 기록).
+    #   결측을 0 으로 적어 둔 행이 월평균·검보정 지표를 오염시키는 것을 막는다
+    #   (팔라우 2019-03-01~04 사례). 저수지는 사수위로 자동 판정하므로 보통 불필요하고,
+    #   하천 수위처럼 기준선이 없는 관측에 쓴다. 미지정(NaN)이면 검사하지 않는다.
+    min_valid:    float = float("nan")
     datum_m:      float = 0.0  # 수위계 기준면 오프셋(m)
 
 
@@ -669,6 +674,7 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
             reservoir=   str(o.get("reservoir", "") or ""),
             shape_factor=float(o.get("shape_factor", 1.0)),
             datum_m=     float(o.get("datum_m", 0.0)),
+            min_valid=   float(o.get("min_valid", float("nan"))),
         )
         for i, o in enumerate(obs_list_raw)
     ]
