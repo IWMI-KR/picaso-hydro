@@ -10,7 +10,7 @@
 
 # ── 프로젝트 (공통 루트·DB·관측기상) ─────────────────────────────────────────
 project:
-  root:     "${env:PICASO_ROOT:I:/2025-APCC_Cook/PICASO-Hydro}"   # 환경변수 PICASO_ROOT 우선
+  root:     "${env:PICASO_ROOT:/path/to/PICASO-Hydro}"   # 환경변수 PICASO_ROOT 가 있으면 그것 우선
   database: "$(project.root)/0_database"
   obs_weather_std: "$(project.database)/obs/weather"              # 표준 daily_std 관측
 
