@@ -38,6 +38,7 @@ from swat_py.drought.ensemble_flow import OUTLETS, run_ensemble
 from swat_py.drought.reservoir_forecast import (
     capacity_pct_to_level_ft, full_level_ft,
 )
+from swat_py.io.config_swat_plus import print_window_line
 from swat_py.io.reservoir import sanitize_observed_level
 from swat_py.drought.season import (
     SEASON_MONTHS, assert_period_sane, daykey_month, in_ym, period_end,
@@ -390,14 +391,16 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
     lines = ts.read_text().splitlines()
     lines[2] = time_sim_line(start_yr, fyear, months)
     ts.write_text("\n".join(lines) + "\n")
-    # print.prt: nyskip 동기화 + 채널을 월단위(mon)로만 출력, 그 외 객체 출력 전부 off.
+    # print.prt: nyskip·출력창(yrc) 동기화 + 채널을 월단위(mon)로만 출력, 그 외 객체 출력 전부 off.
     #   예측은 월유량(채널)만 필요 → 일단위 대용량 출력(90채널×일 + HRU·hyd 등) 제거로 대폭 가속.
+    #   ★ 출력창을 모의기간으로 옮기지 않으면 SWAT+ 는 창 시작연도보다 이른 해의 **일단위**
+    #     출력을 쓰지 않는다 → reservoir_day.txt 가 비어 저수지 수원이 통째로 빠진다
+    #     (팔라우 master 창 2015~2023 · 2013·2014년 예측 24기간 실패, 2026-11-03).
     pp = base_dir / "print.prt"
     pl = pp.read_text().splitlines()
     if len(pl) >= 3 and pl[2].split():
-        toks = pl[2].split()
-        toks[0] = str(nyskip)
-        pl[2] = "  ".join(toks)
+        pl[2] = print_window_line(pl[2], nyskip=nyskip, yrc_start=start_yr,
+                                  yrc_end=period_end_year(fyear, months))
     # 저수지 수원이 있으면 reservoir 일단위 출력 필요(reservoir_day.txt → 만수대비% 물수지).
     _res_needed = bool([s for s in getattr(getattr(cfg, "Drought", None), "sources", []) or []
                         if getattr(s, "type", "") == "reservoir"])

@@ -33,6 +33,7 @@ import pandas as pd
 
 from swat_py.drought.climatology import climatology_tag
 from swat_py.drought.ensemble_flow import OUTLETS
+from swat_py.io.config_swat_plus import print_window_line
 from swat_py.io.station import load_station_csv
 from swat_py.io.weather_swat_plus import write_cli_index
 from swat_py.output.reader_swat_plus import _detect_colnames
@@ -421,9 +422,13 @@ def run_climatology(cfg, *, workdir: Optional[Path] = None,
     pp = work / "print.prt"
     pl = pp.read_text().splitlines()
     if len(pl) >= 3 and pl[2].split():
-        toks = pl[2].split()
-        toks[0] = str(warmup)                       # nyskip 동기화(웜업 제외)
-        pl[2] = "  ".join(toks)
+        # nyskip 동기화(웜업 제외) + 출력창(yrc)을 평년 전 기간으로.
+        # ★ 출력창을 옮기지 않으면 SWAT+ 는 창 시작연도보다 이른 해의 **일단위** 출력을
+        #   쓰지 않는다 → 저수지 평년(reservoir_day.txt)·전환 차감(channel_sd_day.txt)이
+        #   master 검보정 기간만으로 계산된다(팔라우: 1985~2023 중 2015~2023 9년만,
+        #   2026-11-03 확인). 월단위 출력은 창을 무시하므로 하천 월평년은 영향이 없었다.
+        pl[2] = print_window_line(pl[2], nyskip=warmup,
+                                  yrc_start=syear, yrc_end=eyear)
     # 저수지 수원이 있으면 reservoir 일단위 출력도 켠다 — 저수지 평년(만수대비%)은
     # 예측과 **같은 소스**(reservoir_day.txt 의 저수지 유입 flo_in)로 산정해야 한다.
     # 채널유량을 유입으로 쓰면 Ngerimel 처럼 용량≪채널유량인 댐은 매월 만수로 재충전되어

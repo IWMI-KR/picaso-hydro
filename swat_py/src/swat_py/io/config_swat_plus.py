@@ -152,3 +152,36 @@ def set_print_object(
     if found:
         path.write_text("".join(lines), encoding="utf-8")
     return found
+
+
+def print_window_line(line: str, *, nyskip: int, yrc_start: int, yrc_end: int,
+                      day_start: int = 1, day_end: int = 366) -> str:
+    """``print.prt`` 3행(자료행)을 모의기간에 맞춰 갱신한 문자열.
+
+    3행 = ``nyskip  day_start  yrc_start  day_end  yrc_end  interval``.
+
+    **왜 출력창(yrc)까지 고쳐야 하나** — SWAT+ 는 출력 시작연도(``yrc_start``)보다
+    이른 해의 **일단위** 출력을 아예 쓰지 않는다. ``time.sim`` 만 과거로 옮기고
+    ``print.prt`` 의 창을 검보정 기간에 둔 채로 두면 ``reservoir_day.txt`` ·
+    ``channel_sd_day.txt`` 가 머리글만 남은 빈 파일이 된다(2026-11-03 팔라우
+    2013·2014년 예측 24기간 실패의 원인). 월단위 출력은 이 창을 무시하므로
+    하천 월유량만 보던 경로에서는 결함이 드러나지 않았다.
+    (끝연도 ``yrc_end`` 는 강제되지 않음을 SWAT+ 61.0.2 로 실측 확인했다 —
+    그래도 모의기간과 맞춰 둔다.)
+
+    자료행이 아닌 줄(빈 줄 등)이 들어오면 그대로 돌려준다.
+
+    >>> print_window_line("3  1  2015  365  2023  1", nyskip=3,
+    ...                   yrc_start=2010, yrc_end=2013).split()
+    ['3', '1', '2010', '366', '2013', '1']
+    """
+    toks = line.split()
+    if not toks:
+        return line
+    toks[0] = str(int(nyskip))
+    if len(toks) >= 5:
+        toks[1] = str(int(day_start))
+        toks[2] = str(int(yrc_start))
+        toks[3] = str(int(day_end))
+        toks[4] = str(int(yrc_end))
+    return "  ".join(toks)

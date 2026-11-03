@@ -33,6 +33,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from swat_py.io.config_swat_plus import print_window_line
+
 # 12개 rolling 3개월 계절 — 첫 달의 연도로 라벨(2016_AMJ 예보 관례와 동일).
 # month > 12 는 다음 해(month-12): 연도 경계를 넘는 계절(NDJ·DJF).
 SEASONS: Dict[str, Tuple[int, int, int]] = {
@@ -458,13 +460,9 @@ def run_reservoir_daily(cfg, *, workdir=None, timeout: int = 7200,
     pp = work / "print.prt"
     pl = pp.read_text().splitlines()
     if len(pl) >= 3 and pl[2].split():
-        tk = pl[2].split()
         # nyskip day_start yrc_start day_end yrc_end interval
-        tk[0] = str(warmup)
-        if len(tk) >= 5:
-            tk[2] = str(syear)          # yrc_start = sim 시작(웜업 nyskip 로 제외)
-            tk[4] = str(eyear)          # yrc_end
-        pl[2] = "  ".join(tk)
+        # yrc_start = sim 시작(웜업은 nyskip 으로 제외) — 창을 옮기지 않으면 일단위 출력이 빈다.
+        pl[2] = print_window_line(pl[2], nyskip=warmup, yrc_start=syear, yrc_end=eyear)
     for i, ln in enumerate(pl):
         t = ln.split()
         if not t:
