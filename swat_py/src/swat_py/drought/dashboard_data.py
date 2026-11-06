@@ -30,7 +30,7 @@ import pandas as pd
 
 from swat_py.dashboard.json_writers import dumps_json   # NaN→null 표준 JSON
 from swat_py.drought.climatology import (
-    climatology_daily_path, climatology_stat, load_daily_flow,
+    climatology_daily_path, climatology_stat, climatology_tag, load_daily_flow,
     outlet_climatology_and_thresholds, warn_if_climatology_stale,
 )
 from swat_py.drought.fdc import is_level_method, stage_thresholds
@@ -803,6 +803,13 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                 clim_res = lvl or {m: capacity_pct_to_level_ft(v, rp)
                                    for m, v in clim_res.items()}
             series["hist_mean"] = series["month"].map(clim_res)
+            # hist_alt — 평년 mean 선(보조). 수위 기준이고 median 을 고른 경우에만.
+            #  이유는 채널 분기의 같은 주석 참조(예측선은 항상 앙상블 평균이다).
+            if level_based and climatology_stat(cfg) != "mean":
+                alt = reservoir_climatology_monthly(cfg, outlet,
+                                                    column=f"{outlet}_level_ft_mean")
+                if alt:
+                    series["hist_alt"] = series["month"].map(alt)
             res_obs = _observed_reservoir_monthly(cfg, rp, obs_ym,
                                                   level_based=level_based)
             res_cov = observed_coverage_reservoir(cfg, rp)
@@ -821,7 +828,12 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                            "full_level_ft": full_ft,
                            "n_ensemble": int(mem.shape[0]) if mem is not None else 0,
                            "normal_watch": q185, "watch_warning": q275,
-                           "warning_crisis": q355}]
+                           "warning_crisis": q355,
+                           # 범례가 평년선의 통계·기간을 **파일에서** 읽게 한다.
+                           #  옛 그림은 "Historical Mean (2006–2024)" 를 하드코딩해,
+                           #  median 을 그리면서 Mean 이라 적고 기간도 틀렸다.
+                           "clim_stat": climatology_stat(cfg),
+                           "clim_years": climatology_tag(cfg)}]
                          ).to_csv(out_dir / "thresholds.csv", index=False,
                                   encoding="utf-8-sig")
             stage_rows = []
@@ -908,6 +920,12 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
         # FDC 임계는 분포에서 따로 뽑으므로 영향받지 않는다 — 표시선만 바뀐다.
         _stat_col = "p50" if climatology_stat(cfg) == "median" else "mean"
         series["hist_mean"] = series["month"].map(clim[_stat_col])
+        # hist_alt — 고르지 않은 쪽 통계. median 을 고른 경우에만 쓴다.
+        #  예측선은 **항상 앙상블 평균**이므로, 평년선이 median 이면 두 선이 서로 다른
+        #  통계가 되어 예측이 체계적으로 낮게 보인다(팔라우 응게리멜 501개월 전부).
+        #  같은 통계의 기준선을 함께 그려 그 인공물을 없앤다. 그림에서만 쓰는 보조열.
+        if _stat_col != "mean":
+            series["hist_alt"] = series["month"].map(clim["mean"])
         series["observed"] = series["month"].map(obs)
         if mem is not None:
             fmean = mem.mean(axis=0)
@@ -924,7 +942,10 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                        "nw_input": tv[0], "ww_input": tv[1], "wc_input": tv[2],
                        "n_ensemble": n_ens,
                        "normal_watch": q185, "watch_warning": q275, "warning_crisis": q355,
-                       **{k: thr[k] for k in ("Q95d", "Q185d", "Q275d", "Q355d")}}]
+                       **{k: thr[k] for k in ("Q95d", "Q185d", "Q275d", "Q355d")},
+                       # 범례용 — 저수지 분기의 같은 주석 참조.
+                       "clim_stat": climatology_stat(cfg),
+                       "clim_years": climatology_tag(cfg)}]
                      ).to_csv(out_dir / "thresholds.csv", index=False, encoding="utf-8-sig")
         # 원시 앙상블 멤버 유량(member×month) 저장 → 재분류 시 SWAT 재실행 불필요
         if mem is not None:

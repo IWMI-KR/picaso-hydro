@@ -338,6 +338,23 @@ def make_season_pie(out_dir) -> "Path | None":
     return out
 
 
+def _climatology_legend(stat, years) -> str:
+    """평년선 범례 문구 — 통계명과 기간을 **산출물에서** 읽어 만든다.
+
+    통계를 설정 가능하게(``drought.climatology_stat``) 바꾼 뒤에도 범례가 그대로여서,
+    median 을 그리면서 Mean 이라 적고 기간도 틀린 그림이 나갔다. 둘 다 여기서 만든다.
+
+    >>> _climatology_legend("median", "1985_2023")
+    'Historical Median (1985–2023)'
+    >>> _climatology_legend("", "")
+    'Historical'
+    """
+    name = {"mean": "Historical Mean",
+            "median": "Historical Median"}.get(str(stat or "").lower(), "Historical")
+    yr = str(years or "").replace("_", "–")
+    return f"{name} ({yr})" if yr else name
+
+
 def make_outlet_figure(out_dir: Path) -> Path:
     series = pd.read_csv(out_dir / "series.csv").reset_index(drop=True)
     thr = pd.read_csv(out_dir / "thresholds.csv").iloc[0]
@@ -386,8 +403,21 @@ def make_outlet_figure(out_dir: Path) -> Path:
         return max(float(v), floor) if v == v else np.nan
 
     # ── ① 평년선 ──
+    #  범례 문구는 thresholds.csv 의 clim_stat·clim_years 에서 읽는다(_climatology_legend).
+    #  옛 코드는 통계명과 기간을 문자열로 박아 두어, median 을 그리면서 Mean 이라 적고
+    #  기간도 실제(1985–2023)와 달랐다 — 양 사업 모두 틀린 값이었다.
+    _cy = str(thr.get("clim_years", "") or "")
     ax.plot(x, series["hist_mean"].clip(lower=floor), "-o", color="#1f77b4", lw=2, ms=4,
-            label="Historical Mean (2006–2024)", zorder=3)
+            label=_climatology_legend(thr.get("clim_stat", ""), _cy), zorder=3)
+    # ── ①-보조 평년 평균선 ──
+    #  예측선은 **항상 앙상블 평균**이다. 평년선이 median 이면 두 선이 서로 다른
+    #  통계가 되어, 저수지에서는 median > mean 이라 예측이 늘 평년 아래로 그려진다
+    #  (팔라우 응게리멜 501개월 100%, 평균 −0.252 ft). 같은 통계의 기준선을 함께
+    #  그려 그 인공물을 없앤다. hist_alt 는 median 을 고른 경우에만 만들어지므로
+    #  쿡 그림은 바뀌지 않는다.
+    if "hist_alt" in series and series["hist_alt"].notna().any():
+        ax.plot(x, series["hist_alt"].clip(lower=floor), "--", color="#1f77b4", lw=1.2,
+                alpha=0.75, label=_climatology_legend("mean", _cy), zorder=3)
     # ── ② 관측 ──
     obs = series.dropna(subset=["observed"])
     if len(obs):
