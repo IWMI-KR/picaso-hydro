@@ -4,7 +4,9 @@
   ① (전제) 장기 기후 SWAT+ → 평년·FDC
   ② acidwg 앙상블 상세화 (N멤버 weather)
   ③ 검보정 SWAT+ 앙상블 (동일 N·동일 warm-up·동일 기간) → Drought Risk 대시보드
-까지 자동 연결한다.
+  ④ Worst Scenario 갱신 (4_drought_risk/worst — 관측 월별 최저·예측 계절별 최악)
+까지 자동 연결한다. ④ 는 멱등이라 매월 다시 돌리면 최신 관측·예측으로 갱신된다
+(끄려면 --no-worst).
 
 ★ config 3분할 (config/ 폴더):
     picaso-hydro.yaml = acidwg·swat **공통**(예측연월·앙상블 수·warm-up·경로) — SSOT
@@ -28,7 +30,7 @@ from swat_py.drought.ensemble_weather import generate_ensemble_weather
 
 def run_pipeline(cfg, *, forecast=None, n_members=None, n_workers=4,
                  with_climatology=False, acidwg_config=None, skip_acidwg=False,
-                 strict=True) -> dict:
+                 strict=True, with_worst=True) -> dict:
     dc = cfg.Drought
     forecast = forecast or dc.forecast
     n = int(n_members or dc.n_members)
@@ -44,7 +46,7 @@ def run_pipeline(cfg, *, forecast=None, n_members=None, n_workers=4,
     # ① 장기 기후(평년·FDC) — 전제. 파일명은 {syear+warmup}_{eyear} 로 자동 산출.
     clim_csv = climatology_daily_path(cfg)
     if with_climatology:
-        print("[1/3] 장기 기후 SWAT+ 재실행 …")
+        print("[1/4] 장기 기후 SWAT+ 재실행 …")
         run_climatology(cfg)
     elif not clim_csv.is_file():
         raise SystemExit(f"기후 평년/FDC 자료 없음: {clim_csv}\n"
@@ -53,12 +55,12 @@ def run_pipeline(cfg, *, forecast=None, n_members=None, n_workers=4,
 
     # ② acidwg 앙상블 상세화 (마스터 N 주입)
     if not skip_acidwg:
-        print(f"[2/3] acidwg 앙상블 상세화 {n}멤버 ({forecast}) …")
+        print(f"[2/4] acidwg 앙상블 상세화 {n}멤버 ({forecast}) …")
         generate_ensemble_weather(cfg, forecast=forecast, n_members=n,
                                   acidwg_config=acidwg_config)
 
     # ③ SWAT+ 앙상블 + Drought Risk 대시보드
-    print("[3/3] SWAT+ 앙상블 + Drought Risk 대시보드 …")
+    print("[3/4] SWAT+ 앙상블 + Drought Risk 대시보드 …")
     from swat_py.drought.dashboard_data import ForecastIncomplete, build
     from swat_py.drought.figure import make_all_figures
     try:
@@ -67,6 +69,19 @@ def run_pipeline(cfg, *, forecast=None, n_members=None, n_workers=4,
         make_all_figures(Path(e.out_root))      # 진단용 그림은 그려 두고 실패를 올린다
         raise
     make_all_figures(Path(res["out_root"]))
+
+    # ④ Worst Scenario 갱신 — 관측 월별 최저 + 예측 계절별 최악.
+    #   매월 운영에서 ③ 이 새 예측을 더하거나 관측 파일이 갱신되면 이 표도 같이
+    #   낡는다. 그래서 파이프라인 끝에서 **항상 다시 만든다**(멱등, 수 초).
+    #   실패해도 예측 결과를 버리지 않는다 — 경고만 남기고 계속한다.
+    if with_worst:
+        print("[4/4] Worst Scenario 갱신 (관측 월별 최저 · 예측 계절별 최악) …")
+        try:
+            from swat_py.drought.worst_scenario import build_worst
+            build_worst(cfg)
+        except Exception as e:                   # noqa: BLE001 — 보조 산출물
+            print(f"  ⚠ Worst Scenario 갱신 실패(예측 결과는 정상): {e}")
+
     print(f"\n✔ 완료 — {res['out_root']}")
     return res
 
@@ -83,6 +98,8 @@ def main(argv=None) -> int:
     ap.add_argument("--allow-incomplete", action="store_true",
                     help="예측월 결과가 비어도 성공(0)으로 끝낸다 — 기본은 실패(1)")
     ap.add_argument("--acidwg-config", default=None)
+    ap.add_argument("--no-worst", action="store_true",
+                    help="Worst Scenario(4_drought_risk/worst) 갱신을 건너뛴다")
     args = ap.parse_args(argv)
     from swat_py.config import load_config
     cfg = load_config(args.config)
@@ -91,7 +108,7 @@ def main(argv=None) -> int:
         run_pipeline(cfg, forecast=args.forecast, n_members=args.members,
                      n_workers=args.workers, with_climatology=args.with_climatology,
                      acidwg_config=args.acidwg_config, skip_acidwg=args.skip_acidwg,
-                     strict=not args.allow_incomplete)
+                     strict=not args.allow_incomplete, with_worst=not args.no_worst)
     except ForecastIncomplete as e:
         print(f"\n✖ 실패 — {e}")
         return 1                                # 0 이 아닌 종료코드(요청 P2-B)
