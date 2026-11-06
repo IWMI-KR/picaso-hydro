@@ -55,8 +55,9 @@ class _ResCfg:
 
 
 class _DC:
-    def __init__(self, sources, stat="median"):
+    def __init__(self, sources, stat="median", worst_stat=""):
         self.sources, self.climatology_stat = sources, stat
+        self.worst_stat = worst_stat
         self.outlets = {g: n for s in sources for g, n in s.outlets.items()}
 
     def source_for(self, outlet):
@@ -72,10 +73,10 @@ class _DC:
 
 
 class _Cfg:
-    def __init__(self, root, sources, obs, stat="median"):
+    def __init__(self, root, sources, obs, stat="median", worst_stat=""):
         self.PrjDir = str(root)
         self.ObservedDataDir = str(root / "0_database" / "obs")
-        self.Drought = _DC(sources, stat)
+        self.Drought = _DC(sources, stat, worst_stat)
         self.Observations = obs
 
 
@@ -145,6 +146,25 @@ class TestResolveStat:
         cfg = _Cfg(tmp_path, [_Src("a", {1: "a"})], [], stat="median")
         with pytest.raises(ValueError):
             resolve_stat(cfg, "p90")
+
+    def test_worst_stat_이_climatology_stat_을_덮는다(self, tmp_path):
+        """평년선은 median, Worst Scenario 는 mean — 팔라우가 쓰는 조합(2026-11-06).
+
+        저수지 median 은 만수에 고정돼 최악이 가려지지 않으므로 분리했다.
+        """
+        cfg = _Cfg(tmp_path, [_Src("a", {1: "a"})], [], stat="median", worst_stat="mean")
+        assert cfg.Drought.climatology_stat == "median"
+        assert resolve_stat(cfg) == "mean"
+
+    def test_worst_stat_이_비면_climatology_stat_을_따른다(self, tmp_path):
+        cfg = _Cfg(tmp_path, [_Src("a", {1: "a"})], [], stat="median", worst_stat="")
+        assert resolve_stat(cfg) == "median"
+
+    def test_설정_dataclass_가_worst_stat_을_실제로_읽는다(self):
+        """필드가 없으면 YAML 키가 **조용히 무시**된다 — 실제 있었던 버그."""
+        from swat_py.config.env import _DroughtCfg
+        assert "worst_stat" in _DroughtCfg.__dataclass_fields__
+        assert _DroughtCfg.__dataclass_fields__["worst_stat"].default == ""
 
 
 # ── ① 관측 월별 최저 ────────────────────────────────────────────────────────

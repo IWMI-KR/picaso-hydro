@@ -311,6 +311,18 @@ drought:
   #  ※ 저수지 평년 파일에는 _level_ft_mean 과 _level_ft_median 두 열이 함께 저장돼,
   #    어느 쪽을 쓸지 파일만 보고 비교할 수 있다.
   climatology_stat: "mean"
+  # worst_stat: Worst Scenario 대표통계 — 미지정(기본, climatology_stat 따라감) | mean | median.
+  #  평년선과 Worst Scenario 는 요구가 **반대**라서 따로 둔다.
+  #    · 평년선은 '보통 해'를 그리므로 저수지는 median 이 맞다(위).
+  #    · Worst Scenario 는 '최악'을 **가려내야** 하는데, 저수지 median 은 만수에 고정돼
+  #      전 기간 비정상 0개월·최저값 동점이 되어 순위가 매겨지지 않는다.
+  #      mean 은 하위 꼬리를 반영해 동점을 없애면서 선정 결과는 median 과 같다
+  #      (팔라우 응게리멜 실측: 동점 5계절→0, 선정 연도 12/12 동일).
+  #  ※ 하천은 방향이 반대다 — 유량은 위로 꼬리가 길어 mean > median 이므로 mean 이 덜
+  #    보수적이다. 그래도 쿡·팔라우 모두 하천에 mean 을 쓴다(요청 기준 통일).
+  #  ※ mean 은 '얼마나 나쁜가'와 '얼마나 흔한가'를 한 값에 섞는다 — 보고 시 Crisis
+  #    확률을 반드시 병기할 것(산출물에 4단계 확률 열이 있다).
+  # worst_stat: "mean"
   #
   # ── 평년 설정 지문 (자동) ─────────────────────────────────────────────────
   #  climatology_run 이 평년 산출물 옆에 climatology_settings_{tag}.json 을 남긴다.

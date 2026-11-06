@@ -441,3 +441,33 @@ def test_drought_measured_yes_no(tmp_path):
     d2 = load_config(p2).Drought
     assert d2.source_for(4).measured is False
     assert d2.forecast_suffix() == "__ic44.0ft-scn"
+
+
+def test_drought_worst_stat_파싱(tmp_path):
+    """Worst Scenario 대표통계를 평년선 통계와 **따로** 설정할 수 있어야 한다.
+
+    팔라우가 쓰는 조합 — 평년선은 median(저수지 '보통 해'), Worst Scenario 는 mean
+    (median 은 만수에 고정돼 최악이 가려지지 않음, 2026-11-06).
+    `_DroughtCfg` 에 필드가 없으면 YAML 키가 **조용히 무시**되므로 파서까지 확인한다.
+    """
+    p = _write_yaml(tmp_path, """
+        project: {root: "/tmp/x"}
+        model: {type: swat_plus}
+        drought:
+          climatology_stat: "median"
+          worst_stat: "MEAN"
+    """)
+    d = load_config(p).Drought
+    assert d.climatology_stat == "median"
+    assert d.worst_stat == "mean"          # 대소문자 무관
+
+
+def test_drought_worst_stat_기본은_빈값(tmp_path):
+    """미지정이면 빈 문자열 — resolve_stat 이 climatology_stat 으로 떨어진다(쿡)."""
+    p = _write_yaml(tmp_path, """
+        project: {root: "/tmp/x"}
+        model: {type: swat_plus}
+        drought:
+          climatology_stat: "mean"
+    """)
+    assert load_config(p).Drought.worst_stat == ""

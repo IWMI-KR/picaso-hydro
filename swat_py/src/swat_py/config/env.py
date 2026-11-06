@@ -288,6 +288,15 @@ class _DroughtCfg:
     #  꼬리가 긴 분포에서는 소수의 가뭄 해가 평균을 끌어내려 '보통 해' 선이 Watch 에
     #  그려진다(팔라우 3월). FDC 임계에는 영향이 없다 — 표시선만 바뀐다.
     climatology_stat: str = "mean"
+    #  Worst Scenario 대표통계 — ""(기본, climatology_stat 따라감) | mean | median.
+    #  평년선과 Worst Scenario 는 요구가 반대라서 분리한다.
+    #    · 평년선은 '보통 해'를 그리므로 저수지는 median 이 맞다(위 사유).
+    #    · Worst Scenario 는 '최악'을 가려내야 하는데, 저수지 median 은 만수에 고정돼
+    #      167기간 전부 비정상 0개월·최저값 동점이 되어 순위가 매겨지지 않는다.
+    #      mean 은 하위 꼬리를 반영해 동점을 없애면서 선정 결과는 median 과 동일하다
+    #      (팔라우 실측 12/12 동일, 동점 5→0). 검토서 20261106_저수지_대표통계_검토.md
+    #  mean 은 '얼마나 나쁜가'와 '얼마나 흔한가'를 한 값에 섞으므로 Crisis 확률을 병기할 것.
+    worst_stat: str = ""
     # ── 4단계 급수단계 경계 (설정 가능) ──────────────────────────────────────
     #  method: fdc_exceedance | nonexceed_percentile | fixed_flow
     #  values: [Normal|Watch, Watch|Warning, Warning|Crisis] — method 별 의미 상이(fdc.stage_thresholds).
@@ -854,6 +863,7 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
         ensemble_root=    str(dr_ens.get("root", "") or ""),
         era5_warmup=      bool(dr.get("era5_warmup", False)),
         climatology_stat= str(dr.get("climatology_stat", "mean") or "mean").lower(),
+        worst_stat=       str(dr.get("worst_stat", "") or "").lower(),
         threshold_method= _thr_method_flat,
         threshold_values= _thr_values_flat,
     )
