@@ -559,7 +559,7 @@ def build_historical_worst(cfg, *, min_frac: float = 0.90,
     by_month=False → 12개 계절(rolling 3개월) · True → 12개 달력 월(1~12월). 반환: 경로 dict.
     """
     from swat_py.drought.climatology import climatology_tag
-    from swat_py.drought.fdc import stage_thresholds
+    from swat_py.drought.fdc import is_level_method, stage_thresholds
     from swat_py.drought.stages import classify_stage4
 
     periods = MONTHS if by_month else SEASONS
@@ -622,10 +622,33 @@ def build_historical_worst(cfg, *, min_frac: float = 0.90,
     obs_ym = obs_clim = None
     res_name = res_params = res_rcfg = None
     full_lvl = float("nan")
+    # 저수지가 **수위 기준**(level_fraction)이면 임계를 ft 로 환산해 쓴다.
+    #  이전에는 level_fraction 의 값 [95, 85, 65] 를 그대로 받아 **저수량%** 에 대고
+    #  분류했다 — 만수 '수위'의 95% 와 만수 '저수량'의 95% 는 다른 양이다. 응게리멜
+    #  12계절 중 9계절이 실제보다 심각한 쪽으로 오분류됐다(예: MJJ 2015 → Watch,
+    #  자 눈금 22.24 ft 로는 Normal). 예측 경로(dashboard_data)와 기준을 맞춘다.
+    #  res_offset: 곡선 datum(MSL) → 자 눈금. 자눈금 = MSL + obs_datum_offset_ft.
+    res_level_based, res_offset = False, 0.0
     if rs is not None:
         _, res_params, res_rcfg = rs
         res_name = res_params.name
         full_lvl = _full_level(res_params, res_rcfg)
+        _rsrc = rs[0]
+        for _gid in (_rsrc.outlets or {}):
+            _m, _v = dc.threshold_for(_gid)
+            if is_level_method(_m):
+                from swat_py.drought.reservoir_forecast import full_level_ft as _fl
+                _gauge_full = _fl(res_params)
+                _st = stage_thresholds([], _m, _v, full_level_ft=_gauge_full)
+                thr[res_name] = (_st["normal_watch"], _st["watch_warning"],
+                                 _st["warning_crisis"], "reservoir")
+                res_level_based = True
+                res_offset = float(getattr(res_rcfg, "obs_datum_offset_ft", 0.0) or 0.0)
+                log_lines.append(
+                    f"저수지 단계 기준: 자 눈금 수위 ft (만수 {_gauge_full:g}, "
+                    f"경계 {_st['normal_watch']:.2f}/{_st['watch_warning']:.2f}/"
+                    f"{_st['warning_crisis']:.2f}, datum offset {res_offset:+g})")
+            break
         obs_csv, obs_col = _find_reservoir_obs(cfg, res_params)
         if obs_csv and Path(obs_csv).is_file():
             from swat_py.io.reservoir import dead_level_gauge_ft
@@ -666,7 +689,8 @@ def build_historical_worst(cfg, *, min_frac: float = 0.90,
             res_month_idx = {(int(y), int(m)): {
                 "pct": float(sub["storage_pct"].mean()),
                 "pct_min": float(sub["storage_pct"].min()),
-                "level": float(sub["water_level_ft"].mean())}
+                "level": float(sub["water_level_ft"].mean()),
+                "level_min": float(sub["water_level_ft"].min())}
                 for (y, m), sub in g}
             log_lines.append(f"저수지 유입: flo_in 연속 물수지 ({flo_in_csv.name}, "
                              f"초기 만수 {full_lvl:.0f}ft, 취수 {res_params.withdrawal_m3s} m³/s)")
@@ -705,11 +729,22 @@ def build_historical_worst(cfg, *, min_frac: float = 0.90,
                     rec[f"{res_name}_method"] = "flo_in"
                     rec[f"{res_name}_storage_pct"] = round(pct_mean, 1)
                     rec[f"{res_name}_storage_pct_min"] = round(pct_min, 1)
+                    lvl_min = float(np.min([c.get("level_min", c["level"])
+                                            for c in cells]))
                     rec[f"{res_name}_water_level_ft"] = round(lvl_mean, 2)
                     if res_name in thr and thr[res_name][3] == "reservoir":
                         q1, q2, q3, _ = thr[res_name]
-                        rec[f"{res_name}_stage"] = _reservoir_stage(pct_mean, q1, q2, q3)
-                        rec[f"{res_name}_stage_min"] = _reservoir_stage(pct_min, q1, q2, q3)
+                        if res_level_based:
+                            # 자 눈금(staff gauge) 수위로 분류 — 예측 경로와 같은 기준.
+                            g_mean = lvl_mean + res_offset
+                            g_min = lvl_min + res_offset
+                            rec[f"{res_name}_water_level_gauge_ft"] = round(g_mean, 2)
+                            rec[f"{res_name}_water_level_gauge_ft_min"] = round(g_min, 2)
+                            rec[f"{res_name}_stage"] = _reservoir_stage(g_mean, q1, q2, q3)
+                            rec[f"{res_name}_stage_min"] = _reservoir_stage(g_min, q1, q2, q3)
+                        else:
+                            rec[f"{res_name}_stage"] = _reservoir_stage(pct_mean, q1, q2, q3)
+                            rec[f"{res_name}_stage_min"] = _reservoir_stage(pct_min, q1, q2, q3)
             else:
                 init_msl, src_tag = initial_level_msl(
                     obs_ym or {}, obs_clim or {}, y, months[0], full_level_ft=full_lvl)
@@ -725,7 +760,14 @@ def build_historical_worst(cfg, *, min_frac: float = 0.90,
                     if not np.isnan(bal["water_level_ft_mean"]) else np.nan
                 if res_name in thr and thr[res_name][3] == "reservoir":
                     q1, q2, q3, _ = thr[res_name]
-                    rec[f"{res_name}_stage"] = classify_stage4(bal["storage_pct_mean"], q1, q2, q3)
+                    if res_level_based:
+                        g = bal["water_level_ft_mean"] + res_offset
+                        rec[f"{res_name}_water_level_gauge_ft"] = (
+                            round(g, 2) if not np.isnan(g) else np.nan)
+                        rec[f"{res_name}_stage"] = _reservoir_stage(g, q1, q2, q3)
+                    else:
+                        rec[f"{res_name}_stage"] = _reservoir_stage(
+                            bal["storage_pct_mean"], q1, q2, q3)
         rows.append(rec)
     results = pd.DataFrame(rows)
     res_csv = out_dir / f"modeling_results_{suffix}.csv"
@@ -743,8 +785,229 @@ def build_historical_worst(cfg, *, min_frac: float = 0.90,
     print(f"  최저강수 연도 : {rank_csv}")
     print(f"  모의 결과     : {res_csv}")
     print(f"  신뢰성 로그   : {log_path}")
+    # 그림은 **항상 결과와 함께** 만든다. 예전엔 생성 코드가 없어 PNG 만 남았고
+    # (고아 산출물), 결과가 바뀌어도 그림이 그대로여서 보고서가 옛 수치를 인용했다.
+    out_png = None
+    try:
+        out_png = make_historical_worst_figure(cfg, by_month=by_month)
+        if out_png:
+            print(f"  그림          : {out_png}")
+    except Exception as e:                      # noqa: BLE001 — 그림 실패가 산출을 막지 않게
+        print(f"  ⚠ 그림 생성 실패(결과 CSV 는 정상): {e}")
     return {"driest": str(rank_csv), "results": str(res_csv),
-            "log": str(log_path), "out_dir": str(out_dir)}
+            "log": str(log_path), "out_dir": str(out_dir),
+            "figure": str(out_png) if out_png else ""}
+
+
+def make_historical_worst_figure(cfg, *, by_month: bool = False, lang: str = "ko"):
+    """최악 시나리오 3단 그림 — 산출 CSV 에서 **다시 만들 수 있게** 코드로 둔다.
+
+    이 그림은 오랫동안 생성 코드 없이 PNG 로만 존재했다(고아 산출물). 결과가 바뀌어도
+    그림은 그대로 남아 보고서가 옛 수치를 인용하는 사고가 났다 — MJJ 2015 를 Crisis 로
+    적었으나 현재 산출은 Watch 다. `build_historical_worst` 끝에서 자동 호출한다.
+
+    ① 계절별 역대 최저강수 연도 — 막대(그 해 강수)·마름모(39년 중앙값), † 는 차선 대체
+    ② 하천 — 계절평균유량 막대(가뭄단계 색) + FDC 경계선
+    ③ 저수지 — 계절평균 저수량% 막대(단계 색) + ▼ 계절 내 일 최저 + 단계 경계선
+
+    Returns 저장 경로(Path) 또는 None(자료 없음).
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+
+    # figure 를 import 하면 한글 폰트(맑은 고딕)가 함께 설정된다.
+    from swat_py.drought.figure import STAGE_COLORS
+    en = str(lang).lower().startswith("en")
+    T = {
+        "suptitle": ("Palau {k}별 역대 최저강수 · 장기모의 결과  (historical_worst)",
+                     "Palau {k} record-low precipitation & long-term simulation"
+                     "  (historical_worst)"),
+        "p1": ("① {k}별 역대 최저강수 연도  —  관측 강수({y})",
+               "(1) {k} record-low precipitation year  -  observed precip ({y})"),
+        "p1bar": ("최저강수년 강수량", "Record-low year precip"),
+        "p1med": ("중앙값({y})", "Median ({y})"),
+        "ylab_p": ("강수량 (mm)", "Precipitation (mm)"),
+        "p2": ("② {o} 하천 — 최저강수년 {k}평균유량 · 가뭄단계",
+               "(2) {o} river - record-low-year {k} mean flow & drought stage"),
+        "ylab_q": ("{o} 유량 (m³/s)", "{o} flow (m3/s)"),
+        "stage": ("가뭄단계", "Drought stage"),
+        "kind_s": ("계절", "seasonal"), "kind_m": ("월", "monthly"),
+        "p3": ("③ {o} 저수지 — 연속 물수지 {u}({k} 평균 막대 · 최저 ▽)",
+               "(3) {o} reservoir - continuous water balance {u} ({k} mean bar / min v)"),
+        "unit_lvl": ("수위 ft (자 눈금)", "water level ft (staff gauge)"),
+        "unit_pct": ("저수량 % (만수 대비)", "storage % (of full)"),
+        "mean_lvl": ("{k} 평균 수위", "{k} mean level"),
+        "mean_pct": ("{k} 평균 저수량%", "{k} mean storage%"),
+        "min": ("{k} 내 최저(일)", "{k} min (daily)"),
+        "xlab": ("{k} (rolling 3개월, 첫 달 연도로 라벨)",
+                 "{k} (rolling 3-month, labeled by first-month year)"),
+        "nw": ("Normal–Watch", "Normal-Watch"), "ww": ("Watch–Warning", "Watch-Warning"),
+        "wc": ("Warning–Crisis", "Warning-Crisis"),
+        "note": ("† = 최저강수 후보가 관측 결측 과다(월 유효일<90%)로 건너뛰어 차선 채택"
+                 " (상세: reliability_log).   ③ SWAT 실제 유입(flo_in)+취수 연속 물수지, "
+                 "만수 이상 = Normal.",
+                 "dagger = record-low candidate skipped due to excessive missing obs "
+                 "(monthly valid days <90%); next candidate used (see reliability_log).   "
+                 "(3) SWAT actual inflow (flo_in) + withdrawal continuous water balance, "
+                 "at/above full = Normal."),
+        "note_lvl": ("   ③ 단계는 자 눈금 수위로 매긴다(설정 level_fraction) — "
+                     "만수 수위의 %와 만수 저수량의 %는 다른 양이다.",
+                     "   (3) Stages are classified on staff-gauge water level "
+                     "(config level_fraction) - % of full level is not % of full storage."),
+    }
+
+    def t(key, **kw):
+        return T[key][1 if en else 0].format(**kw)
+
+    prj = Path(cfg.PrjDir)
+    out_dir = prj / "3_swatplus" / "forecast" / "historical_worst"
+    suffix = "by_month" if by_month else "by_season"
+    res_p, rank_p = (out_dir / f"modeling_results_{suffix}.csv",
+                     out_dir / f"driest_year_{suffix}.csv")
+    if not (res_p.is_file() and rank_p.is_file()):
+        return None
+    res = pd.read_csv(res_p, encoding="utf-8-sig")
+    rank = pd.read_csv(rank_p, encoding="utf-8-sig")
+    key = "month" if by_month else "season"
+    if key not in res.columns:
+        return None
+    merged = res.merge(rank[[key, "median_mm"]], on=key, how="left")
+    labels = [str(v) for v in merged[key]]
+    xs = np.arange(len(labels))
+
+    thr = _stage_thresholds_by_outlet(cfg)
+    ch = next((n for n, t in thr.items() if t[3] != "reservoir"
+               and f"{n}_flow_m3s" in merged.columns), None)
+    rv = next((n for n, t in thr.items() if t[3] == "reservoir"
+               and f"{n}_storage_pct" in merged.columns), None)
+    n_panel = 1 + (ch is not None) + (rv is not None)
+    fig, axes = plt.subplots(n_panel, 1, figsize=(13, 3.6 * n_panel), sharex=True)
+    axes = np.atleast_1d(axes)
+    kind = t("kind_m") if by_month else t("kind_s")
+    _y0 = int(cfg.Drought.syear or 1982) + int(cfg.CioNYSKIP or 0)
+    yrs = f"{_y0}–{int(cfg.Drought.eyear or 2023)}"
+
+    # ① 강수
+    ax = axes[0]
+    ax.bar(xs, merged["precip_mm"], color="#3b76af", width=0.6, label=t("p1bar"))
+    if "median_mm" in merged:
+        ax.plot(xs, merged["median_mm"], "D", color="#5b6670", ms=7,
+                label=t("p1med", y=yrs), lw=0)
+    for i, r in merged.iterrows():
+        dag = "†" if bool(r.get("substituted", False)) else ""
+        ax.annotate(f"{int(r['driest_year'])}{dag}", (i, r["precip_mm"]),
+                    textcoords="offset points", xytext=(0, 4), ha="center", fontsize=9)
+    ax.set_ylabel(t("ylab_p"))
+    ax.set_title(t("p1", k=kind, y=yrs), loc="left", fontsize=12, fontweight="bold")
+    ax.legend(loc="upper right", ncol=2, frameon=False, fontsize=9)
+    ax.grid(axis="y", alpha=0.3)
+
+    # ② 하천
+    k = 1
+    if ch is not None:
+        ax = axes[k]
+        k += 1
+        st = merged.get(f"{ch}_stage", pd.Series([""] * len(merged)))
+        ax.bar(xs, merged[f"{ch}_flow_m3s"], width=0.6,
+               color=[STAGE_COLORS.get(v, "#999999") for v in st])
+        q1, q2, q3, _ = thr[ch]
+        for v, c, lb in ((q1, "#2ca02c", t("nw")), (q2, "#f5c518", t("ww")),
+                         (q3, "#d62728", t("wc"))):
+            ax.axhline(v, ls="--", lw=1.4, color=c)
+            ax.annotate(lb, (len(labels) - 0.4, v), fontsize=8, color=c, va="bottom")
+        ax.set_ylabel(t("ylab_q", o=ch))
+        ax.set_title(t("p2", o=ch, k=kind), loc="left", fontsize=12, fontweight="bold")
+        ax.legend(handles=[Patch(facecolor=STAGE_COLORS[s_], label=s_)
+                           for s_ in ("Normal", "Watch", "Warning", "Crisis")],
+                  loc="upper right", ncol=4, frameon=False, fontsize=9, title=t("stage"))
+        ax.grid(axis="y", alpha=0.3)
+
+    _res_note = ""
+    # ③ 저수지 — 단계를 매긴 **그 양**을 그린다.
+    #  수위 기준(level_fraction)이면 자 눈금 수위 ft, 저수량 기준이면 저수량%.
+    #  예전에는 단계는 저수량%로 매기고 임계선은 수위 기준값(95/85/65)을 그어,
+    #  축과 경계선의 단위가 서로 달랐다.
+    if rv is not None:
+        ax = axes[k]
+        gcol = f"{rv}_water_level_gauge_ft"
+        lvl = gcol in merged.columns and merged[gcol].notna().any()
+        col = gcol if lvl else f"{rv}_storage_pct"
+        mn_col = f"{gcol}_min" if lvl else f"{rv}_storage_pct_min"
+        unit = t("unit_lvl") if lvl else t("unit_pct")
+        _res_note = t("note_lvl") if lvl else ""
+        st = merged.get(f"{rv}_stage", pd.Series([""] * len(merged)))
+        ax.bar(xs, merged[col], width=0.6,
+               color=[STAGE_COLORS.get(v, "#999999") for v in st],
+               label=t("mean_lvl" if lvl else "mean_pct", k=kind))
+        if mn_col in merged.columns:
+            ax.plot(xs, merged[mn_col], "v", color="#222222", ms=9, lw=0,
+                    label=t("min", k=kind))
+            for i, r in merged.iterrows():
+                ax.annotate("", (i, r[mn_col]), (i, r[col]),
+                            arrowprops=dict(arrowstyle="->", color="#222222", lw=1))
+        q1, q2, q3, _ = thr[rv]
+        for v, c, lb in ((q1, "#2ca02c", t("nw")), (q2, "#f5c518", t("ww")),
+                         (q3, "#d62728", t("wc"))):
+            ax.axhline(v, ls=":", lw=1.4, color=c)
+            ax.annotate(f"{lb} ({v:g})", (len(labels) - 0.4, v), fontsize=8,
+                        color=c, va="bottom")
+        ax.set_ylabel(f"{rv}\n{unit}")
+        ax.set_title(t("p3", o=rv, k=kind, u=unit.split(" (")[0]),
+                     loc="left", fontsize=12, fontweight="bold")
+        ax.legend(loc="lower left", ncol=2, frameon=True, fontsize=9)
+        ax.grid(axis="y", alpha=0.3)
+
+    axes[-1].set_xticks(xs)
+    axes[-1].set_xticklabels(labels)
+    axes[-1].set_xlabel(t("xlab", k=kind) if not by_month else t("kind_m"))
+    fig.suptitle(t("suptitle", k=kind), fontsize=14, fontweight="bold")
+    fig.text(0.01, 0.005,
+             t("note") + _res_note, fontsize=8, color="#555555")
+    fig.tight_layout(rect=(0, 0.015, 1, 0.97))
+    out = (out_dir / f"historical_worst_dashboard{'_month' if by_month else ''}"
+           f"{'_en' if en else ''}.png")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
+
+def _stage_thresholds_by_outlet(cfg) -> Dict[str, tuple]:
+    """{수원명: (normal_watch, watch_warning, warning_crisis, type)} — 산출과 같은 경로."""
+    from swat_py.drought.climatology import climatology_tag
+    from swat_py.drought.fdc import is_level_method, stage_thresholds
+    dc = cfg.Drought
+    prj = Path(cfg.PrjDir)
+    flow_csv = (prj / "4_drought_risk" / "climatology"
+                / f"channel_monthly_{climatology_tag(cfg)}.csv")
+    try:
+        mon_idx, outlets = load_monthly_flow(flow_csv)
+    except Exception:                       # noqa: BLE001 — 평년 없으면 임계선 생략
+        return {}
+    thr = {}
+    for s_ in (getattr(dc, "sources", None) or []):
+        for gid, nm in (s_.outlets or {}).items():
+            if nm not in outlets:
+                continue
+            method, values = dc.threshold_for(gid)
+            series = [mon_idx[k][nm] for k in mon_idx
+                      if nm in mon_idx[k] and not np.isnan(mon_idx[k][nm])]
+            if s_.type == "reservoir" and is_level_method(method):
+                # 수위 기준이면 ft 로 환산한다 — 산출(build_historical_worst)과 같은 기준.
+                # 환산하지 않으면 [95, 85, 65] 가 그대로 나와 저수량% 에 대고 쓰이거나
+                # 수위 축에 % 선이 그어진다.
+                from swat_py.drought.reservoir_forecast import full_level_ft
+                rs = _reservoir_source(cfg)
+                params = rs[1] if rs else None
+                st = stage_thresholds([], method, values,
+                                      full_level_ft=full_level_ft(params))
+            else:
+                st = stage_thresholds(series if method != "capacity_fraction" else [],
+                                      method, values)
+            thr[nm] = (st["normal_watch"], st["watch_warning"],
+                       st["warning_crisis"], s_.type)
+    return thr
 
 
 def _full_level(params, rcfg) -> float:
