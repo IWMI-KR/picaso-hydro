@@ -338,7 +338,8 @@ chapter("9", "가뭄예측 실행", "Running the forecast", [
         "[base] 입력물 412개 20.3MB 복사 (출력물 118개 1,180MB 제외)",
         "[ensemble] 1000 멤버 SWAT+ 실행",
         "  유효 멤버 1000/1000",
-        "  OK ngerikiil   Q275=0.0412 Q355=0.0208 단계=['Normal','Watch','Watch']",
+        "  OK ngerikiil   경계 0.2689/0.1501/0.0755 m³/s (fdc_exceedance) "
+        "단계=['Normal','Watch','Watch']",
         "  OK ngerimel    [저수지] 수위 ft (만수 23.00, 경계 21.85/19.55/14.95)",
     ], [
         "================================================================",
@@ -349,7 +350,8 @@ chapter("9", "가뭄예측 실행", "Running the forecast", [
         "[base] copied 412 input files, 20.3MB (118 output files, 1,180MB skipped)",
         "[ensemble] running SWAT+ for 1000 members",
         "  valid members 1000/1000",
-        "  OK ngerikiil   Q275=0.0412 Q355=0.0208 stages=['Normal','Watch','Watch']",
+        "  OK ngerikiil   경계 0.2689/0.1501/0.0755 m³/s (fdc_exceedance) "
+        "stages=['Normal','Watch','Watch']",
         "  OK ngerimel    [reservoir] level ft (full 23.00, bounds 21.85/19.55/14.95)",
     ])),
     ("keys", L([

@@ -789,6 +789,8 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
             full_ft = full_level_ft(rp)              # 만수 수위(ft) — % → ft 환산 기준
             variable = "water_level_ft" if level_based else "capacity_pct"
             st = stage_thresholds([], thr_method, thr_values, full_level_ft=full_ft)
+            # 이름은 옛 유황 기준이지만 담기는 값은 **설정 경계**다(저수지는 수위 ft 또는
+            # 저수량 %). stages.py 인자명과 맞추려 유지 — Q185/Q275/Q355 가 아니다.
             q185, q275, q355 = st["normal_watch"], st["watch_warning"], st["warning_crisis"]
             out_dir = out_root / outlet
             out_dir.mkdir(exist_ok=True)
@@ -907,6 +909,7 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
         else:
             thr_method, thr_values = "fdc_exceedance", None
         st = stage_thresholds(daily[outlet].dropna().values, thr_method, thr_values)
+        # 이름만 옛 유황 기준 — 실제 값은 설정 경계(기본 Q70/Q90/Q95). 위 저수지 분기 주석 참조.
         q185, q275, q355 = st["normal_watch"], st["watch_warning"], st["warning_crisis"]
         clim = ct["monthly"].set_index("month")
 
@@ -997,7 +1000,7 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
         _note = _observed_note(obs_cov, ym, "sim_obs_weather")
         if _note:
             print(f"    · observed: {_note}")
-        print(f"  ✔ {outlet:<12s} Q275={q275:.4f} Q355={q355:.4f} "
+        print(f"  ✔ {outlet:<12s} 경계 {q185:.4f}/{q275:.4f}/{q355:.4f} m³/s ({thr_method}) "
               f"단계={[s['most_likely'] for s in stage_rows]}")
 
     pd.DataFrame(summary_rows).to_csv(out_root / "summary.csv", index=False,

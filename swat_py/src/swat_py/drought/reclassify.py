@@ -55,6 +55,7 @@ def reclassify_stages(cfg, forecast: str, *, n_ensemble: int = 0,
         thr = outlet_climatology_and_thresholds(clim, outlet)["thresholds"]
         st = stage_thresholds(clim[outlet].dropna().values,
                               dc.threshold_method, dc.threshold_values)
+        # 이름만 옛 유황 기준 — 실제 값은 설정 경계(기본 Q70/Q90/Q95).
         q185, q275, q355 = st["normal_watch"], st["watch_warning"], st["warning_crisis"]
         series = pd.read_csv(series_f)
 

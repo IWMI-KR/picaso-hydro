@@ -5,8 +5,9 @@ outlet 별로 산출한다. 설정은 yaml `drought:` 블록(env._DroughtCfg) / 
 
 진입점
 - run_ensemble(...)                    : 예측 앙상블 SWAT+ (③⑤ 원자료)
-- fdc_thresholds(daily_q)              : ④ FDC Q275/Q355
-- stage_probabilities(vals, q275,q355) : ⑤ 단계확률
+- fdc_thresholds(daily_q)              : 유황 대표유량 Q95d~Q355d (참조값, 경계 아님)
+- stage_thresholds(q, method, values)  : ④ 단계 경계 3개 (기본 Q70/Q90/Q95)
+- stage_probabilities4(vals, *bounds)  : ⑤ 4단계 확률
 - dashboard_data.build(cfg, forecast)  : 12 outlet ①~⑤ 조립·저장
 """
 from swat_py.drought.fdc import (

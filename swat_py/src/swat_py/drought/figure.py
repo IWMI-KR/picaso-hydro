@@ -1,7 +1,11 @@
 """가뭄위험 대시보드 outlet별 그림 (docx image1.png 중앙 차트 재현).
 
-①평년선(파랑)·②관측(검정)·③예측평균(주황)+박스플롯·④Q275/Q355 임계선(점선) +
-⑤ 단계확률 표(Watch/Warning/Crisis). series.csv/thresholds.csv/stage_prob.csv 를 읽음.
+①평년선(파랑)·②관측(검정)·③예측평균(주황)+박스플롯·④단계 경계선 3개(점선) +
+⑤ 단계확률 표(Normal/Watch/Warning/Crisis). series.csv/thresholds.csv/stage_prob.csv 를 읽음.
+
+④ 경계선은 thresholds.csv 의 normal_watch·watch_warning·warning_crisis 를 그대로 그린다
+— 설정에 따라 유량(기본 fdc_exceedance Q70/Q90/Q95)·저수량%·수위 ft 중 하나이고,
+범례 문구는 method 와 nw_input/ww_input/wc_input 에서 만든다(_criterion_label).
 """
 from __future__ import annotations
 

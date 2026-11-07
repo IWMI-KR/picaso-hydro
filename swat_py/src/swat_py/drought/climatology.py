@@ -2,7 +2,8 @@
 
 `4_drought_risk/climatology/channel_monthly_{syear+warmup}_{eyear}.csv`
 (wide: date + outlet열)를 읽어 각 outlet의 월별 평년유량(1~12월)과
-유황곡선 임계유량(Q275/Q355 등)을 산정한다.
+유황 대표유량(Q95d~Q355d, 참조값)을 산정한다. 대시보드 단계 경계는 이것이 아니라
+:func:`swat_py.drought.fdc.stage_thresholds` 가 설정대로(기본 Q70/Q90/Q95) 따로 뽑는다.
 
 climatology_run 이 시간 절약을 위해 **월단위만** 생산하므로 일유량 파일은 없다.
 과거 이름인 :func:`climatology_daily_path` 는 :func:`climatology_flow_path` 의

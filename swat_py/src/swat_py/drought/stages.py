@@ -1,11 +1,20 @@
 """가뭄 급수단계 분류 및 앙상블 확률.
 
-★ 4단계(권장 기본) — FDC 유황 3기준(평수 Q185·저수 Q275·갈수 Q355) 활용:
-  flow > Q185(평수량)            → Normal   (정상, 녹)
-  Q275 < flow ≤ Q185             → Watch    (주의, 황)
-  Q355 < flow ≤ Q275             → Warning  (경계, 주황)
-  flow ≤ Q355(갈수량)            → Crisis   (심각, 빨강)
-3단계(하위호환) — Watch(>Q275)/Warning/Crisis(≤Q355).
+★ 4단계(권장 기본) — 경계 3개를 높→낮 순으로 받아 분류한다:
+  value > nw                     → Normal   (정상, 녹)
+  ww < value ≤ nw                → Watch    (주의, 황)
+  wc < value ≤ ww                → Warning  (경계, 주황)
+  value ≤ wc                     → Crisis   (심각, 빨강)
+  (nw·ww·wc = normal_watch·watch_warning·warning_crisis)
+
+경계값은 :func:`swat_py.drought.fdc.stage_thresholds` 가 설정대로 산정한다 — 기본은
+유량 초과확률 `fdc_exceedance [70, 90, 95]`(= Q70·Q90·Q95)이고, 저수지는 저수량%
+(capacity_fraction) 또는 수위 ft(level_fraction)일 수 있다. 따라서 ``value`` 는 유량이
+아닐 수도 있다.
+  ※ 아래 인자 이름 q185·q275·q355 는 옛 유황 기준(평수·저수·갈수)을 쓰던 시절의
+    **이름만 남은 것**이며, 실제로 넘어오는 값은 위 설정 경계다. 호출부 호환을 위해
+    유지한다.
+3단계(하위호환) — Watch(>ww)/Warning/Crisis(≤wc), 경계 2개만 쓰던 옛 방식.
 ⑤ 앙상블: 각 예측월에서 멤버 유량이 어느 단계에 떨어지는지 비율 = 확률.
 """
 from __future__ import annotations

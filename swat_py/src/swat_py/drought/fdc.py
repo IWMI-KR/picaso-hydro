@@ -2,7 +2,14 @@
 
 과거 일유량을 큰 값→작은 값으로 정렬해 초과확률(Weibull)을 부여하고, 임의 초과확률의
 유량을 보간한다. 한국 유황 대표유량(풍수 Q95d·평수 Q185d·저수 Q275d·갈수 Q355d)을
-제공하며, 대시보드 ④ 단계경계선은 **Q275(Watch→Warning)·Q355(Warning→Crisis)**.
+:func:`fdc_thresholds` 로 제공한다 — 이는 **유역 특성 서술용 참조값**이며 단계 경계가
+아니다(산출물 thresholds.csv 의 Q95d~Q355d 열).
+
+대시보드 ④ 단계경계선은 :func:`stage_thresholds` 가 설정(`drought.sources[].thresholds`)
+대로 산정한 **3경계**다 — 기본 `fdc_exceedance [70, 90, 95]` = Q70(Normal→Watch)·
+Q90(Watch→Warning)·Q95(Warning→Crisis). 산출물 열 이름은 normal_watch·watch_warning·
+warning_crisis 이고, 입력값은 nw_input·ww_input·wc_input 에 함께 기록된다.
+  ※ Q275d·Q355d 를 경계로 쓰던 옛 2경계 방식은 아래 별칭으로만 남아 있다(하위호환).
 
 출처 이식: 0_database/obs/weather/analysis/hydrology_frequency/hydro_analysis.py (단일지점)
 → 채널 무관 순수함수로 일반화.
@@ -43,16 +50,20 @@ def q_at(exceed_pct: float, fdc: pd.DataFrame) -> float:
 
 
 def fdc_thresholds(daily_q) -> Dict[str, float]:
-    """일유량 → 유황 대표유량 dict (Q95d·Q185d·Q275d·Q355d) + 편의 별칭.
+    """유량 계열 → 유황 대표유량 dict (Q95d·Q185d·Q275d·Q355d) + 하위호환 별칭.
 
-    반환 키: 'Q95d','Q185d','Q275d','Q355d' 및 대시보드용 'watch_warning'(=Q275d),
-    'warning_crisis'(=Q355d).
+    반환 키: 'Q95d','Q185d','Q275d','Q355d' 및 옛 2경계 방식의 별칭
+    'normal_watch'(=Q185d), 'watch_warning'(=Q275d), 'warning_crisis'(=Q355d).
+
+    ★ 현재 대시보드는 이 별칭을 쓰지 않는다 — 단계 경계는 :func:`stage_thresholds` 가
+      설정대로(기본 Q70/Q90/Q95) 따로 산정한다. 여기서 나오는 Q95d~Q355d 는 보고서의
+      유역 유출특성 표(풍수·평수·저수·갈수)에 쓰이는 참조값이다.
     """
     fdc = flow_duration_curve(daily_q)
     out: Dict[str, float] = {}
     for name, days in FLOW_REGIME_DAYS.items():
         out[name] = q_at(days / 365.0 * 100.0, fdc)
-    # 4단계 경계(권장): Normal|Watch=Q185(평수), Watch|Warning=Q275(저수), Warning|Crisis=Q355(갈수)
+    # 하위호환 별칭(옛 기본값) — 현재 경로는 stage_thresholds() 가 설정값으로 대체한다.
     out["normal_watch"] = out["Q185d"]
     out["watch_warning"] = out["Q275d"]
     out["warning_crisis"] = out["Q355d"]
