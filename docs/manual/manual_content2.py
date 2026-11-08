@@ -240,11 +240,14 @@ chapter("8", "평년과 단계 기준 만들기", "Building the climatology and 
 
     ("box", "concept", T("평년 (climatology)", "Climatology"),
      L(["긴 과거 기간을 모형으로 돌려 만든 “보통 해는 이쯤” 하는 기준선입니다. "
-        "화면의 Historical Mean 선이 이것입니다.",
+        "그래프의 파란 선이 이것으로, 범례는 설정한 통계와 기간을 그대로 적습니다 "
+        "— `Historical Mean (1985–2023)` 또는 `Historical Median (1985–2023)`.",
         "급수 단계의 경계(Q70·Q90·Q95 등)도 이 기간의 분포에서 나옵니다. "
         "그래서 **예측보다 먼저** 만들어야 합니다."],
        ["A baseline of “what a normal year looks like”, produced by running the "
-        "model over a long past period. It is the Historical Mean line on screen.",
+        "model over a long past period. It is the blue line on the figure; the "
+        "legend states the statistic and period you configured — "
+        "`Historical Mean (1985–2023)` or `Historical Median (1985–2023)`.",
         "The stage boundaries (Q70, Q90, Q95 and so on) also come from this period's "
         "distribution — which is why it must be built **before** any forecast."])),
 

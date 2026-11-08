@@ -498,12 +498,15 @@ chapter("4", "설정 파일 고치기", "Editing the settings files", [
         "  syear: 1982               ← ① 평년을 계산할 시작 연도",
         "  eyear: 2023               ← ② 끝 연도",
         '  climatology_stat: "mean"  ← ③ 평년선을 평균으로 할지 중앙값으로 할지',
+        '  worst_stat: ""            ← ④ 최악 시나리오만 다른 통계로 (비우면 ③ 따라감)',
     ], [
         "drought:",
         '  base_weather: "single_station"',
         "  syear: 1982               <- (1) first year of the climatology",
         "  eyear: 2023               <- (2) last year",
         '  climatology_stat: "mean"  <- (3) mean or median for the normal line',
+        '  worst_stat: ""            <- (4) different statistic for the worst '
+        "scenario only (empty = follow (3))",
     ])),
     ("keys", L([
         ("시작 연도", "관측 기록이 있는 가장 이른 해로 두십시오."),
@@ -512,6 +515,10 @@ chapter("4", "설정 파일 고치기", "Editing the settings files", [
         ("평년선 통계", "`mean`(평균)이 기본입니다. 저수지 수위처럼 위가 만수로 막혀 "
          "있고 가뭄 해가 몇 번 섞인 경우에는 `median`(중앙값)이 '보통 해'를 더 "
          "정직하게 보여 줍니다. **단계 경계에는 영향이 없습니다** — 화면의 선만 바뀝니다."),
+        ("최악 시나리오 통계", "평년선과 최악 시나리오는 요구가 **반대**입니다. 저수지에서 "
+         "`median` 은 만수에 고정되는 일이 있어 모든 기간이 동점이 되고 '최악'이 가려지지 "
+         "않습니다. 그럴 때만 `worst_stat: \"mean\"` 으로 최악 쪽만 평균으로 바꾸십시오 "
+         "— 비워 두면 평년선 통계를 그대로 따릅니다."),
     ], [
         ("First year", "Set it to the earliest year with observations."),
         ("Last year", "The last year with **complete** weather data. Extending into "
@@ -520,6 +527,11 @@ chapter("4", "설정 파일 고치기", "Editing the settings files", [
          "at full supply — and a few drought years sit in the record, `median` shows "
          "a “typical year” more honestly. **Stage boundaries are unaffected**; only "
          "the displayed line changes."),
+        ("Worst-scenario statistic", "The normal line and the worst scenario want "
+         "**opposite** things. For a reservoir the `median` can sit pinned at full "
+         "supply, so every period ties and no “worst” can be picked out. Only then "
+         "set `worst_stat: \"mean\"` to switch the worst scenario alone — left empty "
+         "it follows the normal-line statistic."),
     ])),
 
     ("h3", T("수원 — 하천", "Sources — a river")),

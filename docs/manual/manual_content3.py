@@ -98,16 +98,27 @@ chapter("10", "결과 읽기", "Reading the results", [
         ("굵은 선 — 예측 중앙값", "1,000개 예측의 한가운데입니다."),
         ("연한 띠 — 예측이 흩어진 범위", "안쪽 띠는 절반, 바깥 띠는 열에 아홉이 들어가는 "
          "범위입니다. 띠가 넓으면 그만큼 불확실하다는 뜻입니다."),
-        ("Historical Mean — 평년선", "보통 해는 이쯤이라는 기준입니다. 예측선이 이보다 "
-         "아래면 평년보다 마른 해입니다."),
+        ("파란 선 — 평년선", "보통 해는 이쯤이라는 기준입니다. 예측선이 이보다 아래면 "
+         "평년보다 마른 해입니다. 범례에 통계와 기간이 그대로 적힙니다 "
+         "(`Historical Mean (1985–2023)` 또는 `Historical Median (…)`)."),
+        ("파란 점선 — 평년 평균선", "평년선을 **중앙값**으로 설정한 경우에만 함께 "
+         "나옵니다. 예측선은 늘 앙상블 **평균**이라 통계가 어긋나면 예측이 체계적으로 "
+         "낮아 보이므로, 같은 통계의 기준선을 덧그려 그 착시를 없앱니다. 평년과 견줄 "
+         "때는 **점선**과 비교하십시오."),
         ("Observed — 관측", "하천은 관측 기상으로 돌린 **모의값**이고, 저수지는 "
          "**실측 수위**입니다. 같은 이름이지만 성격이 다릅니다."),
     ], [
         ("Bold line - forecast median", "The middle of the 1,000 forecasts."),
         ("Shaded bands - the spread", "The inner band holds half the forecasts, the "
          "outer nine in ten. A wide band means high uncertainty."),
-        ("Historical Mean", "What a normal year looks like. A forecast below it is a "
-         "drier-than-normal year."),
+        ("Blue line - the normal line", "What a normal year looks like. A forecast "
+         "below it is a drier-than-normal year. The legend states the statistic and "
+         "period (`Historical Mean (1985–2023)` or `Historical Median (…)`)."),
+        ("Blue dashed line - historical mean", "Drawn only when the normal line is "
+         "set to the **median**. The forecast line is always the ensemble **mean**, "
+         "so mismatched statistics make the forecast look systematically low; the "
+         "matching baseline removes that artefact. Compare against the **dashed** "
+         "line."),
         ("Observed", "For rivers this is a **simulation driven by observed weather**; "
          "for reservoirs it is the **measured level**. Same label, different things."),
     ])),
@@ -181,7 +192,12 @@ chapter("11", "문제가 생기면", "When something goes wrong", [
            "(4장 경고 상자). 범위를 벗어나면 프로그램이 바꿔 적을 값을 알려 줍니다."],
           ["평년선이 늘 Watch 구간에 그려진다",
            "가뭄 해 몇 개가 평균을 끌어내린 것입니다. `climatology_stat` 을 "
-           "`median` 으로 바꾸고 평년을 다시 만드십시오."]]),
+           "`median` 으로 바꾸고 평년을 다시 만드십시오. 그 뒤로는 평년 평균선이 "
+           "파란 **점선**으로 함께 그려집니다."],
+          ["저수지 최악 시나리오에서 모든 기간이 똑같이 나온다",
+           "중앙값이 만수에 고정돼 순위가 매겨지지 않는 것입니다. "
+           "`worst_stat: \"mean\"` 을 넣으면 하위 꼬리가 반영돼 동점이 사라집니다 "
+           "(평년선은 그대로 둡니다)."]]),
         (["Symptom", "Cause and fix"],
          [["Far fewer than 1,000 valid members",
            "Either the weather did not cover the forecast period, or SWAT+ failed. "
@@ -199,7 +215,12 @@ chapter("11", "문제가 생기면", "When something goes wrong", [
            "run and the message tells you the value to use."],
           ["The normal line always sits in the Watch band",
            "A few drought years are pulling the average down. Set "
-           "`climatology_stat` to `median` and rebuild the climatology."]]))),
+           "`climatology_stat` to `median` and rebuild the climatology. From then on "
+           "the historical mean is drawn alongside it as a blue **dashed** line."],
+          ["Every period looks identical in the reservoir worst scenario",
+           "The median is pinned at full supply, so nothing can be ranked. Adding "
+           "`worst_stat: \"mean\"` brings the lower tail back in and the ties "
+           "disappear (leave the normal line as it is)."]]))),
 
     ("h2", T("자료 문제", "Data problems")),
     ("table", L(
@@ -299,7 +320,9 @@ chapter("A", "명령어 한눈에", "Command reference", [
     ("table", L(
         (["명령", "하는 일"],
          [["swat-drought-ensemble-weather", "상세화만 따로 실행 (acidwg-run 을 swat_py 에서 부름)"],
-          ["swat-drought-historical-worst", "과거 최저강수 해를 가정한 최악 시나리오 모의"],
+          ["swat-drought-historical-worst", "과거(1985~2023) 계절별 최저강수 해를 가정한 "
+                                            "최악 시나리오 모의 — 표와 그림을 함께 냅니다. "
+                                            "예측 기반 최악(`worst`)과는 다른 산출입니다"],
           ["util-gis-clip-to-user", "국가 자료를 사용자가 지정한 유역 범위로 잘라내기"],
           ["swat-tank-calibrate", "Tank 모형(간이 유출모형) 검보정 — SWAT+ 와 견주어 볼 때"],
           ["swat-tank-reservoir-calibrate", "Tank 모형으로 저수지 수위 검보정"],
@@ -307,7 +330,10 @@ chapter("A", "명령어 한눈에", "Command reference", [
         (["Command", "What it does"],
          [["swat-drought-ensemble-weather", "Run downscaling on its own (calls acidwg-run from "
                                              "swat_py)"],
-          ["swat-drought-historical-worst", "Worst-case run assuming the driest year on record"],
+          ["swat-drought-historical-worst", "Worst-case run assuming the driest year on "
+                                            "record (1985-2023) for each season; writes "
+                                            "tables and figures. Distinct from the "
+                                            "forecast-based `worst` output"],
           ["util-gis-clip-to-user", "Clip the national data to a catchment boundary you supply"],
           ["swat-tank-calibrate",
            "Calibrate the Tank model (a simple runoff model) for comparison"],
