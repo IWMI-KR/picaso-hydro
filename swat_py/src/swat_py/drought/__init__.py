@@ -8,6 +8,8 @@ outlet 별로 산출한다. 설정은 yaml `drought:` 블록(env._DroughtCfg) / 
 - fdc_thresholds(daily_q)              : 유황 대표유량 Q95d~Q355d (참조값, 경계 아님)
 - stage_thresholds(q, method, values)  : ④ 단계 경계 3개 (기본 Q70/Q90/Q95)
 - stage_probabilities4(vals, *bounds)  : ⑤ 4단계 확률
+- tercile_probabilities(vals, t33, t67): ⑥ 3분위 확률 BN·NN·AN(평년 대비 상대위치)
+- build_terciles(cfg, forecast)        : ⑥ 3분위 CSV·파이 (기존 산출물 소급 적용)
 - dashboard_data.build(cfg, forecast)  : 12 outlet ①~⑤ 조립·저장
 """
 from swat_py.drought.fdc import (
@@ -25,6 +27,9 @@ from swat_py.drought.stages import (
 from swat_py.drought.climatology_run import run_climatology
 from swat_py.drought.ensemble_weather import generate_ensemble_weather
 from swat_py.drought.reclassify import reclassify_stages
+from swat_py.drought.tercile import (
+    TERCILES, build_terciles, tercile_bounds, tercile_probabilities,
+)
 from swat_py.drought.run import run_pipeline
 
 __all__ = [
@@ -36,4 +41,5 @@ __all__ = [
     "run_ensemble", "OUTLETS",
     "run_climatology", "generate_ensemble_weather", "reclassify_stages",
     "run_pipeline",
+    "TERCILES", "tercile_bounds", "tercile_probabilities", "build_terciles",
 ]

@@ -74,6 +74,7 @@ swat-drought-dashboard --demo 5              # 5멤버만 (검증용 빠른 실�
 | `outlet_climatology_and_thresholds(daily, outlet)` | `drought.climatology` | ① 월평년(mean·p25·p50·p75) + ④ FDC 임계선 |
 | `stage_thresholds(daily_q, method, values, capacity)` | `drought.fdc` | 4단계 경계 산정. 하천=유량(m³/s), 저수지=저수량(m³) 또는 만수대비%. 항상 `normal_watch ≥ watch_warning ≥ warning_crisis` |
 | `stage_probabilities4(values, q185, q275, q355)` | `drought.stages` | 앙상블 → Normal/Watch/Warning/Crisis 확률(%) + 최빈 단계 |
+| `tercile_probabilities(values, t33, t67)` | `drought.tercile` | 앙상블 → BN/NN/AN 확률(%) + 최빈 분위. 경계는 평년 같은 달 분포의 1/3·2/3 지점 |
 | `run_ensemble(base_dir, ensemble_dir, …)` | `drought.ensemble_flow` | N멤버 SWAT+ 병렬 실행 → `(values, aux)`. aux 에 앙상블 강수·기온·저수지 수위 포함 |
 | `dumps_json(obj)` | `dashboard.json_writers` | NaN → null 표준 JSON 직렬화 |
 
@@ -92,10 +93,24 @@ swat-drought-dashboard --demo 5              # 5멤버만 (검증용 빠른 실�
 | `thresholds.csv` | 4단계 경계값 |
 | `stage_prob.csv` | 월별 단계확률 |
 | `stage_prob_season.csv` | 계절 전체 단계확률(1행) |
+| `tercile_prob.csv` | 월별 3분위 확률 BN·NN·AN + 경계값 t33·t67 (3분위 파이 원본, **하천만**) |
+| `tercile_prob_season.csv` | 계절(3개월 평균) 3분위 확률(1행, **하천만**) |
 | `ensemble_members.csv` | 멤버별 원자료 (열 이름 = 연-월 `2025-12`·`2026-01`) |
 | `dashboard.json` | 대시보드용 통합 JSON(NaN→null) |
 
-상위 폴더에 `summary.csv` 를 함께 저장한다.
+상위 폴더에 `summary.csv`·`summary_season.csv`·`summary_tercile.csv`·`summary_tercile_season.csv` 를 함께 저장한다.
+
+> **4단계와 3분위의 차이** — 4단계(Normal·Watch·Warning·Crisis)는 절대 경계(FDC Q70/Q90/Q95,
+> 저수량 %, 수위 ft)로 "얼마나 위험한가"를 말하고, 3분위(BN·NN·AN)는 평년 분포 안에서의
+> 상대 위치로 "평년보다 많은가 적은가"를 말한다. 평년이 원래 적은 달에는 BN 이어도 4단계는
+> Normal 일 수 있고, 그 반대도 성립한다 — 둘은 서로를 대신하지 않는다.
+> BN(Below Normal) 평년 하위 1/3 · NN(Near Normal) 평년 중간 1/3 · AN(Above Normal) 평년 상위 1/3.
+
+> **3분위는 하천 수원에만 적용한다** — 저수지(저수량 %·수위 ft)는 내지 않는다. 저수량은
+> 만수에서 위가 막히고 운영(취수·전환량)이 값을 정하므로 평년 분포 안의 상대 위치가 가뭄
+> 정보가 되지 않는다(만수 해가 몰리면 분위 경계 자체가 붙어 버린다). 저수지는 절대 경계
+> (만수 대비 %·수위 ft)로 보는 4단계 가뭄단계만 쓰고, `dashboard.json` 의 `terciles`·
+> `season_tercile` 은 빈 값으로 남는다(빈 값 = 미적용).
 
 ## 6. 설계상 주목할 점
 

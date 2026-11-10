@@ -45,6 +45,10 @@ from swat_py.drought.season import (
     period_end_year, period_ym, season_months, series_ym, ym_labels,
 )
 from swat_py.drought.stages import stage_probabilities4
+from swat_py.drought.tercile import (
+    TERCILES, month_samples, monthly_values,
+    season_sample, tercile_rows, tercile_season_row, write_tercile_csvs,
+)
 
 __all__ = ["SEASON_MONTHS", "ForecastIncomplete", "build", "empty_forecast_months",
            "main", "member_detail_rows", "members_wide"]   # SEASON_MONTHS 는 season.py 가 정본
@@ -676,6 +680,25 @@ def _seasonal_stage_row(mem, months, q185, q275, q355, season, *,
     return {"season": season, **sp}
 
 
+def _tercile_for_outlet(out_dir, mem, months, mon_ym, season, mv, *,
+                        clim_years: str = ""):
+    """⑥ 3분위(BN·NN·AN) 확률 CSV 2종을 수원 폴더에 쓰고 (월별행, 계절행) 반환.
+
+    **하천 수원 전용**이다 — 저수지는 3분위를 내지 않으므로 호출부에서 아예
+    부르지 않는다(이유는 swat_py.drought.tercile 모듈 설명).
+
+    ``mv`` = 평년 월 시계열 Series((연,월)→값). None 이면 경계를 낼 수 없어
+    아무것도 쓰지 않고 ``([], None)`` 을 돌려준다.
+    """
+    if mem is None or mv is None or not len(mv):
+        return [], None
+    rows = tercile_rows(mem, months, mon_ym, month_samples(mv), clim_years=clim_years)
+    srow = tercile_season_row(mem, months, season, season_sample(mv, months),
+                              clim_years=clim_years)
+    write_tercile_csvs(out_dir, rows, srow)
+    return rows, srow
+
+
 def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
           strict: bool = True) -> Dict:
     fyear = int(forecast.split("_")[0]); season = forecast.split("_")[1]
@@ -772,6 +795,8 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
 
     summary_rows = []
     season_summary_rows = []            # 계절(3개월 평균) 단일 리스크
+    tercile_rows_all = []               # ⑥ 3분위(BN·NN·AN) 월별
+    tercile_season_rows = []            # ⑥ 3분위 3개월 평균
     incomplete: List[tuple] = []        # (수원, "YYYY-MM", 사유) — 비면 실패로 끝낸다
     skipped_outlets: List[str] = []     # 평년 자료에 없어 건너뛴 수원(경고만)
 
@@ -861,6 +886,12 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                     "most_likely": season_row["most_likely"], "Normal": season_row["Normal"],
                     "Watch": season_row["Watch"], "Warning": season_row["Warning"],
                     "Crisis": season_row["Crisis"]})
+            # ⑥ 3분위(BN·NN·AN) — **저수지는 내지 않는다**(설계상 제외).
+            #   저수량은 만수에서 위가 막히고 운영(취수·전환)이 값을 정하므로
+            #   '평년 대비 상대 위치'가 가뭄 정보가 되지 않는다. 저수지는 절대
+            #   경계(만수 대비 %·수위 ft)로 보는 4단계 가뭄단계만 쓴다.
+            t_rows, t_season = [], None
+            print("    · ⑥ 3분위 미적용 — 저수지는 4단계 가뭄단계만 사용")
             (out_dir / "dashboard.json").write_text(dumps_json({
                 "outlet": outlet, "type": "reservoir",
                 "unit": "ft" if level_based else "capacity_pct",
@@ -882,6 +913,9 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                                "warning_crisis": q355},
                 "series": series.to_dict(orient="list"),   # NaN→null 은 dumps_json 이 처리
                 "stages": stage_rows, "season_stage": season_row,
+                # ⑥ 3분위 — 저수지는 미적용이라 항상 빈 값이다. 열 자체는 남겨
+                #    화면이 하천과 같은 구조로 읽을 수 있게 한다(빈 값 = 미적용).
+                "terciles": t_rows, "season_tercile": t_season,
             }, indent=1), encoding="utf-8")
             for sr in stage_rows:
                 summary_rows.append({"outlet": outlet, "ym": sr["ym"],
@@ -975,6 +1009,20 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                 "Watch": season_row["Watch"], "Warning": season_row["Warning"],
                 "Crisis": season_row["Crisis"]})
 
+        # ⑥ 3분위(BN·NN·AN) — 평년 월유량 분포(channel_monthly)의 1/3·2/3 경계와 견준다.
+        t_rows, t_season = _tercile_for_outlet(
+            out_dir, mem, months, mon_ym, season, monthly_values(daily, outlet),
+            clim_years=climatology_tag(cfg))
+        for tr in t_rows:
+            tercile_rows_all.append({"outlet": outlet, "ym": tr["ym"],
+                                     "month": tr["month"],
+                                     "most_likely": tr["most_likely"],
+                                     **{k: tr[k] for k in TERCILES}})
+        if t_season:
+            tercile_season_rows.append({"outlet": outlet, "season": season,
+                                        "most_likely": t_season["most_likely"],
+                                        **{k: t_season[k] for k in TERCILES}})
+
         # dashboard.json
         (out_dir / "dashboard.json").write_text(dumps_json({
             "outlet": outlet, "forecast": forecast, "months": months,
@@ -989,6 +1037,8 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                            "warning_crisis": q355},
             "series": series.to_dict(orient="list"),   # NaN→null 은 dumps_json 이 처리
             "stages": stage_rows, "season_stage": season_row,
+            # ⑥ 평년 대비 3분위 확률 — BN(하위 1/3)·NN(중간)·AN(상위 1/3)
+            "terciles": t_rows, "season_tercile": t_season,
         }, indent=1), encoding="utf-8")
 
         for sr in stage_rows:
@@ -1008,6 +1058,13 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
     # 계절(3개월 평균) 단일 리스크 요약
     pd.DataFrame(season_summary_rows).to_csv(out_root / "summary_season.csv",
                                              index=False, encoding="utf-8-sig")
+    # ⑥ 3분위(BN·NN·AN) 요약 — 월별 / 3개월 평균
+    if tercile_rows_all:
+        pd.DataFrame(tercile_rows_all).to_csv(out_root / "summary_tercile.csv",
+                                              index=False, encoding="utf-8-sig")
+    if tercile_season_rows:
+        pd.DataFrame(tercile_season_rows).to_csv(out_root / "summary_tercile_season.csv",
+                                                 index=False, encoding="utf-8-sig")
     if skipped_outlets:
         print(f"  ⚠ 평년 자료에 없어 건너뛴 수원 {len(skipped_outlets)}개: "
               f"{', '.join(skipped_outlets)}")

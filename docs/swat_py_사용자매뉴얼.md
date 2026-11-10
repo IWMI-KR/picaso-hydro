@@ -79,7 +79,7 @@ python -m swat_py.drought.dashboard_data [--forecast 2016_AMJ] [--members 100] [
 - base(calibrated + 예측기간 time.sim) 준비 → 앙상블 SWAT+ 실행 → 수원별 series/thresholds/stage_prob/dashboard.json + summary.
 - 인자: `--forecast`(기본 config forecast.period), `--members`(기본 config n_members), `--workers`(6), `--demo N`(>0이면 N멤버만, 검증용).
 - **입력**: climatology CSV, 앙상블 멤버(`1_acidwg/forecast/{year}_{season}/member_*`), `calibrated/`.
-- **출력**: `3_swatplus/forecast/{period}/{outlet}.csv`(하천: `member,year,month,precip_mm,tmax_c,tmin_c,flo_m3s` / 저수지: `…,water_level_ft,storage_pct`. `year` 는 NDJ·DJF 에서 1·2월이 다음 해임을 나타냄). `4_drought_risk/forecast/{period}/{outlet}/`(series·thresholds·stage_prob·ensemble_members·dashboard.json) + `summary.csv`·`summary_season.csv` + 그림. (dashboard.json은 결측을 표준 JSON `null`로 출력.)
+- **출력**: `3_swatplus/forecast/{period}/{outlet}.csv`(하천: `member,year,month,precip_mm,tmax_c,tmin_c,flo_m3s` / 저수지: `…,water_level_ft,storage_pct`. `year` 는 NDJ·DJF 에서 1·2월이 다음 해임을 나타냄). `4_drought_risk/forecast/{period}/{outlet}/`(series·thresholds·stage_prob·tercile_prob(하천만)·ensemble_members·dashboard.json) + `summary.csv`·`summary_season.csv`·`summary_tercile.csv`·`summary_tercile_season.csv` + 그림. (dashboard.json은 결측을 표준 JSON `null`로 출력.)
 
 #### `swat_py.drought.historical_worst` — 계절/월 최저강수 worst 모의
 ```bash
@@ -114,6 +114,19 @@ python -m swat_py.drought.ensemble_weather [--forecast 2016_AMJ] [--members N] [
 python -m swat_py.drought.figure [--forecast 2016_AMJ] [--out-root DIR]
 ```
 - `series/thresholds/stage_prob.csv` → `dashboard_{outlet}.png`(시계열+표), `_gauge.png`, `_pie.png`(월별+3개월평균), `_season_pie.png`. 저수지 outlet은 만수대비 저수량% 축으로 자동 전환.
+- `tercile_prob.csv` 가 있으면 `_tercile_pie.png`(3분위 BN·NN·AN 파이)도 함께 그린다. 저수지 outlet 은 3분위를 적용하지 않으므로 이 그림이 없다.
+
+#### `swat_py.drought.tercile` — ⑥ 3분위(BN·NN·AN) 확률
+```bash
+python -m swat_py.drought.tercile [--forecast 2026_SON] [--dashboard-root DIR] [--no-figure]
+python -m swat_py.drought.tercile --all        # 모든 예측연월에 일괄 적용(멱등)
+```
+- 기후예측과 같은 형식으로 **평년 대비 상대위치**를 낸다 — BN(Below Normal, 평년 하위 1/3)·NN(Near Normal, 평년 중간 1/3)·AN(Above Normal, 평년 상위 1/3).
+- 절대 경계(FDC Q70/Q90/Q95)를 쓰는 4단계(Normal·Watch·Warning·Crisis)와 **다른 질문**에 답한다 — 4단계는 "얼마나 위험한가", 3분위는 "평년보다 많은가 적은가".
+- 경계(t33·t67)는 평년 산출물의 **같은 달 분포**(`channel_monthly_{tag}.csv`, 1985~2023 이면 39년)에서, 3개월 평균은 같은 계절의 연도별 3개월 평균 분포에서 뽑는다.
+- `dashboard_data` 가 예측 때마다 자동 생성하므로 보통은 따로 돌릴 필요가 없다. 이 명령은 **기존 산출물에 소급 적용**할 때 쓴다(SWAT 재실행 없이 저장된 `ensemble_members.csv` 를 읽음).
+- **출력**: outlet별 `tercile_prob.csv`(월별)·`tercile_prob_season.csv`(3개월평균) + `dashboard_{outlet}_tercile_pie.png`, 예측연월 폴더에 `summary_tercile.csv`·`summary_tercile_season.csv`.
+- **하천 수원만** 적용한다. 저수지(저수량 %·수위 ft)는 3분위를 내지 않는다 — 저수량은 만수에서 위가 막히고 운영(취수·전환)이 값을 정하므로 "평년 대비 상대위치"가 가뭄 정보가 되지 않는다. 저수지는 절대 경계로 보는 4단계 가뭄단계만 쓴다. 저수지 수원은 사유를 한 줄 찍고 건너뛰며 CSV·그림을 만들지 않는다(판별 근거는 그 폴더의 `thresholds.csv`).
 
 ### 3.3 Tank 모형 (tank)
 
@@ -208,7 +221,7 @@ python -m swat_py.drought.historical_worst --monthly  # 월
 ├── calibration-tank/        params·results·transfer  (Tank 검보정)
 └── forecast/{period}/{outlet}.csv  ·  forecast/historical_worst/
 4_drought_risk/
-├── climatology/             channel_monthly(_avg)_{tag}.csv
-└── forecast/{period}/{outlet}/  series·thresholds·stage_prob·dashboard.json + 그림
+├── climatology/             channel_monthly(_avg)_{tag}.csv · reservoir_monthly_avg_{tag}.csv
+└── forecast/{period}/{outlet}/  series·thresholds·stage_prob·tercile_prob(하천만)·dashboard.json + 그림
 reports/04_검보정결과 · 05_모형간_유량비교
 ```

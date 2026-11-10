@@ -24,6 +24,10 @@ chapter("10", "결과 읽기", "Reading the results", [
         "    +-- stage_prob.csv      달별 단계 확률   <- 보고서에 바로 쓸 표",
         "    +-- dashboard.json      위 전부 + 설명",
         "    +-- ngerimel.png        그림",
+        "",
+        "하천 수원 폴더에는 아래 두 가지가 더 있습니다(저수지에는 없습니다).",
+        "    +-- tercile_prob.csv    달별 3분위 확률  <- 평년 대비 BN/NN/AN",
+        "    +-- *_tercile_pie.png   3분위 파이 그림",
     ], [
         "4_drought_risk/forecast/2026_FMA/",
         "+-- ngerimel/",
@@ -32,6 +36,10 @@ chapter("10", "결과 읽기", "Reading the results", [
         "    +-- stage_prob.csv      monthly stage probabilities  <- ready for reports",
         "    +-- dashboard.json      all of the above, plus notes",
         "    +-- ngerimel.png        the figure",
+        "",
+        "Stream outlets also carry these two (reservoirs do not).",
+        "    +-- tercile_prob.csv    monthly tercile probabilities (BN/NN/AN)",
+        "    +-- *_tercile_pie.png   tercile pie figure",
     ])),
 
     ("box", "tip", T("폴더 이름에 붙는 꼬리표", "The tag on the folder name"),

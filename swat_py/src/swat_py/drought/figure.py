@@ -2,6 +2,8 @@
 
 ①평년선(파랑)·②관측(검정)·③예측평균(주황)+박스플롯·④단계 경계선 3개(점선) +
 ⑤ 단계확률 표(Normal/Watch/Warning/Crisis). series.csv/thresholds.csv/stage_prob.csv 를 읽음.
+⑥ 3분위 확률 파이(BN/NN/AN) — tercile_prob.csv/tercile_prob_season.csv 를 읽어
+   dashboard_{outlet}_tercile_pie.png 로 따로 낸다(make_tercile_pie). 4단계 파이와 별개다.
 
 ④ 경계선은 thresholds.csv 의 normal_watch·watch_warning·warning_crisis 를 그대로 그린다
 — 설정에 따라 유량(기본 fdc_exceedance Q70/Q90/Q95)·저수량%·수위 ft 중 하나이고,
@@ -24,6 +26,10 @@ plt.rcParams["font.family"] = "Malgun Gothic"
 plt.rcParams["axes.unicode_minus"] = False
 
 from swat_py.drought.stages import STAGES4, STAGE_COLORS, STAGE_SCORE
+from swat_py.drought.tercile import (
+    TERCILES, TERCILE_COLORS, TERCILE_LABELS, TERCILE_LABELS_KO,
+    TERCILE_TEXT_COLORS, is_reservoir_outlet,
+)
 
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -342,6 +348,121 @@ def make_season_pie(out_dir) -> "Path | None":
     return out
 
 
+def _tercile_panel(out_dir):
+    """tercile_prob_season.csv → (title, probs, most_likely, t33, t67) 또는 None."""
+    fp = Path(out_dir) / "tercile_prob_season.csv"
+    if not fp.is_file():
+        return None
+    sdf = pd.read_csv(fp)
+    if not len(sdf):
+        return None
+    r = sdf.iloc[0]
+    return (f"{r.get('season', '')} 3-month mean",
+            {k: float(r.get(k, float('nan'))) for k in TERCILES},
+            str(r["most_likely"]), r.get("t33"), r.get("t67"))
+
+
+def _value_unit(out_dir) -> str:
+    """3분위 경계값의 단위 — 하천 유량 m³/s · 저수지 저수량 % · 수위 ft.
+
+    thresholds.csv 가 없으면 빈 문자열(단위를 모르면 적지 않는다).
+    """
+    p = Path(out_dir) / "thresholds.csv"
+    if not p.is_file():
+        return ""
+    thr = pd.read_csv(p).iloc[0]
+    if _is_level_outlet(thr):
+        return "ft"
+    if _is_reservoir_outlet(thr):
+        return "%"
+    return "m³/s"
+
+
+def _bound_note(t33, t67, unit: str = "") -> str:
+    """패널 아래 경계값 한 줄 — 평년 분포의 1/3·2/3 지점이 어디인지 보이게."""
+    try:
+        a, b = float(t33), float(t67)
+    except (TypeError, ValueError):
+        return ""
+    if a != a or b != b:
+        return "평년 표본 부족 — 경계 산정 불가"
+    u = f" {unit}" if unit else ""
+    # 두 줄 — 한 줄로 두면 패널이 좁아질 때 옆 패널 글자와 맞붙는다.
+    return f"평년 1/3 지점  {a:.3g}{u}\n평년 2/3 지점  {b:.3g}{u}"
+
+
+def make_tercile_pie(out_dir) -> "Path | None":
+    """⑥ 월별 + 3개월 평균 **3분위(BN·NN·AN) 확률 파이** → dashboard_{outlet}_tercile_pie.png.
+
+    원본 CSV 는 ``tercile_prob.csv``(월별)·``tercile_prob_season.csv``(3개월 평균)로,
+    :mod:`swat_py.drought.tercile` 이 평년 분포의 1/3·2/3 경계와 함께 적어 둔다.
+    그 파일이 없으면 ``None`` — 4단계 파이(dashboard_{outlet}_pie.png)와는 **별개** 그림이다.
+
+      BN(Below Normal) — 평년 하위 1/3. 평년보다 적은 쪽
+      NN(Near Normal)  — 평년 중간 1/3. 평년과 비슷한 쪽
+      AN(Above Normal) — 평년 상위 1/3. 평년보다 많은 쪽
+
+    **저수지 수원은 그리지 않는다**(``None``) — 3분위 자체를 적용하지 않는다.
+    옛 산출물에 CSV 가 남아 있어도 그림으로 내보내지 않도록 여기서도 막는다.
+    """
+    out_dir = Path(out_dir)
+    if is_reservoir_outlet(out_dir):
+        return None
+    fp = out_dir / "tercile_prob.csv"
+    outlet = out_dir.name
+    panels = []
+    if fp.is_file():
+        tp = pd.read_csv(fp)
+        panels = [(_month_label(r),
+                   {k: float(r.get(k, float("nan"))) for k in TERCILES},
+                   str(r["most_likely"]), r.get("t33"), r.get("t67"))
+                  for _, r in tp.iterrows()]
+    season = _tercile_panel(out_dir)         # 3개월 평균 파이(있으면 마지막)
+    if season is not None:
+        panels.append(season)
+    if not panels:
+        return None
+
+    unit = _value_unit(out_dir)
+    n = len(panels)
+    fig, axes = plt.subplots(1, n, figsize=(3.3 * n, 3.9))
+    if n == 1:
+        axes = [axes]
+    for ax, (title, probs, ml, t33, t67) in zip(axes, panels):
+        vals = [0.0 if probs[k] != probs[k] else probs[k] for k in TERCILES]
+        if sum(vals) <= 0:                   # 경계 산정 불가 → 빈 원 + 사유
+            ax.pie([1], colors=["#e8e8e8"], wedgeprops=dict(edgecolor="white"))
+            ax.text(0, 0, "자료 없음", ha="center", va="center", fontsize=9)
+        else:
+            wedges, _ = ax.pie(vals, colors=[TERCILE_COLORS[k] for k in TERCILES],
+                               startangle=90, counterclock=False,
+                               wedgeprops=dict(edgecolor="white", linewidth=1.5))
+            for w, k, v in zip(wedges, TERCILES, vals):
+                if v >= 5:
+                    ang = np.deg2rad((w.theta1 + w.theta2) / 2)
+                    ax.text(0.62 * np.cos(ang), 0.62 * np.sin(ang), f"{k}\n{v:.0f}%",
+                            ha="center", va="center", fontsize=9, color="white",
+                            fontweight="bold", linespacing=1.1)
+        ax.set_title(f"{title}\n→ {ml} ({TERCILE_LABELS.get(ml, '')})", fontsize=10,
+                     color=TERCILE_TEXT_COLORS.get(ml, "black"), fontweight="bold")
+        note = _bound_note(t33, t67, unit)
+        if note:
+            ax.text(0, -1.26, note, ha="center", va="top", fontsize=7.5,
+                    color="#555555", linespacing=1.5)
+        ax.set_aspect("equal")
+    fig.suptitle(f"⑥ Tercile Outlook (평년 대비 3분위 확률) — {outlet}",
+                 fontsize=13, fontweight="bold", y=1.03)
+    from matplotlib.patches import Patch
+    fig.legend(handles=[Patch(color=TERCILE_COLORS[k],
+                              label=f"{k} — {TERCILE_LABELS[k]} ({TERCILE_LABELS_KO[k]})")
+                        for k in TERCILES],
+               loc="lower center", ncol=3, frameon=False, fontsize=9,
+               bbox_to_anchor=(0.5, -0.09))
+    out = out_dir / f"dashboard_{outlet}_tercile_pie.png"
+    fig.savefig(out, dpi=160, bbox_inches="tight"); plt.close(fig)
+    return out
+
+
 def _climatology_legend(stat, years) -> str:
     """평년선 범례 문구 — 통계명과 기간을 **산출물에서** 읽어 만든다.
 
@@ -505,7 +626,8 @@ def make_outlet_figure(out_dir: Path) -> Path:
 def make_all_figures(out_root: Path) -> int:
     """outlet별 예측그래프 2종(Cook/라로통가 동일 형식): ① timeseries
     (dashboard_{outlet}.png) ② gauge(dashboard_{outlet}_gauge.png).
-    (파이는 make_stage_pie 로 별도 호출 가능)"""
+    ③ 4단계 파이(dashboard_{outlet}_pie.png) ④ 3분위 파이
+    (dashboard_{outlet}_tercile_pie.png — tercile_prob.csv 가 있을 때만)."""
     n = 0
     for d in sorted(out_root.iterdir()):
         if d.is_dir() and (d / "series.csv").is_file():
@@ -513,8 +635,11 @@ def make_all_figures(out_root: Path) -> int:
             if (d / "stage_prob.csv").is_file():
                 make_stage_gauges(d)              # ② 게이지(월별) — Cook 동일
                 make_stage_pie(d)                 # ③ 파이(월별 + 3개월평균 = 4개)
+            # ④ 3분위 파이 — tercile.py 가 CSV 를 만들어 둔 폴더에서만.
+            if (d / "tercile_prob.csv").is_file():
+                make_tercile_pie(d)
             n += 1
-    print(f"  예측그래프 {n} outlet (시계열+게이지+파이) → {out_root}")
+    print(f"  예측그래프 {n} outlet (시계열+게이지+파이+3분위파이) → {out_root}")
     return n
 
 
