@@ -135,13 +135,16 @@ MEMBER_TIMEOUT = int(os.environ.get("SWAT_MEMBER_TIMEOUT", "300"))
 
 
 def _run_one(args) -> Dict:
-    """(member_csv, base_dir, exe, fyear, months, outlets, era5_warmup, reservoirs)
-    → 채널 월유량 + 저수지 월 만수대비% dict|None.
+    """(member_csv, base_dir, exe, fyear, months, outlets, era5_warmup, reservoirs,
+    daily_store) → 채널 월유량 + 저수지 월 만수대비% dict|None.
 
     reservoirs: {gis_id: ReservoirForecastParams} — 해당 gid 는 채널 유량 대신
-    reservoir_day.txt 물수지 만수대비% 를 산출(저수지 수원). 없으면 {}."""
+    reservoir_day.txt 물수지 만수대비% 를 산출(저수지 수원). 없으면 {}.
+    daily_store: True 면 ``_daily`` 키에 수원별 일배열을 함께 담아 돌려준다
+    (초기수위 변경 시 SWAT+ 재실행을 없애는 자료 — daily_store 모듈 docstring 참조).
+    SWAT+ 가 일단위 출력을 쓰지 않는 프로젝트에서는 담을 것이 없어 자동으로 빈다."""
     (member_csv, base_dir, exe_name, fyear, months, outlets, era5_warmup,
-     reservoirs) = args
+     reservoirs, daily_store) = args
     reservoirs = reservoirs or {}
     member_csv, base_dir = Path(member_csv), Path(base_dir)
     # 예측 구간을 (연도, 월) 로 풀어 쓴다 — NDJ·DJF 는 끝월이 다음 해다.
@@ -196,25 +199,57 @@ def _run_one(args) -> Dict:
         res: Dict = {"_member": member_csv.parent.name}
         # 이 멤버를 구동한 예측월 강수·기온(지역별 CSV 칼럼용) — 섬 단일예측이라 공통.
         res["_weather"] = _member_monthly_weather(member_csv, ym)
+        # ── 0차: 일단위 채널 유량 — **파일을 한 번만** 읽는다 ──────────────────
+        #  channel_sd_day.txt 는 멤버당 5.6MB(팔라우 34채널×365일)다. 수원마다 다시
+        #  읽으면 파싱이 SWAT+ 실행시간(1.0s)을 넘어선다. 필요한 채널을 모아 한 번에.
+        #  (일단위 출력이 꺼진 프로젝트(쿡)에서는 파일이 없어 빈 dict → 기존 거동 유지.)
+        from swat_py.output.reader_swat_plus import parse_channel_sd_day_multi
+        need_gids = set()
+        for gid, _nm in outlets.items():
+            if gid in reservoirs:
+                src = getattr(reservoirs[gid], "diversion_from_outlet", None)
+                if src:
+                    need_gids.add(int(src))
+            elif daily_store:
+                need_gids.add(int(gid))         # 하천 수원의 일유량(일수 기준 단계용)
+        chan_day = (parse_channel_sd_day_multi(run / "channel_sd_day.txt",
+                                               sorted(need_gids), f"{fyear}-01-01")
+                    if need_gids else {})
+        q_day: Dict[int, pd.Series] = {}
+        for g, dfc in chan_day.items():
+            if dfc is None or dfc.empty or "flo_out" not in dfc:
+                continue
+            q_day[int(g)] = pd.Series(
+                pd.to_numeric(dfc["flo_out"], errors="coerce").fillna(0.0).values,
+                index=pd.to_datetime(dfc["date"]).values)
+        daily_out: Dict[str, Dict] = {}         # 수원 이름 → 일배열(저장용)
+
         # ── 1차: 저수지 수원 ──────────────────────────────────────────────
         #  reservoir_day.txt 물수지 → 월 만수대비% + 월말 저수위(ft).
         #  전환유입을 쓰는 저수지는 **그 달에 실제 가져간 물**을 수원 채널별로 모아 둔다.
         from swat_py.drought.reservoir_forecast import (
-            member_reservoir_series, subtract_diversion,
+            member_reservoir_full, subtract_diversion,
         )
         diverted: Dict[int, Dict[int, float]] = {}      # 수원 채널 gid → {월: m³}
         for gid, name in outlets.items():
             if gid not in reservoirs:
                 continue
             params = reservoirs[gid]
-            ser = member_reservoir_series(
-                run, params, fyear=fyear, months=months, sdate=f"{fyear}-01-01")
+            src_gid = getattr(params, "diversion_from_outlet", None)
+            full = member_reservoir_full(
+                run, params, fyear=fyear, months=months, sdate=f"{fyear}-01-01",
+                src_q=q_day.get(int(src_gid)) if src_gid else None)
+            ser = (full or {}).get("monthly")
             if not ser:
                 continue
             res[name] = {m: v["storage_pct"] for m, v in ser.items()}
             res.setdefault("_wlevel", {})[name] = {
                 m: v["water_level_ft"] for m, v in ser.items()}
-            src_gid = getattr(params, "diversion_from_outlet", None)
+            if daily_store:
+                # 초기수위와 무관한 강제력 2개만 — 멤버당 728B(원시 보관은 11.8MB).
+                daily_out[name] = {"dates": full["dates"],
+                                   "res_net_m3": full["res_net_m3"],
+                                   "src_q_m3s": full["src_q_m3s"]}
             if src_gid:
                 acc = diverted.setdefault(int(src_gid), {})
                 for m, v in ser.items():
@@ -238,6 +273,18 @@ def _run_one(args) -> Dict:
             if gid in diverted:
                 vals = subtract_diversion(vals, diverted[gid], month_year)
             res[name] = vals
+            if daily_store and int(gid) in q_day:
+                # 하천 일유량(원시) — 전환분을 빼지 않은 값이다. 전환량은 초기수위에
+                # 따라 달라지므로, 뺄 양은 통계 단계에서 같은 물수지로 다시 구한다.
+                qs = q_day[int(gid)]
+                sel = in_ym(pd.Series(qs.index), ym).values
+                if sel.any():
+                    daily_out[name] = {
+                        "dates": pd.DatetimeIndex(qs.index[sel]).normalize()
+                                   .values.astype("datetime64[D]"),
+                        "q_m3s": np.asarray(qs.values[sel], dtype="float32")}
+        if daily_out:
+            res["_daily"] = daily_out
         return res
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -247,13 +294,16 @@ def run_ensemble(base_dir: Path, ensemble_dir: Path, *, fyear: int, months: List
                  exe_name: str = "SWAT-Plus.exe", n_members: int = 100,
                  n_workers: int = 6, outlets: Dict[int, str] = None,
                  station: str = "918430", era5_warmup: Dict = None,
-                 reservoirs: Dict = None) -> tuple:
+                 reservoirs: Dict = None, daily_store: bool = True) -> tuple:
     """멤버 폴더들 → (values, aux).
 
     반환:
       values : {name: DataFrame[member × month]} — 하천=월유량(m³/s), 저수지=만수대비%.
       aux    : {"weather": {var: DataFrame[member × month]},   # var: precip_mm/tmax_c/tmin_c
-                "wlevel":  {name: DataFrame[member × month]}}   # 저수지 월말 저수위(ft)
+                "wlevel":  {name: DataFrame[member × month]},   # 저수지 월말 저수위(ft)
+                "daily":   {name: {"members": [...], "dates": (D,),
+                                   변수: (M, D) float32}}}      # 일단위 강제력
+      ``daily`` 는 SWAT+ 가 일단위 출력을 쓴 수원에만 생긴다(쿡처럼 꺼져 있으면 빈 dict).
 
     base_dir     : 예측기간 time.sim 설정된 검보정 SWAT+ TxtInOut (관측 weather 포함)
     ensemble_dir : member_XXXX/{stn}.csv 루트 (acidwg 산출)
@@ -265,7 +315,7 @@ def run_ensemble(base_dir: Path, ensemble_dir: Path, *, fyear: int, months: List
     reservoirs = reservoirs or {}
     members = sorted(ensemble_dir.glob("member_*"))[:n_members]
     tasks = [(str(m / f"{station}.csv"), str(base_dir), exe_name, fyear, months,
-              outlets, era5_warmup, reservoirs)
+              outlets, era5_warmup, reservoirs, bool(daily_store))
              for m in members if (m / f"{station}.csv").is_file()]
     records = []
     n_fail = 0
@@ -309,6 +359,33 @@ def run_ensemble(base_dir: Path, ensemble_dir: Path, *, fyear: int, months: List
                 if r.get("_wlevel") and name in r["_wlevel"]}
         if rows:
             wlevel[name] = pd.DataFrame(rows).T.reindex(columns=months)
+    # 일단위 강제력 — 수원별로 (멤버 × 일) 2차원 배열로 쌓는다.
+    #  멤버마다 일수가 어긋나면(출력창이 다른 멤버) 가장 흔한 길이만 남긴다 —
+    #  길이가 섞인 배열을 만들면 조용히 잘못 정렬되어 추적이 어렵다.
+    daily: Dict[str, Dict] = {}
+    if daily_store:
+        from swat_py.drought.daily_store import common_members, stack_members
+        per_src: Dict[str, Dict[str, Dict]] = {}
+        dates_of: Dict[str, object] = {}
+        for r in records:
+            for nm, d in (r.get("_daily") or {}).items():
+                per_src.setdefault(nm, {})[r["_member"]] = d
+                dates_of.setdefault(nm, d["dates"])
+        for nm, per_mem in per_src.items():
+            names = sorted(per_mem)
+            dts = dates_of[nm]
+            varnames = [k for k in ("res_net_m3", "src_q_m3s", "q_m3s")
+                        if any(v.get(k) is not None for v in per_mem.values())]
+            if not varnames:
+                continue
+            keep = common_members(per_mem, varnames[0], names, len(dts))
+            arrs = {k: stack_members(per_mem, k, keep) for k in varnames}
+            arrs = {k: v for k, v in arrs.items() if v is not None}
+            if not arrs:
+                continue
+            daily[nm] = {"members": keep, "dates": dts, **arrs}
+            print(f"  일단위 수집 [{nm}] {len(keep)}멤버 × {len(dts)}일 "
+                  f"× {len(arrs)}변수 ({sum(a.nbytes for a in arrs.values())/2**20:.2f}MB)")
     print(f"  앙상블 유효 멤버 {len(records)}/{len(tasks)}")
     if fails:
         # 사유별로 묶어 보여 준다(많은 순). 멤버 이름은 앞 3개만.
@@ -317,4 +394,4 @@ def run_ensemble(base_dir: Path, ensemble_dir: Path, *, fyear: int, months: List
             head = ", ".join(sorted(who)[:3])
             more = f" 외 {len(who) - 3}개" if len(who) > 3 else ""
             print(f"      [{len(who):>4}] {why}  ({head}{more})")
-    return out, {"weather": weather, "wlevel": wlevel}
+    return out, {"weather": weather, "wlevel": wlevel, "daily": daily}

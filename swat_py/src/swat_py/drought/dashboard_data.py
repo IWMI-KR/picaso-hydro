@@ -44,6 +44,10 @@ from swat_py.drought.season import (
     SEASON_MONTHS, assert_period_sane, daykey_month, in_ym, period_end,
     period_end_year, period_ym, season_months, series_ym, ym_labels,
 )
+from swat_py.drought.daily_stats import (
+    sweep_levels_from_cfg, write_reservoir_outputs, write_stream_outputs,
+)
+from swat_py.drought.daily_store import save_daily
 from swat_py.drought.stages import stage_probabilities4
 from swat_py.drought.tercile import (
     TERCILES, month_samples, monthly_values,
@@ -371,6 +375,37 @@ def time_sim_line(start_yr: int, fyear: int, months: List[int]) -> str:
     return f"       1      {start_yr}       {last.dayofyear}      {end_yr}         0"
 
 
+def forecast_print_window_line(line: str, *, nyskip: int, fyear: int,
+                               months: List[int]) -> str:
+    """``print.prt`` 3행을 **예측월만** 출력하는 창으로 바꾼 문자열.
+
+    왜 예측월로 좁히는가 — 일단위 출력(``channel_sd_day``·``reservoir_day``)이 1년
+    전체, 해를 넘는 계절은 13개월 전체로 나왔다. 예측에 쓰는 것은 예측 3개월뿐이다.
+    좁히면 멤버당 출력이 같은해 계절 11.8→6.1MB, 해를 넘는 계절 25.8→6.6MB 로 줄고
+    (후자는 실행도 21% 빨라진다), 월유량·저수지 일자료는 **비트 단위로 동일**하다
+    (2016_AMJ·2016_NDJ 실측, 2026-11-19).
+
+    ★ 창 시작이 예측 시작보다 **뒤로** 가면 SWAT+ 는 일단위 출력을 아예 쓰지 않는다
+      (2026-11-03 팔라우 24기간 실패). 그래서 창 시작은 예측 첫 달 1일로 **정확히**
+      맞춘다 — 더 뒤로 가지 않고, 쓸데없이 앞으로도 가지 않는다.
+    ※ 해를 넘는 구간은 ``day_start > day_end`` 가 된다(NDJ: 306/2016 ~ 31/2017).
+      SWAT+ 61.0.2 는 이를 **연속 창**으로 읽는다(실측: 92일 전부 출력). 연도별
+      범위로 해석하는 버전이 나오면 일단위 파일이 비어 즉시 드러난다.
+
+    >>> forecast_print_window_line("3  1  2015  365  2023  1", nyskip=3,
+    ...                            fyear=2016, months=[4, 5, 6]).split()
+    ['3', '92', '2016', '182', '2016', '1']
+    >>> forecast_print_window_line("3  1  2015  365  2023  1", nyskip=3,
+    ...                            fyear=2016, months=[11, 12, 1]).split()
+    ['3', '306', '2016', '31', '2017', '1']
+    """
+    d0 = pd.Timestamp(*period_ym(fyear, months)[0], 1)
+    d1 = period_end(fyear, months)
+    return print_window_line(line, nyskip=nyskip, yrc_start=int(d0.year),
+                             yrc_end=period_end_year(fyear, months),
+                             day_start=int(d0.dayofyear), day_end=int(d1.dayofyear))
+
+
 def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
     """calibrated(검보정 완료·지역화 포함, 파라미터 baked-in) 복사 + time.sim(웜업 선행 ~
     예측끝월) → 예측 앙상블 base TxtInOut. default+수동적용이 아닌 calibrated 를 그대로 사용.
@@ -403,8 +438,9 @@ def prepare_base(cfg, base_dir: Path, fyear: int, months: List[int]) -> str:
     pp = base_dir / "print.prt"
     pl = pp.read_text().splitlines()
     if len(pl) >= 3 and pl[2].split():
-        pl[2] = print_window_line(pl[2], nyskip=nyskip, yrc_start=start_yr,
-                                  yrc_end=period_end_year(fyear, months))
+        # 출력창 = 예측월만 (근거·주의는 forecast_print_window_line docstring).
+        pl[2] = forecast_print_window_line(pl[2], nyskip=nyskip, fyear=fyear,
+                                           months=months)
     # 저수지 수원이 있으면 reservoir 일단위 출력 필요(reservoir_day.txt → 만수대비% 물수지).
     _res_needed = bool([s for s in getattr(getattr(cfg, "Drought", None), "sources", []) or []
                         if getattr(s, "type", "") == "reservoir"])
@@ -770,7 +806,8 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                        fyear=fyear, months=months, exe_name=exe_name,
                        n_members=n_members, n_workers=n_workers,
                        outlets=outlets, station=station, era5_warmup=era5_warmup,
-                       reservoirs=reservoirs_params)
+                       reservoirs=reservoirs_params,
+                       daily_store=bool(getattr(dc, "daily_store", True)))
 
     # SWAT+ 앙상블 예측 결과 → 3_swatplus/forecast/{period[+ic]} 의 수원별 파일.
     #   각 파일 = long format (member×month), 유량/저수량 칼럼 앞에 앙상블 강수·기온.
@@ -792,6 +829,19 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
             swat_fc / f"{name}.csv", index=False, encoding="utf-8-sig")
     print(f"[forecast] SWAT+ 앙상블 결과(수원 {len(ens)}종 × 유효멤버 {n_valid}"
           f"/{n_members}) → {swat_fc}")
+
+    # ── 일단위 강제력 저장 (요청 1·2·3번) ────────────────────────────────────
+    #  SWAT+ 는 이미 일단위 출력을 쓰고 있었고(전환유입 프로젝트), 우리는 그것을
+    #  지우고 있었다. 초기수위와 무관한 2변수만 남기면 멤버당 728B 로, 167기간
+    #  1,000멤버 전부가 122MB 다(원시 보관은 1.97TB → 불가).
+    daily_all = aux.get("daily", {}) or {}
+    for name, d in daily_all.items():
+        arrays = {k: v for k, v in d.items() if k not in ("members", "dates")}
+        f = save_daily(swat_fc, name, members=list(d["members"]),
+                       dates=d["dates"], arrays=arrays)
+        if f:
+            print(f"[forecast] 일단위 {name}: {len(d['members'])}멤버 × "
+                  f"{len(d['dates'])}일 → {f.name} ({f.stat().st_size/2**10:.0f}KB)")
 
     summary_rows = []
     season_summary_rows = []            # 계절(3개월 평균) 단일 리스크
@@ -875,6 +925,23 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                         stage_rows.append({"month": m, "ym": mon_ym[m], **sp})
             pd.DataFrame(stage_rows).to_csv(out_dir / "stage_prob.csv", index=False,
                                             encoding="utf-8-sig")
+            # ── 일단위 통계 (요청 1·2·3번) — 월말 기준 stage_prob.csv 는 그대로 두고
+            #    일수 기준·누적확률·일별 경로·초기수위 사전계산을 **병기**한다.
+            daily_res = daily_all.get(outlet)
+            if daily_res is not None and level_based and rp is not None:
+                sweep_ft, step_ft = sweep_levels_from_cfg(
+                    getattr(dc, "init_level_sweep_ft", None))
+                w = write_reservoir_outputs(
+                    out_dir, daily_res, params=rp,
+                    thresholds={"normal_watch": q185, "watch_warning": q275,
+                                "warning_crisis": q355},
+                    months=months, sweep_ft=sweep_ft, step_ft=step_ft,
+                    top_inclusive=True)
+                print(f"    · 일단위 통계 {len(w)}종 → {', '.join(sorted(w.values()))}")
+            elif daily_res is not None:
+                # 저수량%(capacity_fraction) 기준은 수위 경계가 아니라 일단위 단계
+                # 분류가 성립하지 않는다 — 조용히 건너뛰지 않고 이유를 남긴다.
+                print(f"    · 일단위 통계 생략 — 임계가 수위 기준이 아니다({thr_method})")
             incomplete += empty_forecast_months(outlet, stage_rows, months, mon_ym)
             # 계절(3개월 평균 저수량%) 단일 단계확률
             season_row = _seasonal_stage_row(mem, months, q185, q275, q355, season,
@@ -998,6 +1065,16 @@ def build(cfg, forecast: str, *, n_members: int = 100, n_workers: int = 6,
                     stage_rows.append({"month": m, "ym": mon_ym[m], **sp})
         pd.DataFrame(stage_rows).to_csv(out_dir / "stage_prob.csv", index=False,
                                         encoding="utf-8-sig")
+        # ── 일단위 통계 — 일유량이 저장된 하천만(SWAT+ 일단위 출력이 켜진 경우).
+        #    월평균 하나로 보면 월 중 갈수가 평균에 묻힌다(저수지 2번과 같은 문제).
+        daily_str = daily_all.get(outlet)
+        if daily_str is not None:
+            w = write_stream_outputs(
+                out_dir, daily_str,
+                thresholds={"normal_watch": q185, "watch_warning": q275,
+                            "warning_crisis": q355}, months=months)
+            if w:
+                print(f"    · 일단위 통계 {len(w)}종 → {', '.join(sorted(w.values()))}")
         incomplete += empty_forecast_months(outlet, stage_rows, months, mon_ym)
         # 계절(3개월 평균 유출량) 단일 단계확률
         season_row = _seasonal_stage_row(mem, months, q185, q275, q355, season)

@@ -187,6 +187,43 @@ def capacity_pct_to_level_ft(pct: float,
     return float(params.curve.storage_to_stage(s_m3)) + float(params.datum_offset_ft)
 
 
+def daily_net_m3(daily_res: pd.DataFrame, *, use_losses: bool = True) -> pd.Series:
+    """저수지 일자료(reservoir_day) → **일 순유입**(m³/일), date 색인.
+
+    ``flo_in + precip − evap − seep`` — 저수지 물수지의 유일한 외부 강제력이며,
+    우리가 후처리로 주는 초기수위와 **무관**하다(초기 저류량에 의존하는 항은 수면적을
+    통한 증발·침투뿐이고, 팔라우 검보정 2018-01-01~2023-12-31 실측에서 증발은 총유입의
+    0.64%, 침투는 0.00%다). 그래서 이 배열만 남겨 두면 어떤 초기수위로든 SWAT+ 재실행
+    없이 물수지를 다시 풀 수 있다 — 일단위 저장의 대상이 수위가 아니라 이 값인 이유다.
+
+    ``use_losses=False`` 면 ``flo_in`` 만 쓴다(손실 미반영 비교용).
+    ★ :func:`monthly_capacity_series` 가 이 함수를 쓴다 — 식이 두 곳에 갈라지지 않게
+      할 것(월 결과와 일 결과가 조용히 달라지면 추적이 매우 어렵다).
+    """
+    df = daily_res.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    lc = {c.lower(): c for c in df.columns}
+
+    def col(n):
+        return (pd.to_numeric(df[lc[n]], errors="coerce").fillna(0.0)
+                if n in lc else pd.Series(0.0, index=df.index))
+
+    net = col("flo_in")
+    if use_losses:
+        net = net + col("precip") - col("evap") - col("seep")
+    return pd.Series(net.values, index=pd.to_datetime(df["date"]).values)
+
+
+def surplus_m3_from_flow(q_m3s, *, min_flow_m3s: float, max_m3s: float):
+    """수원 하천 일유량(m³/s) → 그 날 **전환 가능한 잉여수**(m³/일).
+
+    ``clip(q − min_flow, 0, max) × 86400``. 스칼라·배열·Series 모두 받는다
+    (저장된 일배열에 같은 식을 다시 적용하려면 식이 한 곳에 있어야 한다)."""
+    import numpy as _np
+    q = _np.asarray(q_m3s, dtype=float)
+    return _np.clip(q - float(min_flow_m3s), 0.0, float(max_m3s)) * _SECONDS_PER_DAY
+
+
 def monthly_capacity_series(
     daily_res: pd.DataFrame,
     *,
@@ -231,18 +268,8 @@ def monthly_capacity_series(
     df = daily_res.copy()
     df["date"] = pd.to_datetime(df["date"])
     df["ym"] = df["date"].dt.to_period("M")
-    lc = {c.lower(): c for c in df.columns}
-
-    def col(n):
-        return (pd.to_numeric(df[lc[n]], errors="coerce").fillna(0.0)
-                if n in lc else pd.Series(0.0, index=df.index))
-
-    flo_in = col("flo_in")
-    precip = col("precip") if use_losses else pd.Series(0.0, index=df.index)
-    evap   = col("evap")   if use_losses else pd.Series(0.0, index=df.index)
-    seep   = col("seep")   if use_losses else pd.Series(0.0, index=df.index)
-    net = flo_in + precip - evap - seep
-    df["_net"] = net
+    # 일 순유입은 daily_net_m3 가 단일 정의다(일단위 저장·재계산과 같은 식을 쓴다).
+    df["_net"] = daily_net_m3(daily_res, use_losses=use_losses).values
 
     out: Dict[int, Dict[str, float]] = {}
     S = float(init_m3)
@@ -345,6 +372,70 @@ def subtract_diversion(flow_m3s: Dict[int, float], diverted_m3: Dict[int, float]
     return out
 
 
+def member_reservoir_full(
+    run_dir: Path,
+    params: ReservoirForecastParams,
+    *,
+    fyear: int,
+    months: List[int],
+    sdate: str,
+    src_q: Optional[pd.Series] = None,
+) -> Optional[Dict[str, object]]:
+    """한 멤버 run_dir → 예측월 **월 물수지 + 일단위 강제력**. 없으면 None.
+
+    Returns
+    -------
+    {"monthly": {월: {...}},                       # member_reservoir_series 와 동일
+     "dates":      np.ndarray[datetime64[D]],      # 예측기간 일자
+     "res_net_m3": np.ndarray[float32],            # 저수지 일 순유입 (m³/일)
+     "src_q_m3s":  np.ndarray[float32] | None}     # 전환 수원 채널 일유량 (m³/s)
+
+    일배열은 **초기수위를 바꿔도 변하지 않는 두 변수**만 담는다(:func:`daily_net_m3`
+    주석의 근거). 이 둘만 남기면 저장량이 멤버당 728 B 로 줄어 1,000멤버 × 167기간을
+    122 MB 에 담을 수 있다 — 원시 출력 전량 보관은 1.97 TB 라 불가능하다.
+    파일은 어차피 이미 쓰이고 있으므로(``prepare_base`` 가 전환유입 프로젝트에서
+    일단위 출력을 켠다) 추가 모델 실행 비용은 없다. **파싱은 여기서 한 번만** 한다.
+    """
+    import numpy as np
+
+    raw = parse_reservoir_day(Path(run_dir) / "reservoir_day.txt",
+                              outlet=params.gis_id, sdate=sdate)
+    if raw is None:
+        return None
+    # 해를 넘는 계절(NDJ·DJF)은 끝월이 다음 해다 — 단일 연도로 거르면 그 달이 빠진다.
+    raw = raw[in_ym(raw["date"], period_ym(fyear, months)).values]
+    if raw.empty:
+        return None
+    # 전환 수원 일유량(원시) — 한 번만 읽어 잉여수 계산과 일배열 저장에 함께 쓴다.
+    #  호출부가 이미 읽어 뒀으면(``src_q``) 그것을 쓴다 — 멤버당 5.6MB 파일을
+    #  수원마다 다시 읽으면 파싱이 실행시간을 지배한다.
+    q = src_q if src_q is not None else daily_source_flow_m3s(
+        Path(run_dir), params, sdate=sdate)
+    cap = float(getattr(params, "diversion_max_m3s", 0.0) or 0.0)
+    lo = float(getattr(params, "diversion_min_flow_m3s", 0.0) or 0.0)
+    div = (pd.Series(surplus_m3_from_flow(q.values, min_flow_m3s=lo, max_m3s=cap),
+                     index=q.index)
+           if (q is not None and cap > 0) else None)
+    monthly = monthly_capacity_series(
+        raw, full_m3=params.full_m3, init_m3=params.init_m3,
+        withdrawal_m3s=params.withdrawal_m3s, dead_m3=params.dead_m3,
+        months=months, curve=getattr(params, "curve", None),
+        datum_offset_ft=getattr(params, "datum_offset_ft", 0.0),
+        withdrawal_monthly_m3s=getattr(params, "withdrawal_monthly_m3s", None),
+        diversion_daily_m3=div,
+        diversion_target_m3=getattr(params, "diversion_target_m3", float("nan")),
+    )
+    dates = pd.to_datetime(raw["date"]).dt.normalize()
+    net = daily_net_m3(raw).values
+    # 결측일(출력 창 밖)은 0 으로 — 월 물수지(df["date"].map(div))와 같은 처리다.
+    src = (dates.map(q).fillna(0.0).values.astype("float32")
+           if q is not None else None)
+    return {"monthly": monthly,
+            "dates": dates.values.astype("datetime64[D]"),
+            "res_net_m3": np.asarray(net, dtype="float32"),
+            "src_q_m3s": src}
+
+
 def member_reservoir_series(
     run_dir: Path,
     params: ReservoirForecastParams,
@@ -358,24 +449,11 @@ def member_reservoir_series(
     각 월: {"storage_pct", "storage_m3", "water_level_ft"}.
     전환유입이 설정돼 있으면 같은 run_dir 의 ``channel_sd_day.txt`` 에서 수원 채널의
     일유량을 읽어 전환 가능 잉여수로 넘긴다(일 단위 운영 물수지).
+    (:func:`member_reservoir_full` 의 월 부분만 꺼내는 래퍼 — 식은 한 곳에 있다.)
     """
-    raw = parse_reservoir_day(Path(run_dir) / "reservoir_day.txt",
-                              outlet=params.gis_id, sdate=sdate)
-    if raw is None:
-        return None
-    # 해를 넘는 계절(NDJ·DJF)은 끝월이 다음 해다 — 단일 연도로 거르면 그 달이 빠진다.
-    raw = raw[in_ym(raw["date"], period_ym(fyear, months)).values]
-    if raw.empty:
-        return None
-    return monthly_capacity_series(
-        raw, full_m3=params.full_m3, init_m3=params.init_m3,
-        withdrawal_m3s=params.withdrawal_m3s, dead_m3=params.dead_m3,
-        months=months, curve=getattr(params, "curve", None),
-        datum_offset_ft=getattr(params, "datum_offset_ft", 0.0),
-        withdrawal_monthly_m3s=getattr(params, "withdrawal_monthly_m3s", None),
-        diversion_daily_m3=diversion_daily_m3(Path(run_dir), params, sdate=sdate),
-        diversion_target_m3=getattr(params, "diversion_target_m3", float("nan")),
-    )
+    full = member_reservoir_full(run_dir, params, fyear=fyear, months=months,
+                                 sdate=sdate)
+    return None if full is None else full["monthly"]
 
 
 def diversion_daily_m3(run_dir: Path, params: ReservoirForecastParams, *,
@@ -391,9 +469,28 @@ def diversion_daily_m3(run_dir: Path, params: ReservoirForecastParams, *,
     검보정 분석 경로는 출력 파일명에 접미가 붙으므로(``channel_sd_day-{sim}.txt``)
     그 이름을 ``filename`` 으로 넘긴다.
     """
-    gid = getattr(params, "diversion_from_outlet", None)
     cap = float(getattr(params, "diversion_max_m3s", 0.0) or 0.0)
-    if not gid or cap <= 0:
+    if cap <= 0:
+        return None
+    q = daily_source_flow_m3s(run_dir, params, sdate=sdate, filename=filename)
+    if q is None:
+        return None
+    lo = float(getattr(params, "diversion_min_flow_m3s", 0.0) or 0.0)
+    return pd.Series(surplus_m3_from_flow(q.values, min_flow_m3s=lo, max_m3s=cap),
+                     index=q.index)
+
+
+def daily_source_flow_m3s(run_dir: Path, params: ReservoirForecastParams, *,
+                          sdate: str,
+                          filename: str = "channel_sd_day.txt") -> Optional[pd.Series]:
+    """전환 수원 채널의 **원시 일유량**(m³/s), date 색인. 미설정·자료 없으면 None.
+
+    잉여수(clip 적용 후)가 아니라 **자르기 전 유량**이다 — 이 값을 남겨 두면
+    ``diversion_min_flow_m3s``·``diversion_max_m3s`` 를 바꿔도 다시 풀 수 있고,
+    같은 배열이 Ngerikiil 하천 단계 산정에도 쓰인다.
+    """
+    gid = getattr(params, "diversion_from_outlet", None)
+    if not gid:
         return None
     f = Path(run_dir) / filename
     if not f.is_file():
@@ -401,10 +498,8 @@ def diversion_daily_m3(run_dir: Path, params: ReservoirForecastParams, *,
     ch = parse_channel_sd_day(f, outlet=int(gid), sdate=sdate)
     if ch is None or ch.empty or "flo_out" not in ch:
         return None
-    lo = float(getattr(params, "diversion_min_flow_m3s", 0.0) or 0.0)
     q = pd.to_numeric(ch["flo_out"], errors="coerce").fillna(0.0)
-    surplus = (q - lo).clip(lower=0.0).clip(upper=cap) * _SECONDS_PER_DAY
-    return pd.Series(surplus.values, index=pd.to_datetime(ch["date"]).values)
+    return pd.Series(q.values, index=pd.to_datetime(ch["date"]).values)
 
 
 def member_reservoir_capacity_pct(

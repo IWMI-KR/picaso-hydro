@@ -104,14 +104,20 @@ class TestCallSitesUseIt:
         if func:
             assert callable(getattr(m, func))
 
-    def test_예측_base_가_창시작을_웜업시작으로_넘긴다(self):
-        """prepare_base 소스에 yrc_start=start_yr 가 실제로 쓰여 있는지."""
+    def test_예측_base_가_창_헬퍼를_쓴다(self):
+        """prepare_base 가 창 계산을 forecast_print_window_line 에 맡기는지.
+
+        2026-11-19 변경: 창을 웜업 시작이 아니라 **예측 첫 달 1일**로 맞춘다
+        (일단위 출력을 예측월로 좁혀 용량·시간을 줄이기 위해). 옛 테스트는
+        소스에 ``yrc_start=start_yr`` 문자열이 있는지 봤는데, 그 방식은 창이
+        예측월을 덮는지를 전혀 보증하지 못했다 — 아래 TestForecastWindow 가
+        **동작으로** 검증한다.
+        """
         import inspect
 
         from swat_py.drought import dashboard_data
-        src = inspect.getsource(dashboard_data.prepare_base)
-        assert "print_window_line" in src
-        assert "yrc_start=start_yr" in src.replace(" ", "")
+        src = inspect.getsource(dashboard_data.prepare_base).replace(" ", "")
+        assert "forecast_print_window_line(" in src
 
     def test_평년이_창을_평년_전기간으로_넘긴다(self):
         import inspect
@@ -121,3 +127,56 @@ class TestCallSitesUseIt:
         flat = src.replace(" ", "").replace("\n", "")
         assert "print_window_line(" in flat
         assert "yrc_start=syear" in flat and "yrc_end=eyear" in flat
+
+
+class TestForecastWindow:
+    """예측 출력창이 **예측 전 기간을 덮는지** — 일단위 출력이 비면 저수지가 빠진다.
+
+    창을 좁히는 최적화(2026-11-19)가 어느 계절에서도 하루라도 잘라먹지 않음을
+    보증한다. 특히 해를 넘는 계절(NDJ·DJF)과 윤년 2월이 위험 구간이다.
+    """
+
+    @pytest.mark.parametrize("fyear,months", [
+        (2016, [4, 5, 6]),        # 같은 해
+        (2016, [11, 12, 1]),      # 해를 넘는다
+        (2019, [12, 1, 2]),       # 해를 넘고 끝월이 윤년 2월(2020-02-29)
+        (2016, [1, 2, 3]),        # 연초 — 창 시작이 1월 1일
+        (2015, [10, 11, 12]),     # 연말 — 창 끝이 12월 31일
+    ])
+    def test_창이_예측_첫날과_끝날을_정확히_덮는다(self, fyear, months):
+        import pandas as pd
+
+        from swat_py.drought.dashboard_data import forecast_print_window_line
+        from swat_py.drought.season import period_end, period_ym
+
+        out = _f(forecast_print_window_line(PALAU_MASTER, nyskip=3,
+                                            fyear=fyear, months=months))
+        d0 = pd.Timestamp(*period_ym(fyear, months)[0], 1)
+        d1 = period_end(fyear, months)
+        assert int(out[1]) == d0.dayofyear, "창 시작일이 예측 첫날이 아니다"
+        assert int(out[2]) == d0.year, "창 시작연도가 예측 첫 달의 해가 아니다"
+        assert int(out[3]) == d1.dayofyear, "창 끝일이 예측 끝날이 아니다"
+        assert int(out[4]) == d1.year, "창 끝연도가 예측 끝 달의 해가 아니다"
+
+    @pytest.mark.parametrize("fyear,months", [
+        (2013, [4, 5, 6]), (2013, [11, 12, 1]), (2026, [1, 2, 3]),
+    ])
+    def test_창시작이_예측시작보다_뒤가_아니다(self, fyear, months):
+        """2026-11-03 결함의 핵심 조건 — 뒤로 가면 일단위 출력이 통째로 빈다."""
+        import pandas as pd
+
+        from swat_py.drought.dashboard_data import forecast_print_window_line
+        from swat_py.drought.season import period_ym
+
+        out = _f(forecast_print_window_line(PALAU_MASTER, nyskip=3,
+                                            fyear=fyear, months=months))
+        d0 = pd.Timestamp(*period_ym(fyear, months)[0], 1)
+        assert (int(out[2]), int(out[1])) <= (d0.year, d0.dayofyear)
+
+    def test_윤년_2월29일이_창에_들어온다(self):
+        """옛 창은 day_end=366 로 넉넉히 뒀다. 좁힌 창이 윤달을 자르면 안 된다."""
+        from swat_py.drought.dashboard_data import forecast_print_window_line
+
+        out = _f(forecast_print_window_line(PALAU_MASTER, nyskip=3,
+                                            fyear=2019, months=[12, 1, 2]))
+        assert (int(out[4]), int(out[3])) == (2020, 60), "2020-02-29 = 연중 60일"

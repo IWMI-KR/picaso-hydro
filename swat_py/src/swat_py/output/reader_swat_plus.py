@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import pandas as pd
 
@@ -27,6 +27,67 @@ def _detect_colnames(path: Path) -> list[str]:
                 parts = line.strip().split()
                 return parts
     raise ValueError(f"Column header with 'gis_id' not found in {path}")
+
+
+def parse_channel_sd_day_multi(
+    path: Path,
+    outlets: Sequence[int],
+    sdate: str,
+    skip: int = 3,
+) -> Dict[int, pd.DataFrame]:
+    """channel_sd_day.txt 를 **한 번만 읽어** 여러 채널을 한꺼번에 돌려준다.
+
+    같은 파일을 채널마다 다시 읽으면(앙상블 멤버 1,000개 × 5.6MB) 파싱이 실행시간을
+    지배한다. 일단위 자료를 여러 수원에 쓰려면 읽기를 한 번으로 묶어야 한다.
+
+    Returns
+    -------
+    {gis_id: DataFrame} — 자료가 없는 채널은 키에서 빠진다. 파일이 없으면 빈 dict.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}
+
+    colnames = _detect_colnames(path)
+    try:
+        df = pd.read_csv(path, sep=r"\s+", skiprows=skip, header=None,
+                         na_values=["-99", "-99.0"])
+    except Exception:
+        return {}
+    if df.empty:
+        return {}
+
+    # gis_id 열 위치는 헤더에서 찾는다 — SWAT+ 버전별 열 순서 변화에 견고하게.
+    # (열 순서: jday mon day yr unit gis_id name … 로 보통 index 5)
+    try:
+        gis_idx = [c.lower() for c in colnames].index("gis_id")
+    except ValueError:
+        return {}
+    if gis_idx >= df.shape[1]:
+        return {}
+
+    out: Dict[int, pd.DataFrame] = {}
+    for outlet in dict.fromkeys(int(o) for o in outlets):
+        sub = df[df.iloc[:, gis_idx] == outlet].copy()
+        if sub.empty:
+            continue
+        n_cols = min(len(colnames), sub.shape[1])
+        sub = sub.iloc[:, :n_cols].copy()
+        sub.columns = colnames[:n_cols]
+        # 날짜 — 1순위는 파일의 yr/mon/day(warm-up·출력창 차이를 자동 반영),
+        #        해당 열이 없으면 sdate 부터 일 순차 부여(fallback).
+        lc = {c.lower(): c for c in sub.columns}
+        if {"yr", "mon", "day"} <= set(lc):
+            sub["date"] = pd.to_datetime({
+                "year":  sub[lc["yr"]].astype(float).astype(int),
+                "month": sub[lc["mon"]].astype(float).astype(int),
+                "day":   sub[lc["day"]].astype(float).astype(int),
+            })
+        else:
+            sub["date"] = pd.date_range(start=pd.Timestamp(sdate),
+                                        periods=len(sub), freq="D")
+        out[outlet] = sub.reset_index(drop=True)
+    return out
 
 
 def parse_channel_sd_day(
@@ -49,62 +110,10 @@ def parse_channel_sd_day(
     DataFrame with columns: date, flo_out, sed_out, orgn_out, no3_out,
     nh3_out, no2_out, sedp_out, solp_out, ... (all raw channel output columns).
     Returns ``None`` if file cannot be read or outlet has no data.
+
+    (:func:`parse_channel_sd_day_multi` 의 단일 채널 래퍼 — 파싱 로직은 한 곳에 있다.)
     """
-    path = Path(path)
-    if not path.exists():
-        return None
-
-    colnames = _detect_colnames(path)
-
-    try:
-        df = pd.read_csv(
-            path,
-            sep=r"\s+",
-            skiprows=skip,
-            header=None,
-            na_values=["-99", "-99.0"],
-        )
-    except Exception:
-        return None
-
-    if df.empty:
-        return None
-
-    # Filter on the gis_id column, located dynamically from the header row.
-    # (열 순서: jday mon day yr unit gis_id name ... — gis_id 는 보통 index 5,
-    #  단 하드코딩하지 않고 헤더에서 위치를 찾아 SWAT+ 버전 차이에 견고하게 대응.)
-    try:
-        gis_idx = [c.lower() for c in colnames].index("gis_id")
-    except ValueError:
-        return None
-    if gis_idx >= df.shape[1]:
-        return None
-    df = df[df.iloc[:, gis_idx] == outlet].copy()
-    if df.empty:
-        return None
-
-    n_cols = min(len(colnames), df.shape[1])
-    df = df.iloc[:, :n_cols].copy()
-    df.columns = colnames[:n_cols]
-
-    # Assign dates.
-    #  1순위: 파일의 실제 yr/mon/day 컬럼으로 구성 → warm-up(nyskip) 자동 반영,
-    #         출력 시작일이 sim 시작과 달라도(예: nyskip>0) 정확.
-    #  fallback: 해당 컬럼이 없으면 기존처럼 sdate 부터 일 순차 부여.
-    n_rows = len(df)
-    lc = {c.lower(): c for c in df.columns}
-    if {"yr", "mon", "day"} <= set(lc):
-        df["date"] = pd.to_datetime({
-            "year":  df[lc["yr"]].astype(float).astype(int),
-            "month": df[lc["mon"]].astype(float).astype(int),
-            "day":   df[lc["day"]].astype(float).astype(int),
-        })
-    else:
-        df["date"] = pd.date_range(start=pd.Timestamp(sdate),
-                                   periods=n_rows, freq="D")
-    df = df.reset_index(drop=True)
-
-    return df
+    return parse_channel_sd_day_multi(path, [outlet], sdate, skip).get(int(outlet))
 
 
 # ── outtype extraction ─────────────────────────────────────────────────────────

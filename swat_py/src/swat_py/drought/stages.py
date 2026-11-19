@@ -19,7 +19,7 @@
 """
 from __future__ import annotations
 
-from typing import Dict, Sequence
+from typing import Dict, Sequence, Union
 
 import numpy as np
 
@@ -32,6 +32,10 @@ STAGE_SCORE = {"Normal": 0.0, "Watch": 1 / 3, "Warning": 2 / 3, "Crisis": 1.0}
 
 # 3단계(하위호환)
 STAGES = ("Watch", "Warning", "Crisis")
+
+#: 앙상블 값 묶음 — 호출부는 거의 항상 numpy 배열을 넘긴다(``mem[m].dropna().values``).
+#: 리스트만 받는 것으로 적어 두면 표기가 실제와 어긋난다.
+Values = Union[Sequence[float], "np.ndarray"]
 
 
 def classify_stage4(flow: float, q185: float, q275: float, q355: float, *,
@@ -54,7 +58,7 @@ def classify_stage4(flow: float, q185: float, q275: float, q355: float, *,
     return "Crisis"
 
 
-def stage_probabilities4(values: Sequence[float], q185: float, q275: float,
+def stage_probabilities4(values: Values, q185: float, q275: float,
                          q355: float, *, top_inclusive: bool = False) -> Dict:
     """앙상블 값 → 4단계 확률(%) + 최빈 단계.
 

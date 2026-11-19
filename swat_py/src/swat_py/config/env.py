@@ -303,6 +303,16 @@ class _DroughtCfg:
     threshold_method: str = "fdc_exceedance"
     threshold_values: List[float] = field(
         default_factory=lambda: [70.0, 90.0, 95.0])   # Q70/Q90/Q95 (USDM D0/D2/D3, WMO Q95)
+    # ── 일단위 앙상블 저장 (요청 1·2·3번, 유진호 2026-11-12) ──────────────────
+    #  true(기본) → 멤버 실행 중 이미 쓰이고 있는 SWAT+ 일단위 출력에서 **초기수위와
+    #  무관한 강제력 2개만** 뽑아 NPZ 로 남긴다(멤버당 728B). 월말 한 점만 남기던 탓에
+    #  생긴 세 문제(모두 Normal / 월 중 저하 누락 / 초기수위 변경 무반응)를 푼다.
+    #  SWAT+ 일단위 출력이 꺼진 프로젝트(쿡)에서는 담을 것이 없어 자동으로 아무 일도
+    #  일어나지 않는다 — 켜기 위해 모델을 다시 돌리지 않는다.
+    daily_store: bool = True
+    #  초기수위 사전계산 격자 [최소ft, 최대ft, 간격ft] (**자 눈금**). 빈 리스트면
+    #  사수위~만수를 0.1 ft 간격으로 자동 산정.
+    init_level_sweep_ft: List[float] = field(default_factory=list)
 
     @staticmethod
     def _source_match(s: "_DroughtSource", outlet) -> bool:
@@ -866,6 +876,8 @@ def _normalize_nested(raw: Dict[str, Any]) -> Dict[str, Any]:
         worst_stat=       str(dr.get("worst_stat", "") or "").lower(),
         threshold_method= _thr_method_flat,
         threshold_values= _thr_values_flat,
+        daily_store=      bool(dr.get("daily_store", True)),
+        init_level_sweep_ft=[float(x) for x in (dr.get("init_level_sweep_ft") or [])],
     )
 
     # 7. 기후변화
