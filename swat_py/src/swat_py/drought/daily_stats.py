@@ -430,11 +430,18 @@ def write_reservoir_outputs(out_dir, daily: Dict[str, np.ndarray], *, params,
         # 앵커 — 단계 경계 3개 + 설정 초기수위. 사수위·만수는 init_level_sweep 이 넣는다.
         anchors = [thresholds["normal_watch"], thresholds["watch_warning"],
                    thresholds["warning_crisis"]]
-        try:
-            anchors.append(float(params.curve.storage_to_stage(params.init_m3))
-                           + float(getattr(params, "datum_offset_ft", 0.0) or 0.0))
-        except Exception:                      # noqa: BLE001 — 앵커는 보조
-            pass
+        # 설정값(자 눈금 ft)을 **그대로** 쓴다. 저류량에서 곡선을 역조회하면 보간 왕복
+        # 오차가 섞여(Ngerimel 22.0 → 22.02 ft) 운영값과 어긋난 중복 행이 생긴다.
+        _raw = getattr(params, "init_level_ft", None)
+        init_ft_cfg = float("nan") if _raw is None else float(_raw)
+        if init_ft_cfg == init_ft_cfg:         # NaN 아님
+            anchors.append(init_ft_cfg)
+        else:
+            try:                               # 옛 params — 역조회로 대신한다
+                anchors.append(float(params.curve.storage_to_stage(params.init_m3))
+                               + float(getattr(params, "datum_offset_ft", 0.0) or 0.0))
+            except Exception:                  # noqa: BLE001 — 앵커는 보조
+                pass
         sw = init_level_sweep(daily, params=params, thresholds=thresholds,
                               months=months, levels_ft=sweep_ft, step_ft=step_ft,
                               anchors_ft=anchors, top_inclusive=top_inclusive)
@@ -543,6 +550,7 @@ def recompute(cfg, forecast: str, *, init_ft: Optional[float] = None,
                     off = float(getattr(rp, "datum_offset_ft", 0.0) or 0.0)
                     cv: Any = rp.curve
                     rp.init_m3 = float(cv.stage_to_storage(float(init_ft) - off))
+                    rp.init_level_ft = float(init_ft)   # 앵커가 정확히 이 값이 되게
                 w = write_reservoir_outputs(out_dir, d, params=rp, thresholds=thr,
                                             months=months, sweep_ft=sweep_ft,
                                             step_ft=step, top_inclusive=True)

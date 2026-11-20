@@ -84,6 +84,24 @@ def test_미지정이면_만수에서_시작한다():
     assert p.init_m3 == pytest.approx(p.full_m3)
 
 
+def test_설정_초기수위를_ft_그대로_보관한다():
+    """``init_m3`` 만 남기면 ft 를 되살릴 수 없다 — pchip 보간은 왕복하지 않는다.
+
+    저류량에서 수위를 역조회하면 실제 팔라우 곡선에서 22.0 ft 가 22.02 ft 로
+    돌아온다. 그 값이 초기수위 사전계산표(init_level_sweep)의 앵커로 들어가면
+    운영값과 0.02 ft 어긋난 중복 행이 생겨, 업체 화면이 어느 줄이 기준인지 모른다.
+    """
+    p = build_reservoir_forecast_params(_src(init_water_level_ft=22.0), _rcfg(), _curve())
+    assert p.init_level_ft == 22.0
+
+
+def test_초기수위_미지정이면_설정_ft_는_NaN_이다():
+    import math
+
+    p = build_reservoir_forecast_params(_src(), _rcfg(), _curve())
+    assert math.isnan(p.init_level_ft)
+
+
 # ── ★ 업체가 보고한 사고: 현장 눈금이 즉시 Crisis 가 되던 문제 ───────────────
 
 def test_현장눈금_22_5_가_Crisis_로_떨어지지_않는다():

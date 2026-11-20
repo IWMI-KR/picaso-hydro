@@ -28,6 +28,7 @@ from swat_py.drought.daily_stats import (
     stream_daily_stats,
     sweep_levels_from_cfg,
     withdrawal_per_day,
+    write_reservoir_outputs,
 )
 from swat_py.drought.daily_store import (
     common_members,
@@ -297,6 +298,53 @@ class TestStore:
 
     def test_변수가_없으면_None(self):
         assert stack_members({"m1": {"q": np.zeros(3)}}, "없는변수", ["m1"]) is None
+
+
+# ── 5-B. 설정 초기수위 앵커 ────────────────────────────────────────────────────
+
+class TestConfiguredInitAnchor:
+    """사전계산표의 설정 초기수위 앵커는 **적어 준 자 눈금 ft 그대로**여야 한다.
+
+    저류량에서 곡선을 역조회해 앵커를 만들면 보간 왕복 오차가 섞인다(실제 팔라우:
+    22.0 ft → 22.02 ft). 그러면 운영값과 0.02 ft 어긋난 중복 행이 생겨, 업체 화면이
+    어느 줄이 운영 기준인지 알 수 없게 된다.
+    """
+
+    def _daily(self):
+        dates = pd.date_range("2016-04-01", "2016-06-30", freq="D")
+        rng = np.random.default_rng(11)
+        return {"dates": dates.values.astype("datetime64[D]"),
+                "res_net_m3": rng.uniform(0, 8_000, (12, len(dates))).astype("float32")}
+
+    _THR = {"normal_watch": NW, "watch_warning": WW, "warning_crisis": WC}
+
+    def _sweep(self, tmp_path, p):
+        w = write_reservoir_outputs(tmp_path, self._daily(), params=p,
+                                    thresholds=self._THR, months=[4, 5, 6],
+                                    step_ft=0.5)
+        assert w.get("sweep") == "init_level_sweep.csv"
+        sw = pd.read_csv(tmp_path / "init_level_sweep.csv", encoding="utf-8-sig")
+        return set(np.round(sw["init_ft"].unique(), 2))
+
+    def test_앵커는_저류량이_아니라_설정_ft_에서_온다(self, tmp_path):
+        """두 값을 **일부러 어긋나게** 둬서 어느 쪽을 읽는지 못 숨기게 한다.
+
+        실제 팔라우 곡선(pchip 보간)은 ft→m³→ft 왕복에서 0.0213 ft 가 어긋난다.
+        합성 곡선은 매끄러워 오차가 1e-7 이라 그 자체로는 결함을 못 드러내므로,
+        여기서는 ``init_level_ft`` 와 ``init_m3`` 를 다른 수위로 맞춰 둔다.
+        """
+        p = _params(init_level_ft=18.07)                # 격자(0.5 ft) 밖 값
+        p.init_m3 = float(p.curve.stage_to_storage(21.03 - p.datum_offset_ft))
+        lv = self._sweep(tmp_path, p)
+        assert 18.07 in lv, "설정 초기수위가 표에 없다 — 슬라이더 기본값을 못 찾는다"
+        assert 21.03 not in lv, "저류량 역조회값이 중복 행으로 남았다"
+
+    def test_설정값이_없으면_역조회로_물러난다(self, tmp_path):
+        """옛 params(필드 없음)에서도 앵커가 사라지지 않아야 한다."""
+        p = _params()                       # init_level_ft = NaN
+        inv = round(float(p.curve.storage_to_stage(p.init_m3)) + p.datum_offset_ft, 2)
+        lv = self._sweep(tmp_path, p)
+        assert inv in lv
 
 
 # ── 6. 잉여수 식 ──────────────────────────────────────────────────────────────

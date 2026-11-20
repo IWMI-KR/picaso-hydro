@@ -55,6 +55,10 @@ class ReservoirForecastParams:
     diversion_max_m3s:      float = 0.0           # 전환 상한(펌프 용량)
     diversion_min_flow_m3s: float = 0.0           # 수원 하천에 남길 유량
     diversion_target_m3:    float = float("nan")  # 보충 목표 저류량. NaN → 만수
+    # 설정 초기수위를 **자 눈금 ft 그대로** 보관한다. ``init_m3`` 에서 곡선을 역으로
+    # 조회하면 보간 왕복 오차(Ngerimel 22.0 ft → 22.02 ft)가 섞여, 초기수위 사전계산표
+    # (init_level_sweep)에 운영값과 0.02 ft 어긋난 중복 행이 생긴다. 그 혼란을 막는 값이다.
+    init_level_ft:          float = float("nan")  # 미지정(만수 출발) → NaN
 
 
 def _assert_gauge_level(value: float, reservoir_cfg, offset_ft: float, *, key: str) -> None:
@@ -157,6 +161,7 @@ def build_reservoir_forecast_params(source, reservoir_cfg, curve) -> ReservoirFo
         diversion_min_flow_m3s=float(getattr(reservoir_cfg, "diversion_min_flow_m3s", 0.0) or 0.0)
         if reservoir_cfg else 0.0,
         diversion_target_m3=dv_tgt_m3,
+        init_level_ft=float(iwl_gauge) if iwl_gauge == iwl_gauge else float("nan"),
     )
 
 
